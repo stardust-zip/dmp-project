@@ -1,16 +1,15 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
-import os
 
 app = FastAPI(
-    title="DMP Smart City AI Platform",
-    description="Forcasting, Anomaly Detection"
+    title="DMP Smart City AI Platform", description="Forcasting, Anomaly Detection"
 )
+
 
 @app.get("/health")
 def health_check():
     """Satisfies the Docker Compose healthcheck"""
     return {"status": "healthy", "service": "dmp-backend"}
+
 
 @app.get("/")
 def root():
