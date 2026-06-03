@@ -18,7 +18,7 @@ Before starting, ensure you have the following installed on your machine:
 First, clone the repository and set up your local configuration.
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/stardust-zip/dmp-project
 cd dmp-project
 
 ```
