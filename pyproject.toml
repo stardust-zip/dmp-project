@@ -1,0 +1,37 @@
+[project]
+name = "dmp-smart-city-prediction"
+version = "0.1.0"
+description = "Energy, water, runtime, and alarm prediction models"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+# Core Data & ML
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "scikit-learn>=1.4.0",
+    "xgboost>=2.0.3",       # Added for advanced prediction/forecasting
+    "statsmodels>=0.14.2",  # Added for time-series anomaly baselines
+
+    # Data Validation
+    "pandera>=0.19.0",      # Added to satisfy AC3 data validation rules
+
+    # MLOps & DB
+    "mlflow>=2.13.0",
+    "psycopg2-binary>=2.9.9",
+    "sqlalchemy>=2.0.30",   # Added for easier datasource connections
+
+    # API & Config
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "python-dotenv>=1.0.1", # Added for environment variables
+
+    # Visualization & Dev
+    "plotly>=5.22.0",       # Added for interactive forecast charts
+    "jupyterlab>=4.2.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.2.0",
+    "ruff>=0.4.0",
+]
