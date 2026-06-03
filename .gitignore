@@ -189,3 +189,4 @@ pgdata/
 redis_data/
 prom_data/
 grafana_data/
+/data
