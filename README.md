@@ -30,6 +30,8 @@ We use a shared pre-push hook to automatically catch syntax errors and verify DV
 ```bash
 git config core.hooksPath .githooks
 
+# Make the script executable (If you are using Window, run this with Git Bash)
+chmod +x .githooks/pre-push
 ```
 
 ### Environment Variables
