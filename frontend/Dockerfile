@@ -1,12 +1,11 @@
 FROM node:20-alpine
 
-WORKDIR /app
+WORKDIR /app/frontend
 
-# Prevents Docker from failing if package.json doesn't exist yet.
-COPY package*.json ./
-RUN if [ -f package.json ]; then npm install; fi
+COPY frontend/package*.json ./
+RUN npm install
 
-COPY . .
+COPY frontend/ .
 
 EXPOSE 3000
 

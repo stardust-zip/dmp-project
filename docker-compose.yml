@@ -37,7 +37,9 @@ services:
     restart: unless-stopped
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.19.0
+    build:
+      context: .
+      dockerfile: mlflow/Dockerfile
     container_name: dmp_mlflow
     ports:
       - "5000:5000"
@@ -58,7 +60,7 @@ services:
       --host 0.0.0.0
       --port 5000
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -66,7 +68,7 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: .
       dockerfile: backend/Dockerfile
     container_name: dmp_backend
     working_dir: /app
@@ -98,7 +100,7 @@ services:
 
   worker:
     build:
-      context: ./backend
+      context: .
       dockerfile: backend/Dockerfile
     container_name: dmp_worker
     working_dir: /app
@@ -156,8 +158,7 @@ services:
     command: >
       bash -c "uv sync &&
       uv run jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''"
-    profiles:
-      - dev
+
 
   prometheus:
     image: prom/prometheus:v2.51.0
