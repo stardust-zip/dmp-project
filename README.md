@@ -1,6 +1,6 @@
 # DMP Smart City AI Platform - Developer Guide
 
-This guide will walk you through setting up your local environment, syncing our massive datasets, and spinning up the development servers.
+This guide will walk you through setting up your local environment, syncing our datasets, and spinning up the development servers.
 
 ## Prerequisites
 
