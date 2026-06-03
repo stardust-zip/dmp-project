@@ -1,6 +1,7 @@
-data/
 .direnv/
 .env
+.env.*
+!.env.example
 mlflow_artifacts/
 mlruns/
 
@@ -182,3 +183,9 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/python
 
 personal_docs/
+
+# Docker Data Volumes
+pgdata/
+redis_data/
+prom_data/
+grafana_data/
