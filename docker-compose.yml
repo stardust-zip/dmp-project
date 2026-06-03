@@ -1,11 +1,11 @@
 services:
   db:
     image: postgres:15-alpine
-    container_name: dmp_mlflow_db
+    container_name: dmp_postgres
     environment:
-      POSTGRES_USER: mlflow_user
-      POSTGRES_PASSWORD: mlflow_password
-      POSTGRES_DB: mlflow_db
+      POSTGRES_USER: ${POSTGRES_USER:-dmp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dmp_password}
+      POSTGRES_DB: ${POSTGRES_DB:-dmp_db}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
@@ -13,79 +13,195 @@ services:
     networks:
       - dmp_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mlflow_user -d mlflow_db"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-dmp_user} -d $${POSTGRES_DB:-dmp_db}"]
+      interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: dmp_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - dmp_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
   mlflow:
-    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
-    container_name: dmp_mlflow_server
+    image: ghcr.io/mlflow/mlflow:v2.19.0
+    container_name: dmp_mlflow
     ports:
       - "5000:5000"
     environment:
-      - MLFLOW_BACKEND_STORE_URI=postgresql://mlflow_user:mlflow_password@db:5432/mlflow_db
+      - MLFLOW_BACKEND_STORE_URI=postgresql://${POSTGRES_USER:-dmp_user}:${POSTGRES_PASSWORD:-dmp_password}@db:5432/${POSTGRES_DB:-dmp_db}
       - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
     volumes:
-      - ./mlflow_artifacts:/mlflow/artifacts
+      - mlflow_artifacts:/mlflow/artifacts
     depends_on:
       db:
         condition: service_healthy
     networks:
       - dmp_network
-    # Uses uv to install mlflow and psycopg2 on the fly, then starts the server
     command: >
-      bash -c "uv pip install --system mlflow psycopg2-binary &&
       mlflow server
-      --backend-store-uri postgresql://mlflow_user:mlflow_password@db:5432/mlflow_db
+      --backend-store-uri postgresql://${POSTGRES_USER:-dmp_user}:${POSTGRES_PASSWORD:-dmp_password}@db:5432/${POSTGRES_DB:-dmp_db}
       --default-artifact-root /mlflow/artifacts
       --host 0.0.0.0
-      --port 5000"
+      --port 5000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
 
-  # Workspace: Your team's shared development environment
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: dmp_api
+    working_dir: /app
+    volumes:
+      - ./src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-dmp_user}:${POSTGRES_PASSWORD:-dmp_password}@db:5432/${POSTGRES_DB:-dmp_db}
+      - REDIS_URL=redis://redis:6379/0
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - dmp_network
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: dmp_worker
+    working_dir: /app
+    volumes:
+      - ./src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-dmp_user}:${POSTGRES_PASSWORD:-dmp_password}@db:5432/${POSTGRES_DB:-dmp_db}
+      - REDIS_URL=redis://redis:6379/0
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - dmp_network
+    command: celery -A src.tasks worker --loglevel=info
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dmp_frontend
+    ports:
+      - "3001:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    networks:
+      - dmp_network
+    restart: unless-stopped
+
   workspace:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm
-    container_name: dmp_ml_workspace
+    container_name: dmp_workspace
     working_dir: /app
     volumes:
       - .:/app
     ports:
-      - "8888:8888" # JupyterLab
-      - "8000:8000" # FastAPI (For Phase II)
+      - "8888:8888"
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-dmp_user}:${POSTGRES_PASSWORD:-dmp_password}@db:5432/${POSTGRES_DB:-dmp_db}
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - mlflow
+      - redis
     networks:
       - dmp_network
     command: >
       bash -c "uv sync &&
       uv run jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''"
+    profiles:
+      - dev
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.51.0
     container_name: dmp_prometheus
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom_data:/prometheus
     ports:
       - "9090:9090"
     networks:
       - dmp_network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.4.0
     container_name: dmp_grafana
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "3000:3000"
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
     networks:
       - dmp_network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
 
 networks:
   dmp_network:
@@ -93,5 +209,7 @@ networks:
 
 volumes:
   pgdata:
+  redis_data:
+  mlflow_artifacts:
   prom_data:
   grafana_data:
