@@ -190,3 +190,6 @@ redis_data/
 prom_data/
 grafana_data/
 /data
+
+# Claude Code Plugins
+.omc/
