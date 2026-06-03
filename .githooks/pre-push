@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+echo "🚀 Running local sanity checks..."
+
+# 1. Code Linter Test
+echo "🔍 Checking Python syntax with Ruff..."
+uv run ruff check backend/src/
+if [ $? -ne 0 ]; then
+    echo "❌ Ruff linter failed. Please fix the syntax errors."
+    exit 1
+fi
+
+# 2. DVC Test
+echo "📊 Checking DVC tracking status..."
+dvc status
+if [ $? -ne 0 ]; then
+    echo "❌ DVC status failed. Check your data.dvc file."
+    exit 1
+fi
+
+echo "✅ Fast checks passed! Pushing to GitHub"
+exit 0

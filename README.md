@@ -8,7 +8,7 @@ Before starting, ensure you have the following installed on your machine:
 
 - **Git**
 - **Docker & Docker Compose** (Crucial: Our entire stack is containerized)
-- **Python 3.12+**
+- **Python 3.11+**
 - _Optional but recommended:_ [uv](https://github.com/astral-sh/uv) for lightning-fast dependency management.
 
 ---
@@ -20,6 +20,15 @@ First, clone the repository and set up your local configuration.
 ```bash
 git clone https://github.com/stardust-zip/dmp-project
 cd dmp-project
+
+```
+
+### Git Hooks Configuration
+
+We use a shared pre-push hook to automatically catch syntax errors and verify DVC tracking before code is pushed. Run this command to enable it on your local machine:
+
+```bash
+git config core.hooksPath .githooks
 
 ```
 
@@ -74,7 +83,7 @@ We use Data Version Control (DVC) linked to a Google Drive bucket.
 
 ### Authentication Setup
 
-Run these exact commands in your terminal
+Run these exact commands in your terminal:
 
 ```bash
 dvc remote modify --local gdrive gdrive_client_id "ASK_FOR_CLIENT_ID"
@@ -109,10 +118,12 @@ docker compose up -d --build
 
 Once the stack is running, you can access the tools at these URLs:
 
-- **JupyterLab (AI Workspace):** [http://localhost:8888](https://www.google.com/search?q=http://localhost:8888)
-- **MLflow (Model Tracking):** [http://localhost:5000](https://www.google.com/search?q=http://localhost:5000)
-- **FastAPI (Swagger UI):** [http://localhost:8000/docs](https://www.google.com/search?q=http://localhost:8000/docs)
-- **Frontend Dashboard:** [http://localhost:3001](https://www.google.com/search?q=http://localhost:3001)
+- **Frontend Dashboard:** http://localhost:3001
+- **FastAPI (Swagger UI):** http://localhost:8000/docs
+- **JupyterLab (AI Workspace):** http://localhost:8888
+- **MLflow (Model Tracking):** http://localhost:5000
+- **Grafana (Monitoring Dashboard):** http://localhost:3000
+- **Prometheus (Metrics Scraper):** http://localhost:9090
 
 ### Checking Logs
 
