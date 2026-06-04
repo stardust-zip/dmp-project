@@ -4,11 +4,10 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from enum import Enum
 
 
-class QualityFlag(str, Enum):
-    Good = "Good"
-    Suspect = "Suspect"
-    Bad = "Bad"
-    Missing = "Missing"
+class IngestionStatus(Enum):
+    Success = "Success"
+    Device_Error = "Device_Error"
+    Network_Timeout = "Network_Timeout"
 
 
 class BaseSchema(BaseModel):
@@ -58,15 +57,15 @@ class TelemetryDataPayload(BaseSchema):
     device_id: str = Field(..., min_length=1)
     metric_type_id: str = Field(
         ...,
-        description="eletricity, chilledwater, steam, hotwater, gas, water, solar, irrigation",
+        description="electricity, chilledwater, steam, hotwater, gas, water, solar, irrigation",
     )
     value: Optional[float] = Field(None, ge=0.0)
-    quality: QualityFlag = Field(default=QualityFlag.Good)
+    # Replaced quality with ingestion_status
+    ingestion_status: IngestionStatus = Field(default=IngestionStatus.Success)
 
     @field_validator("timestamp")
     @classmethod
     def enforce_utc_timezone(cls, v: datetime) -> datetime:
-        """Ensures the seeder localized the naive CSV timestamp before validation."""
         if v.tzinfo is None:
             raise ValueError("Timestamp must be timezone-aware (ISO 8601).")
         from datetime import timezone
