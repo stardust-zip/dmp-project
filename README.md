@@ -30,8 +30,9 @@ We use a shared pre-push hook to automatically catch syntax errors and verify DV
 ```bash
 git config core.hooksPath .githooks
 
-# Make the script executable (If you are using Window, run this with Git Bash)
+# Make the script executable (If you are using Windows, run this with Git Bash)
 chmod +x .githooks/pre-push
+
 ```
 
 ### Environment Variables
@@ -124,6 +125,7 @@ Once the stack is running, you can access the tools at these URLs:
 - **FastAPI (Swagger UI):** http://localhost:8000/docs
 - **JupyterLab (AI Workspace):** http://localhost:8888
 - **MLflow (Model Tracking):** http://localhost:5000
+- **DbGate (Database GUI):** http://localhost:3002
 - **Grafana (Monitoring Dashboard):** http://localhost:3000
 - **Prometheus (Metrics Scraper):** http://localhost:9090
 
@@ -142,7 +144,27 @@ docker compose logs -f worker
 
 ---
 
-## 5. Example Workflows
+## 5. Seeding the Database
+
+After standing up the architecture for the first time, your local PostgreSQL database will be empty. You must seed it with the raw Kaggle telemetry data before using the API or training models.
+
+Run the seeder script through the backend container:
+
+```bash
+# Quick Seed: Loads lookup tables, metadata, and 1,000 rows per metric for fast local testing
+docker compose exec backend python -m src.seeder
+
+# Custom Seed: Specify an exact number of rows to load per metric type
+docker compose exec backend python -m src.seeder --limit 5000
+
+# Full Seed: Bypasses the limit and loads the entire historical dataset
+docker compose exec backend python -m src.seeder --full
+
+```
+
+---
+
+## 6. Example Workflows
 
 1. Navigate to **JupyterLab** at `localhost:8888`.
 2. The Jupyter container automatically connects to the Postgres database and MLflow. You do not need to mock any database connections.
@@ -157,7 +179,9 @@ git commit -m "data: added new dataset"
 
 ```
 
-## 6. Tearing Down
+---
+
+## 7. Tearing Down
 
 When you are done working, you can stop the containers.
 
