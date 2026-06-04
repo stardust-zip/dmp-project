@@ -183,7 +183,7 @@ def seed_telemetry(db: Session, limit: int | None = 1000):
                     device_id=device_id,
                     metric_type_id=metric,
                     value=float(raw_val),
-                    ingestion_status=IngestionStatus.Success,
+                    ingestion_status=IngestionStatus.Success.value,
                 )
                 db_records.append(
                     models.TelemetryData(**telemetry_payload.model_dump())
