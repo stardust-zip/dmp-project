@@ -69,10 +69,26 @@ def get_something(db: Session = Depends(get_db)):
     ...
 ```
 
+## Testing Strategy
+
+We follow a multi-layered testing strategy to ensure platform stability:
+
+### 1. Unit Tests (`tests/unit/`)
+Focus on individual components like Pydantic schemas. 
+- **Edge Cases**: Empty IDs, invalid numeric ranges, timezone enforcement.
+
+### 2. Integration Tests (`tests/integration/`)
+Focus on how components interact, including the database and API.
+- **API Endpoints**: Success and error paths (404, 400, 500).
+- **Database Constraints**: 
+    - **Unique**: User emails, Telemetry composite keys (timestamp, device, metric).
+    - **Foreign Keys**: Ensuring devices belong to existing locations.
+    - **Data Integrity**: NOT NULL constraints and Enum validation.
+- **Seeder Logic**: Verifying that Kaggle data is correctly transformed into our relational model.
+
 ## Running Tests
-
 Run tests from the `backend/` directory:
-
 ```bash
 PYTHONPATH=. pytest tests/
 ```
+
