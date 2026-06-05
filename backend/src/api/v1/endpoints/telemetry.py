@@ -5,13 +5,14 @@ from src.schemas import TelemetryDataPayload
 
 router = APIRouter()
 
+
 @router.post("/", response_model=dict)
 async def create_telemetry_data(
     payload: TelemetryDataPayload,
-    db: Session = Depends(get_db)
+    _db: Session = Depends(get_db)
 ):
     """
     Placeholder for ingesting telemetry data.
-    AI Engineers will use this to feed their models.
+    Use this to feed models.
     """
     return {"message": "Telemetry data received", "data": payload}

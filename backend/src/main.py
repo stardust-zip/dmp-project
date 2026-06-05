@@ -29,7 +29,7 @@ if settings.BACKEND_CORS_ORIGINS:
 
 # Exception Handler
 @app.exception_handler(DMPException)
-async def dmp_exception_handler(request: Request, exc: DMPException):
+async def dmp_exception_handler(_request: Request, exc: DMPException):
     logger.error(f"DMP Error: {exc.message} | Code: {exc.code}")
     return JSONResponse(
         status_code=exc.status_code,
@@ -44,7 +44,7 @@ async def dmp_exception_handler(request: Request, exc: DMPException):
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+async def global_exception_handler(_request: Request, _exc: Exception):
     logger.exception("Unhandled Exception occurred")
     return JSONResponse(
         status_code=500,

@@ -1,5 +1,5 @@
 from typing import Any, Dict, Optional
-from fastapi import HTTPException, status
+from fastapi import status
 
 class DMPException(Exception):
     """Base exception for DMP platform."""
