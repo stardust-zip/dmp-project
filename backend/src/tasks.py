@@ -1,8 +1,7 @@
-import os
-
 from celery import Celery
+from src.core.config import settings
 
-redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+redis_url = settings.REDIS_URL
 
 celery_app = Celery("dmp_tasks", broker=redis_url, backend=redis_url)
 

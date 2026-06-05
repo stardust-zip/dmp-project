@@ -3,10 +3,10 @@ import math
 import argparse
 import pandas as pd
 from sqlalchemy.orm import Session
-from .database import SessionLocal, init_db
-from . import models
-from . import schemas
-from .schemas import IngestionStatus
+from src.database import SessionLocal, init_db
+from src import models
+from src import schemas
+from src.schemas import IngestionStatus
 
 DATA_DIR = "/app/data/building-data-genome-project-2/data"
 
