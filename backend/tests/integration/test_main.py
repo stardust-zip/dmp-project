@@ -9,4 +9,4 @@ def test_root_endpoint(client):
     """Test root endpoint."""
     response = client.get("/")
     assert response.status_code == 200
-    assert "DMP Backend is running" in response.json()["message"]
+    assert "DMP Smart City AI Platform is running" in response.json()["message"]
