@@ -26,6 +26,11 @@ jobs:
         uv pip install ruff --system
         ruff check backend/src/
 
+    - name: Run Tests
+      run: |
+        uv sync --frozen --group dev
+        uv run pytest backend/tests/ -v
+
     - name: DVC Test (Data Tracking)
       run: |
         uv pip install dvc dvc-gdrive --system
