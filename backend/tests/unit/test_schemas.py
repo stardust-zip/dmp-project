@@ -42,3 +42,20 @@ def test_telemetry_payload_negative_value_rejected():
             value=-10.0,  # Invalid negative consumption
         )
     assert "Input should be greater than or equal to 0" in str(exc_info.value)
+
+def test_telemetry_payload_empty_id_rejected():
+    """Test that device_id cannot be empty."""
+    valid_dt = datetime.now(timezone.utc)
+    with pytest.raises(ValidationError):
+        TelemetryDataPayload(
+            timestamp=valid_dt,
+            device_id="", # Empty
+            metric_type_id="electricity",
+            value=10.0
+        )
+
+def test_location_create_metadata_optional():
+    """Test that location metadata is truly optional."""
+    from src.schemas import LocationCreate
+    loc = LocationCreate(id="B1", location_type_id="office", name="Building 1")
+    assert loc.metadata is None
