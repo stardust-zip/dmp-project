@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # REDIS
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # MLFLOW
+    MLFLOW_TRACKING_URI: str = "http://mlflow:5000"
+
     # CORS
     BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
 
