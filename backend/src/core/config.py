@@ -1,5 +1,6 @@
-from typing import List, Union, Optional
-from pydantic import AnyHttpUrl, field_validator, ValidationInfo
+from typing import List, Optional, Union
+
+from pydantic import AnyHttpUrl, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
