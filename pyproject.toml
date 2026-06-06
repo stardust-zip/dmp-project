@@ -30,9 +30,9 @@ dependencies = [
     "pydantic-settings>=2.14.1",
     "loguru>=0.7.3",
     "pyjwt>=2.13.0",
-    "passlib>=1.7.4",
     "bcrypt>=5.0.0",
     "python-multipart>=0.0.32",
+    "email-validator>=2.3.0",
 ]
 
 [dependency-groups]

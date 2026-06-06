@@ -1,7 +1,8 @@
 from datetime import datetime
-from typing import Optional, Any
-from pydantic import BaseModel, Field, ConfigDict, field_validator
 from enum import Enum
+from typing import Any, Optional
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class IngestionStatus(Enum):
@@ -12,6 +13,26 @@ class IngestionStatus(Enum):
 
 class BaseSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True, use_enum_values=True)
+
+
+# Auth Schemas
+
+
+class Token(BaseSchema):
+    access_token: str
+    token_type: str
+
+
+class TokenPayload(BaseSchema):
+    sub: Optional[str] = None
+    role: Optional[str] = None
+
+
+class UserResponse(BaseSchema):
+    id: str
+    email: EmailStr
+    full_name: str
+    role: str
 
 
 # -----------------------------------------
