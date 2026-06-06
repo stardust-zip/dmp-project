@@ -1,13 +1,13 @@
 services:
   db:
-    image: postgres:15-alpine
+    image: postgres:18.4-alpine
     container_name: dmp_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     ports:
       - "5432:5432"
     networks:
@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:8.8-alpine
     container_name: dmp_redis
     ports:
       - "6379:6379"
@@ -75,6 +75,7 @@ services:
     volumes:
       - ./backend/src:/app/src
       - ./pyproject.toml:/app/pyproject.toml
+      - ./data:/app/data
     ports:
       - "8000:8000"
     environment:
@@ -150,6 +151,7 @@ services:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379/0
+      - UV_PROJECT_ENVIRONMENT=/opt/.venv
     depends_on:
       - mlflow
       - redis
@@ -161,7 +163,7 @@ services:
 
 
   prometheus:
-    image: prom/prometheus:v2.51.0
+    image: prom/prometheus:v3.12.0
     container_name: dmp_prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -181,7 +183,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:10.4.0
+    image: grafana/grafana:13.0.2
     container_name: dmp_grafana
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
@@ -204,6 +206,29 @@ services:
       retries: 3
     restart: unless-stopped
 
+  dbgate:
+    image: dbgate/dbgate:latest
+    container_name: dbgate-web
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - CONNECTIONS=dmp_pg
+      - LABEL_dmp_pg=DMP PostgreSQL
+      - SERVER_dmp_pg=db
+      - USER_dmp_pg=${POSTGRES_USER}
+      - PASSWORD_dmp_pg=${POSTGRES_PASSWORD}
+      - PORT_dmp_pg=5432
+      - DATABASE_dmp_pg=${POSTGRES_DB}
+      - ENGINE_dmp_pg=postgres@dbgate-plugin-postgres
+    networks:
+      - dmp_network
+    volumes:
+      - dbgate_data:/root/.dbgate
+
 networks:
   dmp_network:
     driver: bridge
@@ -214,3 +239,4 @@ volumes:
   mlflow_artifacts:
   prom_data:
   grafana_data:
+  dbgate_data:
