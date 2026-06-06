@@ -1,13 +1,14 @@
-import pytest
 from fastapi.testclient import TestClient
-from src.main import app
 from src.core.exceptions import NotFoundException, ValidationException
+from src.main import app
+
 
 def test_custom_exception_handler(client):
     """
     Test that our global exception handler catches DMPException
     and returns the correct JSON format.
     """
+
     @app.get("/test-error/not-found")
     def trigger_not_found():
         raise NotFoundException("User not found", details={"id": 123})
@@ -32,10 +33,11 @@ def test_custom_exception_handler(client):
     assert data["error"]["message"] == "Invalid email format"
     assert data["error"]["details"] is None
 
+
 def test_unhandled_exception_handler():
     """Test that generic exceptions are caught and hidden from the user."""
-    # We create a specific client that doesn't raise server exceptions to test the 500 handler
     with TestClient(app, raise_server_exceptions=False) as client:
+
         @app.get("/test-error/unhandled")
         def trigger_unhandled():
             raise ValueError("Sensitive system error message")
