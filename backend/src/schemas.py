@@ -124,3 +124,20 @@ class TelemetryDataPayload(BaseSchema):
         from datetime import timezone
 
         return v.astimezone(timezone.utc)
+
+
+# Consumptions
+
+
+class ConsumptionRecord(BaseSchema):
+    timestamp: datetime
+    device_id: str
+    metric_type_id: str
+    actual_value: float
+    ingestion_status: str
+
+
+class ConsumptionPaginatedResponse(BaseSchema):
+    limit: int
+    offset: int
+    consumption: list[ConsumptionRecord]
