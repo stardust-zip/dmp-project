@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from mlflow import set_tracking_uri
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 from src.api.v1.deps import get_current_admin, get_current_user
@@ -13,6 +12,8 @@ from src.schemas import (
 )
 from src.tasks import train_model_task
 
+from mlflow import set_tracking_uri
+
 router = APIRouter()
 PRODUCTION_ALIAS = "production"
 ACTIVE_TAG = "active"
@@ -24,12 +25,20 @@ def _mlflow_client() -> MlflowClient:
     return MlflowClient()
 
 
-def _model_version_response(client: MlflowClient, model_version) -> ModelVersionResponse:
-    run = client.get_run(model_version.run_id)
+def _model_version_response(
+    client: MlflowClient, model_version
+) -> ModelVersionResponse:
+    run_id = model_version.run_id
+    if run_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Model version has no associated run ID.",
+        )
+    run = client.get_run(run_id)
     return ModelVersionResponse(
         name=model_version.name,
         version=str(model_version.version),
-        run_id=model_version.run_id,
+        run_id=run_id,
         metrics=dict(run.data.metrics),
         tags=dict(getattr(model_version, "tags", {}) or {}),
         current_stage=getattr(model_version, "current_stage", None),
@@ -88,7 +97,9 @@ def _promote_model_version(client: MlflowClient, model_version) -> None:
     version = str(model_version.version)
 
     for sibling in _search_model_versions(client, f"name = '{model_name}'"):
-        client.set_model_version_tag(model_name, str(sibling.version), ACTIVE_TAG, "false")
+        client.set_model_version_tag(
+            model_name, str(sibling.version), ACTIVE_TAG, "false"
+        )
 
     client.set_model_version_tag(model_name, version, ACTIVE_TAG, "true")
     client.set_model_version_tag(model_name, version, STAGE_TAG, "production")
@@ -177,10 +188,16 @@ async def rollback_model(
             detail=f"MLflow registry update failed: {exc}",
         ) from exc
 
+    run_id = model_version.run_id
+    if run_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Model version has no associated run ID.",
+        )
     return ModelRollbackResponse(
         message="Model version promoted to production.",
         model_name=model_version.name,
         version=str(model_version.version),
-        run_id=model_version.run_id,
+        run_id=run_id,
         promoted_by=current_admin.email,
     )
