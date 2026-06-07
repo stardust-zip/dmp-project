@@ -1,5 +1,7 @@
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
 from sqlalchemy import (
     Column,
     String,
@@ -12,18 +14,29 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 
-Base = declarative_base()
+
+class ModelBase:
+    if TYPE_CHECKING:
+        def __init__(self, **kwargs: object) -> None: ...
+
+
+Base = declarative_base(cls=ModelBase)
 
 
 def get_utc_now():
     return datetime.now(timezone.utc)
 
 
-class StringIDMixin:
+class SQLAlchemyKwargsMixin:
+    if TYPE_CHECKING:
+        def __init__(self, **kwargs: object) -> None: ...
+
+
+class StringIDMixin(SQLAlchemyKwargsMixin):
     id = Column(String, primary_key=True)
 
 
-class UUIDMixin:
+class UUIDMixin(SQLAlchemyKwargsMixin):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
 
@@ -148,7 +161,7 @@ class AnomalyAlert(UUIDMixin, TimestampMixin, Base):
 # -----------------------------------------
 # Time-Series (Hypertables)
 # -----------------------------------------
-class TelemetryData(Base):
+class TelemetryData(SQLAlchemyKwargsMixin, Base):
     __tablename__ = "telemetry_data"
     # Composite Primary Key for TimescaleDB / Time-Series optimization
     timestamp = Column(DateTime(timezone=True), primary_key=True)
@@ -159,7 +172,7 @@ class TelemetryData(Base):
     ingestion_status = Column(ingestion_status_enum, default="Success")
 
 
-class ForecastResult(Base):
+class ForecastResult(SQLAlchemyKwargsMixin, Base):
     __tablename__ = "forecast_result"
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     device_id = Column(String, ForeignKey("device.id"), primary_key=True)
@@ -170,7 +183,7 @@ class ForecastResult(Base):
     generated_at = Column(DateTime(timezone=True), default=get_utc_now)
 
 
-class ContextData(Base):
+class ContextData(SQLAlchemyKwargsMixin, Base):
     __tablename__ = "context_data"
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     location_id = Column(String, ForeignKey("location.id"), primary_key=True)
