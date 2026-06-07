@@ -113,7 +113,14 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
     Listing AI models (forecasting, anomaly detection).
     TODO: Implement
     """
-    return {"models": ["forecasting_v1", "anomaly_detection_v1"]}
+    return {
+        "models": [
+            "forecasting_v1",
+            "anomaly_detection_v1",
+            "forcasting_v2",
+            "anomaly_detection_v2",
+        ]
+    }
 
 
 @router.get("/{model_name}/versions", response_model=ModelVersionsResponse)

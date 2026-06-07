@@ -15,8 +15,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login
 def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]) -> UserResponse:
     """
     Decodes token and fetches user.
-    FUTURE PROOFING: After the demo, you just swap `MOCK_DB.get()` with `db.query(User).filter(...)`.
-    The rest of the app will never know the difference.
+    After the demo, just swap `MOCK_DB.get()` with `db.query(User).filter(...)`.
     """
     try:
         payload = jwt.decode(
