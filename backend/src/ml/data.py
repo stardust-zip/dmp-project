@@ -52,12 +52,12 @@ class DataLoader:
                 f"Missing required column(s): {', '.join(sorted(missing_columns))}"
             )
 
-        return df.loc[:, ["timestamp", target_column]].copy()
+        return df.loc[:, ["timestamp", target_column]].copy()  # type: ignore[return-value]
 
     def _validate_and_normalize_timestamps(self, df: pd.DataFrame) -> pd.DataFrame:
         timestamps = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         invalid_timestamps = timestamps.isna()
-        if invalid_timestamps.any():
+        if bool(invalid_timestamps.any()):
             raise ValueError(
                 f"Found {invalid_timestamps.sum()} invalid or missing timestamp value(s)"
             )
@@ -71,14 +71,10 @@ class DataLoader:
 
     @staticmethod
     def _resolve_duplicates(df: pd.DataFrame, target_column: str) -> pd.DataFrame:
-        df = df.drop_duplicates().copy()
+        df = df.drop_duplicates()
 
-        if df["timestamp"].duplicated().any():
-            df = (
-                df.groupby("timestamp", as_index=False, sort=True)
-                .agg({target_column: "median"})
-                .copy()
-            )
+        if bool(df["timestamp"].duplicated().any()):
+            df = df.groupby("timestamp", as_index=False, sort=True).agg({target_column: "median"})  # type: ignore[assignment]
 
         return df
 
@@ -87,10 +83,10 @@ class DataLoader:
         df = df.sort_values("timestamp").copy()
         df[target_column] = pd.to_numeric(df[target_column], errors="coerce")
 
-        if df[target_column].isna().all():
+        if bool(df[target_column].isna().all()):
             raise ValueError(f"Target column '{target_column}' has no numeric values")
 
-        if df[target_column].isna().any():
+        if bool(df[target_column].isna().any()):
             df = df.set_index("timestamp")
             df[target_column] = df[target_column].interpolate(method="time")
             df[target_column] = df[target_column].bfill().ffill()
@@ -114,12 +110,12 @@ class DataLoader:
         q1 = df[target_column].quantile(0.25)
         q3 = df[target_column].quantile(0.75)
         iqr = q3 - q1
-        if pd.isna(iqr) or iqr == 0:
+        if bool(pd.isna(iqr)) or iqr == 0:
             return df.copy()
 
         lower_bound = q1 - (self.iqr_multiplier * iqr)
         upper_bound = q3 + (self.iqr_multiplier * iqr)
-        return df[
+        return df[  # type: ignore[return-value]
             df[target_column].between(lower_bound, upper_bound, inclusive="both")
         ].copy()
 
@@ -127,8 +123,8 @@ class DataLoader:
         self, df: pd.DataFrame, target_column: str
     ) -> pd.DataFrame:
         std = df[target_column].std(ddof=0)
-        if pd.isna(std) or std == 0:
+        if bool(pd.isna(std)) or std == 0:
             return df.copy()
 
         zscores = (df[target_column] - df[target_column].mean()).abs() / std
-        return df[zscores <= self.zscore_threshold].copy()
+        return df[zscores <= self.zscore_threshold].copy()  # type: ignore[return-value]
