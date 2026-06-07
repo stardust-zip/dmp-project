@@ -35,6 +35,38 @@ class UserResponse(BaseSchema):
     role: str
 
 
+class ModelVersionResponse(BaseSchema):
+    name: str
+    version: str
+    run_id: str
+    metrics: dict[str, float]
+    tags: dict[str, str] = Field(default_factory=dict)
+    current_stage: str | None = None
+    creation_timestamp: int | None = None
+    last_updated_timestamp: int | None = None
+
+
+class ModelVersionsResponse(BaseSchema):
+    model_name: str
+    versions: list[ModelVersionResponse]
+
+
+class ModelRollbackRequest(BaseSchema):
+    mlflow_run_id: str = Field(..., min_length=1)
+    model_name: str | None = Field(
+        default=None,
+        description="Optional registered model name to disambiguate duplicate run IDs.",
+    )
+
+
+class ModelRollbackResponse(BaseSchema):
+    message: str
+    model_name: str
+    version: str
+    run_id: str
+    promoted_by: str
+
+
 # -----------------------------------------
 # Payloads for Seeding Asset Data (from metadata.csv)
 # -----------------------------------------
