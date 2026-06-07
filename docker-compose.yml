@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:18.4-alpine
+    image: postgres:17-alpine
     container_name: dmp_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -193,7 +193,7 @@ services:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
-      - "3000:3000"
+      - "3003:3000"
     depends_on:
       prometheus:
         condition: service_healthy
