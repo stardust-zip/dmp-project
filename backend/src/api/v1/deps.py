@@ -63,3 +63,14 @@ def get_current_operator(
             status_code=403, detail="Not enough permissions. Operator required."
         )
     return current_user
+
+
+def get_current_ai_engineer_or_admin(
+    current_user: Annotated[UserResponse, Depends(get_current_user)],
+) -> UserResponse:
+    if current_user.role not in ["Admin", "AI_Engineer"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Not enough permissions. Admin or AI Engineer required.",
+        )
+    return current_user

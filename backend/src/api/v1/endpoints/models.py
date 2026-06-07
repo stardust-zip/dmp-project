@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
-from src.api.v1.deps import get_current_admin, get_current_user
+from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
 from src.core.config import settings
 from src.schemas import (
     ModelRollbackRequest,
@@ -109,18 +109,38 @@ def _promote_model_version(client: MlflowClient, model_version) -> None:
 @router.get("/")
 async def list_models(current_user: UserResponse = Depends(get_current_user)):
     """
-    (Placeholder)
-    Listing AI models (forecasting, anomaly detection).
-    TODO: Implement
+    List all registered AI models (e.g., forecasting, anomaly detection) from MLflow.
     """
-    return {
-        "models": [
-            "forecasting_v1",
-            "anomaly_detection_v1",
-            "forcasting_v2",
-            "anomaly_detection_v2",
-        ]
-    }
+    client = _mlflow_client()
+    try:
+        registered_models = client.search_registered_models()
+    except MlflowException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"MLflow registry query failed: {exc}",
+        ) from exc
+
+    models_data = []
+    for rm in registered_models:
+        models_data.append(
+            {
+                "name": rm.name,
+                "description": rm.description,
+                "creation_timestamp": rm.creation_timestamp,
+                "last_updated_timestamp": rm.last_updated_timestamp,
+                "tags": dict(getattr(rm, "tags", {}) or {}),
+                "latest_versions": [
+                    {
+                        "version": str(v.version),
+                        "current_stage": v.current_stage,
+                        "status": v.status,
+                    }
+                    for v in (rm.latest_versions or [])
+                ],
+            }
+        )
+
+    return {"models": models_data}
 
 
 @router.get("/{model_name}/versions", response_model=ModelVersionsResponse)
@@ -155,7 +175,7 @@ async def get_model_versions(
 async def trigger_training(
     building_id: str = "Panther_parking_Lorriane",
     metric_type: str = "electricity",
-    current_admin: UserResponse = Depends(get_current_admin),
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
 ):
     """
     Trigger training job for the forecasting model via Celery.
@@ -168,14 +188,14 @@ async def trigger_training(
     return {
         "message": "Training job queued successfully.",
         "task_id": task.id,
-        "triggered_by": current_admin.email,
+        "triggered_by": current_user.email,
     }
 
 
 @router.post("/rollback", response_model=ModelRollbackResponse)
 async def rollback_model(
     payload: ModelRollbackRequest,
-    current_admin: UserResponse = Depends(get_current_admin),
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
 ):
     """
     Promote the registered model version linked to an MLflow run ID.
@@ -206,5 +226,5 @@ async def rollback_model(
         model_name=model_version.name,
         version=str(model_version.version),
         run_id=run_id,
-        promoted_by=current_admin.email,
+        promoted_by=current_user.email,
     )
