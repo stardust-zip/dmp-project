@@ -1,4 +1,5 @@
 from celery import Celery
+from pathlib import Path
 from src.core.config import settings
 from src.database import SessionLocal
 from src.ml.core import RandomForestTrainer
@@ -9,20 +10,30 @@ import mlflow
 
 redis_url = settings.REDIS_URL
 celery_app = Celery("dmp_tasks", broker=redis_url, backend=redis_url)
+METER_DATA_DIR = Path("/app/data/building-data-genome-project-2/data/meters/cleaned")
+
+
+def _cleaned_meter_csv_path(metric_type: str) -> Path:
+    metric_name = Path(metric_type).name.strip().lower()
+    if not metric_name:
+        raise ValueError("metric_type is required")
+
+    return METER_DATA_DIR / f"{metric_name}_cleaned.csv"
 
 
 @celery_app.task(bind=True, name="train_model_task")
-def train_model_task(self, target_building_id: str):
+def train_model_task(self, target_building_id: str, metric_type: str):
     """
     Orchestrates the ML pipeline: Data Loading -> Training -> DB Logging.
     """
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     mlflow.set_experiment("dmp_energy_forecasting")
+    data_path = _cleaned_meter_csv_path(metric_type)
 
     db = SessionLocal()
     pipeline_log = AIPipelineLog(
         type="Training",
-        datasource_used="electricity_cleaned.csv",
+        datasource_used=data_path.name,
         status="Running",
         execution_time_ms=0,
         mlflow_run_id="pending",
@@ -32,8 +43,7 @@ def train_model_task(self, target_building_id: str):
 
     try:
         with mlflow.start_run() as run:
-            data_path = "/app/data/building-data-genome-project-2/data/meters/cleaned/electricity_cleaned.csv"
-            loader = DataLoader(data_path)
+            loader = DataLoader(str(data_path))
             X, y = loader.load_timeseries_target(target_column=target_building_id)
 
             trainer = RandomForestTrainer(n_estimators=50)

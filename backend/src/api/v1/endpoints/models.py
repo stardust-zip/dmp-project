@@ -19,12 +19,16 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
 @router.post("/train")
 async def trigger_training(
     building_id: str = "Panther_parking_Lorriane",
+    metric_type: str = "electricity",
     current_admin: UserResponse = Depends(get_current_admin),
 ):
     """
     Trigger training job for the forecasting model via Celery.
     """
-    task = train_model_task.delay(target_building_id=building_id)  # type: ignore
+    task = train_model_task.delay(  # type: ignore
+        target_building_id=building_id,
+        metric_type=metric_type,
+    )
 
     return {
         "message": "Training job queued successfully.",

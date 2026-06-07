@@ -34,9 +34,14 @@ def test_trigger_training_success(mock_delay):
 
     mock_delay.return_value = MockTask()
 
-    response = client.post("/api/v1/models/train?building_id=TestBuilding")
+    response = client.post(
+        "/api/v1/models/train?building_id=TestBuilding&metric_type=water"
+    )
 
     assert response.status_code == 200
     assert response.json()["task_id"] == "mock-task-uuid-123"
     assert response.json()["message"] == "Training job queued successfully."
-    mock_delay.assert_called_once_with(target_building_id="TestBuilding")
+    mock_delay.assert_called_once_with(
+        target_building_id="TestBuilding",
+        metric_type="water",
+    )
