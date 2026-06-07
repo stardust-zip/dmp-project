@@ -2,7 +2,7 @@ from celery import Celery
 from pathlib import Path
 from src.core.config import settings
 from src.database import SessionLocal
-from src.ml.core import RandomForestTrainer
+from src.ml.dummy_randomforest import RandomForestTrainer
 from src.ml.data import DataLoader
 from src.models import AIPipelineLog
 

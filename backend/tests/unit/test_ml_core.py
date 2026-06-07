@@ -1,10 +1,13 @@
 from unittest.mock import patch
 
 import pandas as pd
-from src.ml.core import RandomForestAlarmClassifier, RandomForestTrainer
+from src.ml.dummy_randomforest import (
+    RandomForestAlarmClassifier,
+    RandomForestTrainer,
+)
 
 
-@patch("src.ml.core.mlflow")
+@patch("src.ml.base.mlflow")
 def test_random_forest_trainer(mock_mlflow):
     X = pd.DataFrame(
         {"hour": [1, 2, 3, 4], "dayofweek": [0, 0, 0, 0], "month": [6, 6, 6, 6]}
@@ -23,7 +26,7 @@ def test_random_forest_trainer(mock_mlflow):
     mock_mlflow.sklearn.log_model.assert_called_once()
 
 
-@patch("src.ml.core.mlflow")
+@patch("src.ml.base.mlflow")
 def test_random_forest_alarm_classifier(mock_mlflow):
     X = pd.DataFrame(
         {
