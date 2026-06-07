@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -141,3 +141,35 @@ class ConsumptionPaginatedResponse(BaseSchema):
     limit: int
     offset: int
     consumption: list[ConsumptionRecord]
+
+
+# Forecast
+class ForecastDataPoint(BaseModel):
+    timestamp: datetime
+    predicted_value: float
+
+
+class ForecastRequest(BaseModel):
+    target_building_id: str = Field(..., description="The ID of the building/site")
+    metric_type: str = Field(..., description="e.g., electricity, water")
+    forecast_horizon_hours: int = Field(
+        24, ge=1, le=168, description="Hours to predict"
+    )
+
+
+class ForecastResponse(BaseModel):
+    building_id: str
+    metric_type: str
+    model_version_used: str
+    forecast: List[ForecastDataPoint]
+
+
+# Anomaly
+class AlertResponse(BaseModel):
+    id: int
+    building_id: str
+    metric_type: str
+    timestamp: datetime
+    severity: str
+    description: str
+    is_resolved: bool
