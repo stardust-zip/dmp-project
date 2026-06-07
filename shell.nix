@@ -1,6 +1,6 @@
 with import <nixpkgs> { };
 pkgs.mkShell {
-  name = "dmp-project"; 
+  name = "dmp-project";
 
   NIX_LD_LIBRARY_PATH = lib.makeLibraryPath [
     stdenv.cc.cc # libstdc++
@@ -18,7 +18,7 @@ pkgs.mkShell {
     basedpyright
     ruff
     black
-    nodejs_20
+    nodejs_24
     cmake
     gcc
     gnumake

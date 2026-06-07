@@ -1,12 +1,11 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
-
 from src.api.v1.router import api_router
 from src.core.config import settings
-from src.core.logging import setup_logging
 from src.core.exceptions import DMPException
+from src.core.logging import setup_logging
 
 setup_logging()
 
@@ -16,7 +15,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Set up CORS
 if settings.BACKEND_CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
@@ -27,7 +25,6 @@ if settings.BACKEND_CORS_ORIGINS:
     )
 
 
-# Exception Handler
 @app.exception_handler(DMPException)
 async def dmp_exception_handler(_request: Request, exc: DMPException):
     logger.error(f"DMP Error: {exc.message} | Code: {exc.code}")
@@ -57,7 +54,6 @@ async def global_exception_handler(_request: Request, _exc: Exception):
     )
 
 
-# Include Routers
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 

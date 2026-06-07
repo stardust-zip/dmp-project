@@ -1,8 +1,8 @@
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 from src import models
-import uuid
-from datetime import datetime, timezone
 
 
 def test_user_unique_email_constraint(db_session):
@@ -64,10 +64,7 @@ def test_telemetry_composite_primary_key(db_session):
 
     # First insertion
     read1 = models.TelemetryData(
-        timestamp=ts,
-        device_id="dev1",
-        metric_type_id="electricity",
-        value=100.0
+        timestamp=ts, device_id="dev1", metric_type_id="electricity", value=100.0
     )
     db_session.add(read1)
     db_session.commit()
@@ -77,7 +74,6 @@ def test_telemetry_composite_primary_key(db_session):
 
     # Duplicate insertion (same PK)
     read2 = models.TelemetryData(
-
         timestamp=ts,
         device_id="dev1",
         metric_type_id="electricity",

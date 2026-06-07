@@ -11,6 +11,14 @@ from src.schemas import IngestionStatus
 DATA_DIR = "/app/data/building-data-genome-project-2/data"
 
 
+def get_or_create(db: Session, model, **kwargs):
+    instance = db.query(model).filter_by(**kwargs).first()
+    if not instance:
+        instance = model(**kwargs)
+        db.add(instance)
+    return instance
+
+
 def seed_lookups(db: Session):
     print("Seeding Lookup Tables...")
 
@@ -21,8 +29,7 @@ def seed_lookups(db: Session):
         }
     ]
     for dt in device_types:
-        if not db.query(models.DeviceType).filter_by(id=dt["id"]).first():
-            db.add(models.DeviceType(**dt))
+        get_or_create(db, models.DeviceType, **dt)
 
     metrics = [
         "electricity",
@@ -35,10 +42,13 @@ def seed_lookups(db: Session):
         "irrigation",
     ]
     for m in metrics:
-        if not db.query(models.MetricType).filter_by(id=m).first():
-            db.add(
-                models.MetricType(id=m, unit="kWh/kBTU", description=f"{m} consumption")
-            )
+        get_or_create(
+            db,
+            models.MetricType,
+            id=m,
+            unit="kWh/kBTU",
+            description=f"{m} consumption",
+        )
 
     db.commit()
 
@@ -57,52 +67,50 @@ def seed_metadata(db: Session):
 
     for lt in loc_types:
         lt_str = "Unknown" if pd.isna(lt) else str(lt)
-
-        if not db.query(models.LocationType).filter_by(id=lt_str).first():
-            db.add(models.LocationType(id=lt_str))
+        get_or_create(db, models.LocationType, id=lt_str)
 
     db.commit()
 
     # Seed Locations
     for _, row in df_meta.iterrows():
         b_id = str(row["building_id"])
-        if not db.query(models.Location).filter_by(id=b_id).first():
 
-            metadata_dict = {}
+        metadata_dict = {}
 
-            sqm_val = row.get("sqm")
-            if isinstance(sqm_val, (int, float)) and not math.isnan(float(sqm_val)):
-                metadata_dict["sqm"] = float(sqm_val)
+        sqm_val = row.get("sqm")
+        if isinstance(sqm_val, (int, float)) and not math.isnan(float(sqm_val)):
+            metadata_dict["sqm"] = float(sqm_val)
 
-            tz_val = row.get("timezone")
-            if isinstance(tz_val, str) and tz_val.strip().lower() != "nan":
-                metadata_dict["timezone"] = str(tz_val)
+        tz_val = row.get("timezone")
+        if isinstance(tz_val, str) and tz_val.strip().lower() != "nan":
+            metadata_dict["timezone"] = str(tz_val)
 
-            yb_val = row.get("yearbuilt")
-            if isinstance(yb_val, (int, float)) and not math.isnan(float(yb_val)):
-                metadata_dict["yearbuilt"] = float(yb_val)
+        yb_val = row.get("yearbuilt")
+        if isinstance(yb_val, (int, float)) and not math.isnan(float(yb_val)):
+            metadata_dict["yearbuilt"] = float(yb_val)
 
-            # Safely handle primaryspaceusage for the type checker
-            psu_val = row.get("primaryspaceusage")
-            if isinstance(psu_val, str) and psu_val.strip().lower() != "nan":
-                loc_type_id = str(psu_val)
-            else:
-                loc_type_id = "Unknown"
+        # Safely handle primaryspaceusage for the type checker
+        psu_val = row.get("primaryspaceusage")
+        if isinstance(psu_val, str) and psu_val.strip().lower() != "nan":
+            loc_type_id = str(psu_val)
+        else:
+            loc_type_id = "Unknown"
 
-            # Validate via Pydantic schema with explicit type casting
-            loc_payload = schemas.LocationCreate(
-                id=b_id,
-                location_type_id=loc_type_id,
-                name=f"Building {b_id}",
-                metadata=metadata_dict,
-            )
-            db_loc = models.Location(
-                id=loc_payload.id,
-                location_type_id=loc_payload.location_type_id,
-                name=loc_payload.name,
-                metadata_=loc_payload.metadata,
-            )
-            db.add(db_loc)
+        # Validate via Pydantic schema with explicit type casting
+        loc_payload = schemas.LocationCreate(
+            id=b_id,
+            location_type_id=loc_type_id,
+            name=f"Building {b_id}",
+            metadata=metadata_dict,
+        )
+        get_or_create(
+            db,
+            models.Location,
+            id=loc_payload.id,
+            location_type_id=loc_payload.location_type_id,
+            name=loc_payload.name,
+            metadata_=loc_payload.metadata,
+        )
     db.commit()
 
 
@@ -158,15 +166,14 @@ def seed_telemetry(db: Session, limit: int | None = 1000):
 
             # Ensure Device exists before inserting telemetry
             if device_id not in devices_created:
-                if not db.query(models.Device).filter_by(id=device_id).first():
-                    dev_payload = schemas.DeviceCreate(
-                        id=device_id,
-                        location_id=b_id,
-                        device_type_id="virtual_meter",
-                        status="Active",
-                    )
-                    db.add(models.Device(**dev_payload.model_dump()))
-                    db.commit()
+                dev_payload = schemas.DeviceCreate(
+                    id=device_id,
+                    location_id=b_id,
+                    device_type_id="virtual_meter",
+                    status="Active",
+                )
+                get_or_create(db, models.Device, **dev_payload.model_dump())
+                db.commit()
                 devices_created.add(device_id)
 
             # Validate Telemetry Data via Pydantic
