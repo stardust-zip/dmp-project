@@ -8,7 +8,7 @@ from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
 from src.core.config import settings
 from sqlalchemy.orm import Session
 from src.database import get_db
-from src.models import AIPipelineLog
+from src.models import AIPipelineLog, Location, MetricType
 from src.schemas import (
     MLAlgorithm,
     ModelTask,
@@ -191,6 +191,10 @@ async def get_model_versions(
 async def trigger_training(
     payload: ModelTrainingRequest | None = Body(default=None),
     building_id: str = Query("Panther_parking_Lorriane"),
+    site_id: str | None = Query(
+        None,
+        description="Optional site ID. Defaults to building_id for legacy callers.",
+    ),
     metric_type: str = Query("electricity"),
     model_task: ModelTask = Query(
         ModelTask.Forecasting,
@@ -199,6 +203,7 @@ async def trigger_training(
     data_source: TrainingDataSource = Query(
         "csv", description="Choose 'csv' for baseline or 'db' for live data"
     ),
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
 ):
     """
@@ -206,10 +211,12 @@ async def trigger_training(
     """
     request = payload or _legacy_training_request(
         building_id=building_id,
+        site_id=site_id,
         metric_type=metric_type,
         model_task=model_task,
         data_source=data_source,
     )
+    _validate_training_request(request, db)
     selected_algorithm = _algorithm_for_task(ModelTask(request.model_task))
 
     task = train_model_task.delay(training_request=request.model_dump(mode="json"))
@@ -224,21 +231,50 @@ async def trigger_training(
         data_source=request.data_source,
         algorithm=selected_algorithm,
         site_id=request.site_id,
+        building_id=request.building_id,
         metrics=request.metrics,
         triggered_by=current_user.email,
     )
 
 
+def _validate_training_request(request: ModelTrainingRequest, db: Session) -> None:
+    location_id = request.building_id or request.site_id
+    location_exists = (
+        db.query(Location.id).filter(Location.id == location_id).one_or_none()
+        is not None
+    )
+    if not location_exists:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown site/building: {location_id}",
+        )
+
+    known_metrics = {
+        row[0]
+        for row in db.query(MetricType.id)
+        .filter(MetricType.id.in_(request.metrics))
+        .all()
+    }
+    missing_metrics = sorted(set(request.metrics).difference(known_metrics))
+    if missing_metrics:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown metric(s): {', '.join(missing_metrics)}",
+        )
+
+
 def _legacy_training_request(
     *,
     building_id: str,
+    site_id: str | None,
     metric_type: str,
     model_task: ModelTask,
     data_source: TrainingDataSource,
 ) -> ModelTrainingRequest:
     end = datetime.now(timezone.utc)
     return ModelTrainingRequest(
-        site_id=building_id,
+        site_id=site_id or building_id,
+        building_id=building_id,
         metrics=[metric_type],
         time_range_start=end - timedelta(days=30),
         time_range_end=end,

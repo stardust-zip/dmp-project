@@ -71,6 +71,7 @@ def train_model_task(
                 {
                     "model_task": model_task_value,
                     "site_id": request.site_id,
+                    "building_id": request.building_id or "",
                     "metrics": ",".join(request.metrics),
                     "data_source": TrainingDataSource(request.data_source).value,
                     "algorithm": selected_algorithm.value,
@@ -94,6 +95,7 @@ def train_model_task(
                 "message": f"Mock {model_task_value} training completed.",
                 "mlflow_run_id": run.info.run_id,
                 "site_id": request.site_id,
+                "building_id": request.building_id,
                 "metrics": request.metrics,
                 "algorithm": selected_algorithm.value,
                 "scores": metrics,
@@ -124,6 +126,7 @@ def _training_request_from_args(
     end = datetime.now(timezone.utc)
     return ModelTrainingRequest(
         site_id=target_building_id or "Panther_parking_Lorriane",
+        building_id=target_building_id or "Panther_parking_Lorriane",
         metrics=[metric_type or "electricity"],
         time_range_start=end - timedelta(days=30),
         time_range_end=end,

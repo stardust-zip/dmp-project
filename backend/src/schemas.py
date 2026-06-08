@@ -99,7 +99,12 @@ class ModelTrainingRequest(BaseSchema):
         extra="forbid",
     )
 
-    site_id: str = Field(..., min_length=1, description="Site/building to train on.")
+    site_id: str = Field(..., min_length=1, description="Site to train on.")
+    building_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional building to train on inside the selected site.",
+    )
     metrics: list[str] = Field(..., min_length=1, description="Metrics to include.")
     time_range_start: datetime
     time_range_end: datetime
@@ -132,6 +137,7 @@ class ModelTrainingResponse(BaseSchema):
     data_source: TrainingDataSource
     algorithm: MLAlgorithm
     site_id: str
+    building_id: str | None = None
     metrics: list[str]
     triggered_by: str
 

@@ -68,12 +68,30 @@ def seed_metadata(db: Session):
     for lt in loc_types:
         lt_str = "Unknown" if pd.isna(lt) else str(lt)
         get_or_create(db, models.LocationType, id=lt_str)
+    if "site_id" in df_meta.columns:
+        get_or_create(db, models.LocationType, id="site")
 
     db.commit()
+
+    if "site_id" in df_meta.columns:
+        for site_id in sorted(df_meta["site_id"].dropna().astype(str).unique()):
+            get_or_create(
+                db,
+                models.Location,
+                id=site_id,
+                location_type_id="site",
+                name=f"Site {site_id}",
+            )
+        db.commit()
 
     # Seed Locations
     for _, row in df_meta.iterrows():
         b_id = str(row["building_id"])
+        site_id = None
+        if "site_id" in df_meta.columns:
+            raw_site_id = row.get("site_id")
+            if not pd.isna(raw_site_id):
+                site_id = str(raw_site_id)
 
         metadata_dict = {}
 
@@ -107,6 +125,7 @@ def seed_metadata(db: Session):
             db,
             models.Location,
             id=loc_payload.id,
+            parent_id=site_id,
             location_type_id=loc_payload.location_type_id,
             name=loc_payload.name,
             metadata_=loc_payload.metadata,

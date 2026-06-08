@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from src.api.v1.deps import get_current_admin, get_current_user
 from src.database import get_db
 from src.main import app
+from src.models import Location, MetricType
 
 client = TestClient(app)
 
@@ -21,10 +22,51 @@ def get_mock_admin():
     return MockAdminUser()
 
 
+def _override_training_validation_db(
+    *,
+    locations: set[str] | None = None,
+    metrics: set[str] | None = None,
+):
+    known_locations = locations or {"TestBuilding", "SiteA", "BuildingA"}
+    known_metrics = metrics or {"electricity", "water"}
+    db = Mock()
+
+    def query(column):
+        query_mock = Mock()
+        query_mock.filter.return_value = query_mock
+        if column is Location.id:
+            query_mock.one_or_none.side_effect = lambda: (
+                ("location",)
+                if _query_filter_contains(query_mock, known_locations)
+                else None
+            )
+        elif column is MetricType.id:
+            query_mock.all.return_value = [(metric,) for metric in known_metrics]
+        else:
+            query_mock.one_or_none.return_value = None
+            query_mock.all.return_value = []
+        return query_mock
+
+    db.query.side_effect = query
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    return db
+
+
+def _query_filter_contains(query_mock: Mock, values: set[str]) -> bool:
+    filter_arg = query_mock.filter.call_args.args[0]
+    compared_value = getattr(getattr(filter_arg, "right", None), "value", None)
+    return compared_value in values
+
+
 @pytest.fixture(autouse=True)
 def override_auth_dependencies():
     app.dependency_overrides[get_current_admin] = get_mock_admin
     app.dependency_overrides[get_current_user] = get_mock_admin
+    _override_training_validation_db()
 
     yield
 
@@ -50,6 +92,7 @@ def test_trigger_training_success(mock_delay):
     assert response.json()["model_task"] == "forecasting"
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["site_id"] == "TestBuilding"
+    assert training_request["building_id"] == "TestBuilding"
     assert training_request["metrics"] == ["water"]
     assert training_request["data_source"] == "csv"
     assert training_request["model_task"] == "forecasting"
@@ -76,6 +119,7 @@ def test_trigger_training_accepts_anomaly_training(mock_delay):
     )
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["model_task"] == "anomaly_detection"
+    assert training_request["building_id"] == "TestBuilding"
     assert training_request["data_source"] == "db"
     assert "algorithm" not in training_request
     assert response.json()["algorithm"] == "lightgbm"
@@ -90,6 +134,7 @@ def test_trigger_training_accepts_popup_payload(mock_delay):
 
     payload = {
         "site_id": "SiteA",
+        "building_id": "BuildingA",
         "metrics": [" electricity ", "Water"],
         "time_range_start": "2026-06-01T00:00:00Z",
         "time_range_end": "2026-06-07T00:00:00Z",
@@ -103,6 +148,7 @@ def test_trigger_training_accepts_popup_payload(mock_delay):
     assert response.status_code == 200
     assert response.json()["model_task"] == "prediction"
     assert response.json()["site_id"] == "SiteA"
+    assert response.json()["building_id"] == "BuildingA"
     assert response.json()["metrics"] == ["electricity", "water"]
     assert response.json()["algorithm"] == "linear_regression"
     training_request = mock_delay.call_args.kwargs["training_request"]
@@ -124,6 +170,46 @@ def test_trigger_training_rejects_client_selected_algorithm():
     response = client.post("/api/v1/models/train", json=payload)
 
     assert response.status_code == 422
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_unknown_location(mock_delay):
+    _override_training_validation_db(locations={"KnownBuilding"})
+
+    payload = {
+        "site_id": "MissingBuilding",
+        "metrics": ["electricity"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "forecasting",
+        "data_source": "csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unknown site/building: MissingBuilding"
+    mock_delay.assert_not_called()
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_unknown_metrics(mock_delay):
+    _override_training_validation_db(metrics={"electricity"})
+
+    payload = {
+        "site_id": "SiteA",
+        "metrics": ["electricity", "steam"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "forecasting",
+        "data_source": "csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unknown metric(s): steam"
+    mock_delay.assert_not_called()
 
 
 @patch("src.api.v1.endpoints.models._mlflow_client")
