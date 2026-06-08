@@ -263,7 +263,7 @@ export function AnomalyPage() {
     type: filters.type,
     limit: SIMULATION_FETCH_LIMIT,
     ...rangeQuery(filters.range),
-  }), [filters]);
+  }), [filters.site, filters.building, filters.severity, filters.type, filters.range]);
 
   const isGated = filters.building === "all";
   const visibleTimeline = useMemo(() => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)), [rawTimeline, simNow]);
