@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from celery.result import AsyncResult
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
@@ -8,11 +10,15 @@ from sqlalchemy.orm import Session
 from src.database import get_db
 from src.models import AIPipelineLog
 from src.schemas import (
+    MLAlgorithm,
     ModelTask,
     ModelRollbackRequest,
     ModelRollbackResponse,
+    ModelTrainingRequest,
+    ModelTrainingResponse,
     ModelVersionResponse,
     ModelVersionsResponse,
+    TrainingDataSource,
     UserResponse,
 )
 from src.tasks import celery_app, train_model_task
@@ -181,41 +187,72 @@ async def get_model_versions(
     )
 
 
-@router.post("/train")
+@router.post("/train", response_model=ModelTrainingResponse)
 async def trigger_training(
-    building_id: str = "Panther_parking_Lorriane",
-    metric_type: str = "electricity",
+    payload: ModelTrainingRequest | None = Body(default=None),
+    building_id: str = Query("Panther_parking_Lorriane"),
+    metric_type: str = Query("electricity"),
     model_task: ModelTask = Query(
         ModelTask.Forecasting,
-        description="ML task to train. Currently only forecasting has an implemented trainer.",
+        description="ML task to train.",
     ),
-    data_source: str = Query(
+    data_source: TrainingDataSource = Query(
         "csv", description="Choose 'csv' for baseline or 'db' for live data"
     ),
     current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
 ):
     """
-    Trigger training job for a supported model task via Celery.
+    Trigger a configurable training job via Celery.
     """
-    if model_task != ModelTask.Forecasting:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=f"Training for model_task='{model_task.value}' is not implemented.",
-        )
-
-    task = train_model_task.delay(
-        target_building_id=building_id,
+    request = payload or _legacy_training_request(
+        building_id=building_id,
         metric_type=metric_type,
+        model_task=model_task,
         data_source=data_source,
-        model_task=model_task.value,
+    )
+    selected_algorithm = _algorithm_for_task(ModelTask(request.model_task))
+
+    task = train_model_task.delay(training_request=request.model_dump(mode="json"))
+
+    return ModelTrainingResponse(
+        message=(
+            f"{ModelTask(request.model_task).value} training job queued using "
+            f"{TrainingDataSource(request.data_source).value} data."
+        ),
+        task_id=task.id,
+        model_task=request.model_task,
+        data_source=request.data_source,
+        algorithm=selected_algorithm,
+        site_id=request.site_id,
+        metrics=request.metrics,
+        triggered_by=current_user.email,
     )
 
+
+def _legacy_training_request(
+    *,
+    building_id: str,
+    metric_type: str,
+    model_task: ModelTask,
+    data_source: TrainingDataSource,
+) -> ModelTrainingRequest:
+    end = datetime.now(timezone.utc)
+    return ModelTrainingRequest(
+        site_id=building_id,
+        metrics=[metric_type],
+        time_range_start=end - timedelta(days=30),
+        time_range_end=end,
+        model_task=model_task,
+        data_source=data_source,
+    )
+
+
+def _algorithm_for_task(model_task: ModelTask) -> MLAlgorithm:
     return {
-        "message": f"{model_task.value} training job queued using {data_source} data.",
-        "task_id": task.id,
-        "model_task": model_task.value,
-        "triggered_by": current_user.email,
-    }
+        ModelTask.Forecasting: MLAlgorithm.RandomForest,
+        ModelTask.AnomalyDetection: MLAlgorithm.LightGBM,
+        ModelTask.Prediction: MLAlgorithm.LinearRegression,
+    }[model_task]
 
 
 @router.post("/rollback", response_model=ModelRollbackResponse)
