@@ -5,7 +5,7 @@ import * as echarts from "echarts";
 import type { ECharts, EChartsOption } from "echarts";
 import { ANOMALY_SERIES, BY_BUILDING, FC_HISTORY, FORECAST, TREND, TREND_FC } from "@/lib/mock-data";
 import { clock, clockShort } from "@/lib/format";
-import type { AnomalyEvent, AnomalySeverity, AnomalyTimelineResponse } from "@/types";
+import type { AnomalySeverity, AnomalyTimelineResponse } from "@/types";
 
 interface ChartTheme {
   ink: string;
@@ -313,7 +313,6 @@ export function buildUnifiedAnomalyTimeline(
       new Date(point.timestamp).getTime(),
       point.actual_value == null ? null : point.actual_value,
     ]);
-    const cursorMs = options.cursorTime;
     const baselinePastData = points.map((p) => [new Date(p.timestamp).getTime(), p.expected_value ?? null]);
     const rawFuture = (options.futurePoints ?? []).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const baselineFutureData = rawFuture.map((p) => [new Date(p.timestamp).getTime(), p.expected_value ?? null]);

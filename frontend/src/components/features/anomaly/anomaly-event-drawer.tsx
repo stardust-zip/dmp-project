@@ -10,16 +10,13 @@ function asTime(value: string) {
   return clock(new Date(value).getTime());
 }
 
-function durationLabel(hours?: number | null) {
-  if (hours == null) return "-";
-  if (hours < 24) return `${fmt1(hours)}h`;
-  const days = Math.floor(hours / 24);
-  const rest = Math.round(hours % 24);
-  return rest ? `${days}d ${rest}h` : `${days}d`;
-}
-
 function valueLabel(value?: number | null) {
   return value == null ? "-" : `${fmt(value)} kWh`;
+}
+
+function buildingLabel(buildingId: string) {
+  const parts = buildingId.split("_");
+  return parts.length >= 3 ? parts.slice(2).join("_") : buildingId;
 }
 
 function actionFor(event: AnomalyEvent) {
@@ -94,11 +91,10 @@ export function AnomalyEventDrawer({ event, onClose }: { event: AnomalyEvent; on
           </div>
           <dl className="dl">
             <dt>Site</dt><dd>{event.site_id}</dd>
-            <dt>Building</dt><dd>{event.building_id}</dd>
+            <dt>Building</dt><dd>{buildingLabel(event.building_id)}</dd>
             <dt>Usage</dt><dd>{event.primary_space_usage || "-"}</dd>
             <dt>Start</dt><dd className="mono">{asTime(event.start_time)}</dd>
             <dt>End</dt><dd className="mono">{event.end_time ? asTime(event.end_time) : "-"}</dd>
-            <dt>Duration</dt><dd className="mono">{durationLabel(event.duration_hours)}</dd>
             <dt>Severity</dt><dd>{event.severity}</dd>
             <dt>Actual</dt><dd className="mono">{valueLabel(event.actual_value)}</dd>
             <dt>Expected</dt><dd className="mono">{valueLabel(event.expected_value)}</dd>

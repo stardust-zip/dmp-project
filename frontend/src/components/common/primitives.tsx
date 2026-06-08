@@ -292,15 +292,25 @@ export function Select<T extends string>({
   onChange,
   options,
   disabled,
+  openSignal,
+  searchable = false,
+  searchPlaceholder = "Search...",
 }: {
   value: T;
   onChange: (value: T) => void;
   options: Array<{ value: T; label: string }>;
   disabled?: boolean;
+  openSignal?: number;
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const selected = options.find((option) => option.value === value) ?? options[0];
+  const visibleOptions = searchable && search.trim()
+    ? options.filter((option) => option.label.toLowerCase().includes(search.trim().toLowerCase()))
+    : options;
 
   useEffect(() => {
     if (!open) return;
@@ -326,9 +336,16 @@ export function Select<T extends string>({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (openSignal == null || disabled || options.length === 0) return;
+    const timeout = window.setTimeout(() => setOpen(true), 0);
+    return () => window.clearTimeout(timeout);
+  }, [disabled, openSignal, options.length]);
+
   const choose = (nextValue: T) => {
     onChange(nextValue);
     setOpen(false);
+    setSearch("");
   };
 
   return (
@@ -352,7 +369,20 @@ export function Select<T extends string>({
       </button>
       {open && (
         <div className="select-menu" role="listbox" tabIndex={-1}>
-          {options.map((option) => (
+          {searchable && (
+            <div className="select-search">
+              <Icon name="search" />
+              <input
+                autoFocus
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => event.stopPropagation()}
+                placeholder={searchPlaceholder}
+              />
+            </div>
+          )}
+          {visibleOptions.length === 0 && <div className="select-empty">No matches</div>}
+          {visibleOptions.map((option) => (
             <button
               className={`select-option ${option.value === value ? "is-selected" : ""}`}
               key={option.value}

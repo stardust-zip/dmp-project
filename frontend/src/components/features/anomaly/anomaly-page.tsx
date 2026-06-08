@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@/components/common/primitives";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
 import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
-import { clock, fmt, fmt1 } from "@/lib/format";
+import { clock, fmt } from "@/lib/format";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
 type DateRange = "all" | "2017" | "2016" | "scored";
-type SortKey = "severity" | "newest" | "oldest" | "duration";
+type SortKey = "severity" | "newest" | "oldest";
 type SpeedOption = "1" | "6" | "24";
 type SimBounds = { start: number; end: number };
+type PendingOpen = "primaryUsage" | "building" | null;
 
 type Filters = {
   site: string;
@@ -53,19 +54,16 @@ function valueCell(value?: number | null) {
   return value == null ? <span className="muted">-</span> : <span>{fmt(value)}</span>;
 }
 
-function durationLabel(hours?: number | null) {
-  if (hours == null) return "-";
-  if (hours < 24) return `${fmt1(hours)}h`;
-  const days = Math.floor(hours / 24);
-  const rest = Math.round(hours % 24);
-  return rest ? `${days}d ${rest}h` : `${days}d`;
-}
-
 function severityTone(severity: AnomalySeverity): Tone {
   if (severity === "Critical") return "red";
   if (severity === "High") return "orange";
   if (severity === "Medium") return "amber";
   return "accent";
+}
+
+function buildingLabel(buildingId: string) {
+  const parts = buildingId.split("_");
+  return parts.length >= 3 ? parts.slice(2).join("_") : buildingId;
 }
 
 function timeOf(value: string) {
@@ -108,7 +106,6 @@ function timelineUntil(timeline: AnomalyTimelineResponse, simNow: number): Anoma
 function sortEvents(events: AnomalyEvent[], sort: SortKey) {
   return [...events].sort((a, b) => {
     if (sort === "oldest") return timeOf(a.start_time) - timeOf(b.start_time);
-    if (sort === "duration") return (b.duration_hours ?? -1) - (a.duration_hours ?? -1);
     if (sort === "severity") {
       const bySeverity = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
       if (bySeverity !== 0) return bySeverity;
@@ -185,25 +182,6 @@ function SeverityMeter({ overview }: { overview: AnomalyOverview }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function AttentionQueue({ events, onSelect }: { events: AnomalyEvent[]; onSelect: (event: AnomalyEvent) => void }) {
-  const rows = events.slice(0, 6);
-  return (
-    <div className="attention-list">
-      {rows.length === 0 && <div className="empty" style={{ padding: 18 }}>No urgent events in this filter.</div>}
-      {rows.map((event) => (
-        <button className="attention-row" key={event.id} type="button" onClick={() => onSelect(event)}>
-          <span className="attention-dot" style={{ background: `var(--anom-${event.severity.toLowerCase()})` }} />
-          <span className="attention-main">
-            <b>{event.building_id}</b>
-            <span>{event.type}</span>
-          </span>
-          <span className="attention-meta mono">{durationLabel(event.duration_hours)}</span>
-        </button>
-      ))}
     </div>
   );
 }
@@ -291,15 +269,15 @@ export function AnomalyPage() {
   const [filters, setFilters] = useState<Filters>({ site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
   const [page, setPage] = useState(1);
   const [facets, setFacets] = useState<AnomalyFacets>({ sites: [], buildings: [], severities: ["Critical", "High", "Medium", "Low"], types: [], primary_usage_types: [] });
-  const [filteredPrimaryUsages, setFilteredPrimaryUsages] = useState<string[]>([]);
-  const [filteredBuildings, setFilteredBuildings] = useState<string[]>([]);
-  const allBuildingsRef = useRef<string[]>([]);
-  const siteEventsRef = useRef<Record<string, AnomalyEvent[]>>({});
+  const [siteEventsBySite, setSiteEventsBySite] = useState<Record<string, AnomalyEvent[]>>({});
   const [rawTimeline, setRawTimeline] = useState<AnomalyTimelineResponse>(EMPTY_TIMELINE);
   const [simBounds, setSimBounds] = useState<SimBounds | null>(null);
   const [simNow, setSimNow] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<SpeedOption>("6");
+  const [pendingOpen, setPendingOpen] = useState<PendingOpen>(null);
+  const [primaryUsageOpenSignal, setPrimaryUsageOpenSignal] = useState(0);
+  const [buildingOpenSignal, setBuildingOpenSignal] = useState(0);
   const [selected, setSelected] = useState<AnomalyEvent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -324,9 +302,17 @@ export function AnomalyPage() {
   const totalPages = Math.max(1, Math.ceil(sortedEvents.length / PER_PAGE));
   const safePage = Math.min(page, totalPages);
   const events = useMemo(() => eventsResponseFrom(sortedEvents, safePage), [safePage, sortedEvents]);
-  const attentionEvents = useMemo(() => sortEvents(visibleTimeline.items, "severity"), [visibleTimeline.items]);
   const typeEntries = Object.entries(visibleOverview.type_counts).slice(0, 6);
   const visibleSelected = selected && visibleTimeline.items.some((event) => event.id === selected.id) ? selected : null;
+  const siteEvents = useMemo(() => (filters.site === "all" ? [] : (siteEventsBySite[filters.site] ?? [])), [filters.site, siteEventsBySite]);
+  const filteredPrimaryUsages = useMemo(
+    () => [...new Set(siteEvents.map((event) => event.primary_space_usage).filter(Boolean))].sort() as string[],
+    [siteEvents],
+  );
+  const filteredBuildings = useMemo(() => {
+    const source = filters.primaryUsage === "all" ? siteEvents : siteEvents.filter((event) => event.primary_space_usage === filters.primaryUsage);
+    return [...new Set(source.map((event) => event.building_id))].sort();
+  }, [filters.primaryUsage, siteEvents]);
 
   // Load all facets on mount
   useEffect(() => {
@@ -334,8 +320,6 @@ export function AnomalyPage() {
     getAnomalyFacets(undefined, controller.signal)
       .then((data) => {
         setFacets(data);
-        allBuildingsRef.current = data.buildings;
-        setFilteredBuildings(data.buildings);
       })
       .catch((err: Error) => {
         if (err.name !== "AbortError") setError(err.message);
@@ -343,37 +327,38 @@ export function AnomalyPage() {
     return () => controller.abort();
   }, []);
 
-  // Derive primary usages and buildings for the selected site (and usage) from cached timeline data.
+  // Cache site-level events so primary usage and building options can be derived locally.
   useEffect(() => {
-    if (filters.site === "all") {
-      setFilteredPrimaryUsages([]);
-      setFilteredBuildings(allBuildingsRef.current);
-      return;
-    }
-
-    const derive = (items: AnomalyEvent[]) => {
-      const usages = [...new Set(items.map((e) => e.primary_space_usage).filter(Boolean))].sort() as string[];
-      setFilteredPrimaryUsages(usages);
-      const source = filters.primaryUsage === "all" ? items : items.filter((e) => e.primary_space_usage === filters.primaryUsage);
-      setFilteredBuildings([...new Set(source.map((e) => e.building_id))].sort());
-    };
-
-    if (siteEventsRef.current[filters.site]) {
-      derive(siteEventsRef.current[filters.site]);
-      return;
-    }
+    if (filters.site === "all" || siteEventsBySite[filters.site]) return;
 
     const controller = new AbortController();
     getAnomalyTimeline({ site: filters.site, limit: 1500 }, controller.signal)
       .then((data) => {
-        siteEventsRef.current[filters.site] = data.items;
-        derive(data.items);
+        setSiteEventsBySite((current) => ({ ...current, [filters.site]: data.items }));
       })
       .catch((err: Error) => {
         if (err.name !== "AbortError") console.error(err);
       });
     return () => controller.abort();
-  }, [filters.site, filters.primaryUsage]);
+  }, [filters.site, siteEventsBySite]);
+
+  useEffect(() => {
+    if (pendingOpen !== "primaryUsage" || filters.site === "all" || filteredPrimaryUsages.length === 0) return;
+    const timeout = window.setTimeout(() => {
+      setPrimaryUsageOpenSignal((value) => value + 1);
+      setPendingOpen(null);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [filteredPrimaryUsages.length, filters.site, pendingOpen]);
+
+  useEffect(() => {
+    if (pendingOpen !== "building" || filters.primaryUsage === "all" || filteredBuildings.length === 0) return;
+    const timeout = window.setTimeout(() => {
+      setBuildingOpenSignal((value) => value + 1);
+      setPendingOpen(null);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [filteredBuildings.length, filters.primaryUsage, pendingOpen]);
 
   // Fetch event data only once a specific building is chosen
   useEffect(() => {
@@ -421,11 +406,12 @@ export function AnomalyPage() {
     setIsPlaying(false);
   };
 
-  const buildingOptions = filters.site === "all"
-    ? [{ value: "all" as const, label: "Select a site first" }]
-    : filters.primaryUsage === "all"
-    ? [{ value: "all" as const, label: "Select a usage type first" }]
-    : [{ value: "all" as const, label: "All Buildings" }, ...filteredBuildings.map((b) => ({ value: b, label: b }))];
+  const primaryUsageOptions = filters.site === "all"
+    ? []
+    : [{ value: "all" as const, label: "All Usage Types" }, ...filteredPrimaryUsages.map((usage) => ({ value: usage, label: usage }))];
+  const buildingOptions = filters.site === "all" || filters.primaryUsage === "all"
+    ? []
+    : [{ value: "all" as const, label: "All Buildings" }, ...filteredBuildings.map((building) => ({ value: building, label: buildingLabel(building) }))];
 
   return (
     <div className="page anomaly-page">
@@ -448,6 +434,7 @@ export function AnomalyPage() {
               setPage(1);
               setSelected(null);
               setIsPlaying(false);
+              setPendingOpen(null);
             }}
           >
             <Icon name="refresh" /> Reset
@@ -463,8 +450,11 @@ export function AnomalyPage() {
                 set("site", value);
                 set("primaryUsage", "all");
                 set("building", "all");
+                setPendingOpen(value === "all" ? null : "primaryUsage");
               }}
               options={[{ value: "all", label: "All Sites" }, ...facets.sites.map((site) => ({ value: site, label: site }))]}
+              searchable
+              searchPlaceholder="Search sites..."
             />
           </Field>
           <Field label="Primary Usage">
@@ -473,27 +463,34 @@ export function AnomalyPage() {
               onChange={(value) => {
                 set("primaryUsage", value);
                 set("building", "all");
+                setPendingOpen(value === "all" ? null : "building");
               }}
-              disabled={filters.site === "all"}
-              options={[{ value: "all", label: "All Usage Types" }, ...filteredPrimaryUsages.map((u) => ({ value: u, label: u }))]}
+              disabled={filters.site === "all" || primaryUsageOptions.length === 0}
+              options={primaryUsageOptions}
+              openSignal={primaryUsageOpenSignal}
+              searchable
+              searchPlaceholder="Search usage..."
             />
           </Field>
           <Field label="Building">
             <Select
               value={filters.building}
               onChange={(value) => set("building", value)}
-              disabled={filters.site === "all" || filters.primaryUsage === "all"}
+              disabled={filters.site === "all" || filters.primaryUsage === "all" || buildingOptions.length === 0}
               options={buildingOptions}
+              openSignal={buildingOpenSignal}
+              searchable
+              searchPlaceholder="Search buildings..."
             />
           </Field>
           <Field label="Severity">
-            <Select value={filters.severity} onChange={(value) => set("severity", value)} options={[{ value: "all", label: "All Severities" }, ...facets.severities.map((severity) => ({ value: severity, label: severity }))]} />
+            <Select value={filters.severity} onChange={(value) => set("severity", value)} disabled={isGated} options={[{ value: "all", label: "All Severities" }, ...facets.severities.map((severity) => ({ value: severity, label: severity }))]} />
           </Field>
           <Field label="Type">
-            <Select value={filters.type} onChange={(value) => set("type", value)} options={[{ value: "all", label: "All Types" }, ...facets.types.map((type) => ({ value: type, label: type }))]} />
+            <Select value={filters.type} onChange={(value) => set("type", value)} disabled={isGated} options={[{ value: "all", label: "All Types" }, ...facets.types.map((type) => ({ value: type, label: type }))]} />
           </Field>
           <Field label="Date Range">
-            <Select value={filters.range} onChange={(value) => set("range", value)} options={[{ value: "scored", label: "Oct-Dec 2017" }, { value: "2017", label: "2017" }, { value: "2016", label: "2016" }, { value: "all", label: "All Dates" }]} />
+            <Select value={filters.range} onChange={(value) => set("range", value)} disabled={isGated} options={[{ value: "scored", label: "Oct-Dec 2017" }, { value: "2017", label: "2017" }, { value: "2016", label: "2016" }, { value: "all", label: "All Dates" }]} />
           </Field>
         </div>
       </Card>
@@ -583,7 +580,7 @@ export function AnomalyPage() {
               actions={
                 loading
                   ? <span className="muted row" style={{ gap: 6}}><Spinner /> Loading</span>
-                  : <div style={{ width: 148 }}><Select value={filters.sort} onChange={(value) => set("sort", value)} options={[{ value: "severity", label: "Severity First" }, { value: "newest", label: "Newest First" }, { value: "oldest", label: "Oldest First" }, { value: "duration", label: "Longest First" }]} /></div>
+                  : <div style={{ width: 148 }}><Select value={filters.sort} onChange={(value) => set("sort", value)} options={[{ value: "severity", label: "Severity First" }, { value: "newest", label: "Newest First" }, { value: "oldest", label: "Oldest First" }]} /></div>
               }
             >
               <div className="anomaly-table-scroll">
@@ -597,20 +594,19 @@ export function AnomalyPage() {
                       <th>Severity</th>
                       <th style={{ textAlign: "right" }}>Actual</th>
                       <th style={{ textAlign: "right" }}>Expected</th>
-                      <th style={{ textAlign: "right" }}>Duration</th>
                     </tr>
                   </thead>
                   <tbody>
                     {!loading && events.items.length === 0 && (
                       <tr>
-                        <td colSpan={8}><div className="empty">No anomalies match your filters.</div></td>
+                        <td colSpan={7}><div className="empty">No anomalies match your filters.</div></td>
                       </tr>
                     )}
                     {events.items.map((event) => (
                       <tr key={event.id} className={visibleSelected?.id === event.id ? "sel" : ""} onClick={() => setSelected(event)}>
                         <td className="mono" style={{ color: "var(--muted)" }}>{eventTime(event)}</td>
                         <td>{event.site_id}</td>
-                        <td className="t-strong">{event.building_id}</td>
+                        <td className="t-strong">{buildingLabel(event.building_id)}</td>
                         <td>
                           <span className="type-chip" style={toneStyle(severityTone(event.severity))}>
                             {event.type}
@@ -619,7 +615,6 @@ export function AnomalyPage() {
                         <td><AnomalySeverityBadge severity={event.severity} /></td>
                         <td className="mono" style={{ textAlign: "right" }}>{valueCell(event.actual_value)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>{valueCell(event.expected_value)}</td>
-                        <td className="mono" style={{ textAlign: "right" }}>{durationLabel(event.duration_hours)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -643,10 +638,6 @@ export function AnomalyPage() {
           <aside className="anomaly-rail">
             <Card title="Severity" icon="alert" iconTone="red" sub="Distribution in view">
               <SeverityMeter overview={visibleOverview} />
-            </Card>
-
-            <Card title="Attention Queue" icon="flag" iconTone="orange" sub="Highest priority rows">
-              <AttentionQueue events={attentionEvents} onSelect={setSelected} />
             </Card>
 
             <Card title="Type Profile" icon="layers" sub="Most common event classes">
