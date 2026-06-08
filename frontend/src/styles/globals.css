@@ -480,9 +480,9 @@ table.tbl tbody tr:last-child td { border-bottom: none; }
   width: 100%;
 }
 .anomaly-main-grid > * { min-width: 0; }
-.anomaly-workspace { display: grid; gap: var(--gap); min-width: 0; overflow: hidden; }
-.anomaly-workspace > .card { min-width: 0; overflow: hidden; }
-.anomaly-rail { display: grid; gap: var(--gap); align-content: start; min-width: 0; position: relative; z-index: 1; }
+.anomaly-workspace { display: grid; gap: var(--gap); min-width: 0; }
+.anomaly-workspace > .card { min-width: 0; }
+.anomaly-rail { display: grid; gap: var(--gap); align-content: start; min-width: 0; }
 .anomaly-rail > .card { min-width: 0; }
 .anomaly-table-scroll { width: 100%; max-width: 100%; overflow-x: auto; }
 .anomaly-type-list { display: flex; flex-direction: column; gap: 13px; }
