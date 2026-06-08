@@ -173,8 +173,8 @@ async def get_model_versions(
 
 @router.post("/train")
 async def trigger_training(
-    building_id: str = "Panther_parking_Lorriane",
-    metric_type: str = "electricity",
+    building_id: str,
+    metric_type: str,
     current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
 ):
     """

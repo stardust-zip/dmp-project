@@ -4,19 +4,20 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Column,
-    String,
     DateTime,
-    ForeignKey,
-    Enum,
-    Integer,
     Double,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import declarative_base, relationship
 
 
 class ModelBase:
     if TYPE_CHECKING:
+
         def __init__(self, **kwargs: object) -> None: ...
 
 
@@ -29,6 +30,7 @@ def get_utc_now():
 
 class SQLAlchemyKwargsMixin:
     if TYPE_CHECKING:
+
         def __init__(self, **kwargs: object) -> None: ...
 
 
