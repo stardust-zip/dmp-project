@@ -48,24 +48,82 @@ def test_trigger_training_success(mock_delay):
         response.json()["message"] == "forecasting training job queued using csv data."
     )
     assert response.json()["model_task"] == "forecasting"
-    mock_delay.assert_called_once_with(
-        target_building_id="TestBuilding",
-        metric_type="water",
-        data_source="csv",
-        model_task="forecasting",
-    )
+    training_request = mock_delay.call_args.kwargs["training_request"]
+    assert training_request["site_id"] == "TestBuilding"
+    assert training_request["metrics"] == ["water"]
+    assert training_request["data_source"] == "csv"
+    assert training_request["model_task"] == "forecasting"
+    assert "algorithm" not in training_request
+    assert response.json()["algorithm"] == "random_forest"
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
-def test_trigger_training_rejects_unimplemented_anomaly_training(mock_delay):
+def test_trigger_training_accepts_anomaly_training(mock_delay):
+    class MockTask:
+        id = "mock-task-uuid-456"
+
+    mock_delay.return_value = MockTask()
+
     response = client.post(
         "/api/v1/models/train"
-        "?building_id=TestBuilding&metric_type=water&model_task=anomaly_detection"
+        "?building_id=TestBuilding&metric_type=water"
+        "&model_task=anomaly_detection&data_source=db"
     )
 
-    assert response.status_code == 501
-    assert "not implemented" in response.json()["detail"]
-    mock_delay.assert_not_called()
+    assert response.status_code == 200
+    assert response.json()["message"] == (
+        "anomaly_detection training job queued using db data."
+    )
+    training_request = mock_delay.call_args.kwargs["training_request"]
+    assert training_request["model_task"] == "anomaly_detection"
+    assert training_request["data_source"] == "db"
+    assert "algorithm" not in training_request
+    assert response.json()["algorithm"] == "lightgbm"
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_accepts_popup_payload(mock_delay):
+    class MockTask:
+        id = "mock-task-uuid-789"
+
+    mock_delay.return_value = MockTask()
+
+    payload = {
+        "site_id": "SiteA",
+        "metrics": [" electricity ", "Water"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "prediction",
+        "data_source": "csv",
+        "csv_path": "/tmp/site-a.csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["model_task"] == "prediction"
+    assert response.json()["site_id"] == "SiteA"
+    assert response.json()["metrics"] == ["electricity", "water"]
+    assert response.json()["algorithm"] == "linear_regression"
+    training_request = mock_delay.call_args.kwargs["training_request"]
+    assert training_request["csv_path"] == "/tmp/site-a.csv"
+    assert "algorithm" not in training_request
+
+
+def test_trigger_training_rejects_client_selected_algorithm():
+    payload = {
+        "site_id": "SiteA",
+        "metrics": ["electricity"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "forecasting",
+        "data_source": "csv",
+        "algorithm": "lightgbm",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
 
 
 @patch("src.api.v1.endpoints.models._mlflow_client")
