@@ -78,6 +78,30 @@ export interface TrainModelResponse {
   triggered_by: string;
 }
 
+export interface TrainingValidationMetric {
+  metric: string;
+  known_metric: boolean;
+  db_rows: number;
+  csv_rows: number;
+  available_in_db: boolean;
+  available_in_csv: boolean;
+  enough_rows: boolean;
+  required_rows: number;
+  messages: string[];
+}
+
+export interface TrainingValidationResponse {
+  valid: boolean;
+  data_source: TrainingDataSource;
+  site_id: string;
+  building_id?: string | null;
+  target_building_ids: string[];
+  required_rows_per_metric: number;
+  errors: string[];
+  warnings: string[];
+  metrics: TrainingValidationMetric[];
+}
+
 export interface RollbackModelPayload {
   mlflow_run_id: string;
   model_name?: string | null;
@@ -117,8 +141,9 @@ async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Pr
   });
 
   if (!response.ok) {
-    const data = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(data?.detail ?? `API request failed: ${response.status}`);
+    const data = (await response.json().catch(() => null)) as { detail?: string | string[] } | null;
+    const detail = Array.isArray(data?.detail) ? data.detail.join(" ") : data?.detail;
+    throw new Error(detail ?? `API request failed: ${response.status}`);
   }
 
   return response.json() as Promise<T>;
@@ -138,6 +163,10 @@ export function getPipelineLogs(signal?: AbortSignal) {
 
 export function trainModel(payload: TrainModelPayload, signal?: AbortSignal) {
   return apiPost<TrainModelResponse>("/api/v1/models/train", payload, signal);
+}
+
+export function validateTrainingRequest(payload: TrainModelPayload, signal?: AbortSignal) {
+  return apiPost<TrainingValidationResponse>("/api/v1/models/train/validate", payload, signal);
 }
 
 export function rollbackModel(payload: RollbackModelPayload, signal?: AbortSignal) {
