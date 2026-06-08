@@ -168,8 +168,22 @@ export interface AnomalyFacets {
   types: string[];
 }
 
+export interface AnomalyTimelinePoint {
+  timestamp: string;
+  actual_value?: number | null;
+  expected_value?: number | null;
+}
+
+export interface AnomalyTimelineGap {
+  start_time: string;
+  end_time: string;
+  reason: string;
+}
+
 export interface AnomalyTimelineResponse {
   items: AnomalyEvent[];
+  points: AnomalyTimelinePoint[];
+  gaps: AnomalyTimelineGap[];
 }
 
 export interface ForecastKpi {

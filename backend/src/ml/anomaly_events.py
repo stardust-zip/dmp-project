@@ -172,6 +172,57 @@ def load_anomaly_events() -> pd.DataFrame:
     return events.reset_index(drop=True)
 
 
+@lru_cache(maxsize=1)
+def load_anomaly_series() -> pd.DataFrame:
+    path = _data_dir() / "stage3_residual_anomalies.parquet"
+    if not path.exists():
+        raise NotFoundException(
+            "Residual anomaly export was not found.",
+            {"path": str(path)},
+        )
+
+    df = pd.read_parquet(
+        path,
+        columns=[
+            "building_id",
+            "timestamp",
+            "consumption",
+            "predicted",
+            "severity",
+            "is_anomaly",
+            "site_id",
+            "primaryspaceusage",
+        ],
+    )
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "site_id",
+                "building_id",
+                "primary_space_usage",
+                "timestamp",
+                "actual_value",
+                "expected_value",
+                "severity",
+                "is_anomaly",
+            ]
+        )
+
+    series = pd.DataFrame(
+        {
+            "site_id": df["site_id"].astype(object).fillna("Unknown").astype(str),
+            "building_id": df["building_id"].astype(str),
+            "primary_space_usage": df["primaryspaceusage"].astype(object),
+            "timestamp": pd.to_datetime(df["timestamp"], errors="coerce"),
+            "actual_value": df["consumption"],
+            "expected_value": df["predicted"],
+            "severity": df["severity"].astype(str),
+            "is_anomaly": df["is_anomaly"].astype(bool),
+        }
+    )
+    return series.sort_values(["building_id", "timestamp"]).reset_index(drop=True)
+
+
 def filter_events(
     *,
     site_id: str | None = None,
@@ -198,6 +249,28 @@ def filter_events(
         mask &= events["start_time"] <= end
 
     return events[mask].copy()
+
+
+def filter_series(
+    *,
+    site_id: str | None = None,
+    building_id: str | None = None,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    series = load_anomaly_series()
+    mask = pd.Series(True, index=series.index)
+
+    if site_id:
+        mask &= series["site_id"] == site_id
+    if building_id:
+        mask &= series["building_id"] == building_id
+    if start is not None:
+        mask &= series["timestamp"] >= start
+    if end is not None:
+        mask &= series["timestamp"] <= end
+
+    return series[mask].copy()
 
 
 def event_records(events: pd.DataFrame) -> list[dict]:

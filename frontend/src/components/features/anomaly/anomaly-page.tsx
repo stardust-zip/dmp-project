@@ -7,7 +7,7 @@ import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
 import { getAnomalyEvents, getAnomalyFacets, getAnomalyOverview, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
 import { clock, fmt, fmt1 } from "@/lib/format";
-import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, Tone } from "@/types";
+import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineResponse, Tone } from "@/types";
 
 type DateRange = "all" | "2017" | "2016" | "scored";
 type SortKey = "severity" | "newest" | "oldest" | "duration";
@@ -33,6 +33,8 @@ const EMPTY_OVERVIEW: AnomalyOverview = {
   severity_counts: { Critical: 0, High: 0, Medium: 0, Low: 0 },
   type_counts: {},
 };
+
+const EMPTY_TIMELINE: AnomalyTimelineResponse = { items: [], points: [], gaps: [] };
 
 function rangeQuery(range: DateRange) {
   if (range === "scored") return { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" };
@@ -152,7 +154,7 @@ export function AnomalyPage() {
   const buildingsBySiteRef = useRef<Record<string, string[]>>({});
   const [overview, setOverview] = useState<AnomalyOverview>(EMPTY_OVERVIEW);
   const [events, setEvents] = useState<AnomalyEventsResponse>({ total: 0, limit: PER_PAGE, offset: 0, items: [] });
-  const [timeline, setTimeline] = useState<AnomalyEvent[]>([]);
+  const [timeline, setTimeline] = useState<AnomalyTimelineResponse>(EMPTY_TIMELINE);
   const [selected, setSelected] = useState<AnomalyEvent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -220,7 +222,7 @@ export function AnomalyPage() {
       .then(([nextOverview, nextEvents, nextTimeline]) => {
         setOverview(nextOverview);
         setEvents(nextEvents);
-        setTimeline(nextTimeline.items);
+        setTimeline(nextTimeline);
       })
       .catch((err: Error) => {
         if (err.name !== "AbortError") setError(err.message);
@@ -318,7 +320,7 @@ export function AnomalyPage() {
               title="Timeline"
               icon="pulse"
               iconTone="red"
-              sub="Each marker is one anomaly. Larger markers lasted longer."
+              sub="Actual (solid) vs baseline (dashed). Dots colored by severity."
               actions={
                 <div className="legend">
                   {(["Critical", "High", "Medium", "Low"] as AnomalySeverity[]).map((severity) => (
@@ -327,6 +329,10 @@ export function AnomalyPage() {
                       {severity}
                     </span>
                   ))}
+                  <span className="leg">
+                    <i style={{ background: "rgba(100,116,139,.35)", width: 8, height: 8, borderRadius: 2 }} />
+                    Missing
+                  </span>
                 </div>
               }
             >
