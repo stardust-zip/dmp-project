@@ -1,8 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from celery.result import AsyncResult
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
 from src.core.config import settings
+from sqlalchemy.orm import Session
+from src.database import get_db
+from src.models import AIPipelineLog
 from src.schemas import (
     ModelRollbackRequest,
     ModelRollbackResponse,
@@ -10,7 +14,7 @@ from src.schemas import (
     ModelVersionsResponse,
     UserResponse,
 )
-from src.tasks import train_model_task
+from src.tasks import celery_app, train_model_task
 
 from mlflow import set_tracking_uri
 
@@ -232,3 +236,55 @@ async def rollback_model(
         run_id=run_id,
         promoted_by=current_user.email,
     )
+
+
+@router.get("/tasks/{task_id}")
+async def get_task_status(
+    task_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    Check the status of a background Celery task (e.g., model training).
+    """
+    task_result = AsyncResult(task_id, app=celery_app)
+
+    result_data = (
+        str(task_result.result)
+        if isinstance(task_result.result, Exception)
+        else task_result.result
+    )
+
+    return {
+        "task_id": task_id,
+        "status": task_result.status,
+        "result": result_data if task_result.ready() else None,
+    }
+
+
+@router.get("/logs/pipeline")
+async def get_pipeline_logs(
+    limit: int = Query(100, ge=1, le=1000, description="Maximum records to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Retrieve history of AI training and inference pipeline executions.
+    """
+    query = db.query(AIPipelineLog).order_by(AIPipelineLog.created_at.desc())
+    results = query.offset(offset).limit(limit).all()
+
+    formatted_logs = [
+        {
+            "id": str(log.id),
+            "type": log.type.name if hasattr(log.type, "name") else log.type,
+            "status": log.status.name if hasattr(log.status, "name") else log.status,
+            "mlflow_run_id": log.mlflow_run_id,
+            "datasource_used": log.datasource_used,
+            "execution_time_ms": log.execution_time_ms,
+            "timestamp": log.created_at,
+        }
+        for log in results
+    ]
+
+    return {"limit": limit, "offset": offset, "logs": formatted_logs}
