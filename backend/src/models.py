@@ -66,7 +66,9 @@ alert_status_enum = Enum("Open", "Acknowledged", "Resolved", name="alert_status"
 
 job_type_enum = Enum("Training", "Inference", name="job_type")
 
-model_task_enum = Enum("forecasting", "anomaly_detection", name="model_task")
+model_task_enum = Enum(
+    "forecasting", "anomaly_detection", "prediction", name="model_task"
+)
 
 job_status_enum = Enum("Success", "Failed", "Running", name="job_status")
 

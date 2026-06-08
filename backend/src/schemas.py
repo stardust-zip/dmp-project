@@ -2,7 +2,14 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class IngestionStatus(Enum):
@@ -14,6 +21,18 @@ class IngestionStatus(Enum):
 class ModelTask(str, Enum):
     Forecasting = "forecasting"
     AnomalyDetection = "anomaly_detection"
+    Prediction = "prediction"
+
+
+class TrainingDataSource(str, Enum):
+    CSV = "csv"
+    DB = "db"
+
+
+class MLAlgorithm(str, Enum):
+    RandomForest = "random_forest"
+    LinearRegression = "linear_regression"
+    LightGBM = "lightgbm"
 
 
 class BaseSchema(BaseModel):
@@ -71,6 +90,50 @@ class ModelRollbackResponse(BaseSchema):
     version: str
     run_id: str
     promoted_by: str
+
+
+class ModelTrainingRequest(BaseSchema):
+    model_config = ConfigDict(
+        from_attributes=True,
+        use_enum_values=True,
+        extra="forbid",
+    )
+
+    site_id: str = Field(..., min_length=1, description="Site/building to train on.")
+    metrics: list[str] = Field(..., min_length=1, description="Metrics to include.")
+    time_range_start: datetime
+    time_range_end: datetime
+    model_task: ModelTask = ModelTask.Forecasting
+    data_source: TrainingDataSource = TrainingDataSource.CSV
+    csv_path: str | None = Field(
+        default=None,
+        description="Optional CSV path when data_source is csv.",
+    )
+
+    @field_validator("metrics")
+    @classmethod
+    def normalize_metrics(cls, value: list[str]) -> list[str]:
+        metrics = [metric.strip().lower() for metric in value if metric.strip()]
+        if not metrics:
+            raise ValueError("At least one metric is required")
+        return metrics
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "ModelTrainingRequest":
+        if self.time_range_end <= self.time_range_start:
+            raise ValueError("time_range_end must be after time_range_start")
+        return self
+
+
+class ModelTrainingResponse(BaseSchema):
+    message: str
+    task_id: str
+    model_task: ModelTask
+    data_source: TrainingDataSource
+    algorithm: MLAlgorithm
+    site_id: str
+    metrics: list[str]
+    triggered_by: str
 
 
 # -----------------------------------------
