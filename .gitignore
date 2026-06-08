@@ -5,6 +5,7 @@
 mlflow_artifacts/
 mlruns/
 .ipynb_checkpoints/
+.venv/
 
 personal_docs/
 
