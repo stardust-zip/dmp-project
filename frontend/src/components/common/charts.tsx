@@ -324,6 +324,7 @@ export function buildUnifiedAnomalyTimeline(
       symbolSize: anomalyDotSize(e.severity),
       itemStyle: { color: anomalyColor(e.severity, theme), borderColor: theme.surface, borderWidth: 2 },
     }));
+    const eventsByTs = new Map(markerEvents.map((e) => [new Date(e.start_time).getTime(), e]));
     const gapAreas = timeline.gaps.map((gap) => [
       { xAxis: new Date(gap.start_time).getTime() },
       { xAxis: new Date(gap.end_time).getTime() },
@@ -348,21 +349,39 @@ export function buildUnifiedAnomalyTimeline(
     return {
       grid: { left: 8, right: 16, top: 18, bottom: 54, containLabel: true },
       tooltip: {
-        trigger: "item",
+        trigger: "axis",
+        axisPointer: { type: "line", lineStyle: { color: theme.border2, type: "dashed", width: 1.2 } },
         ...tooltipStyle(theme),
-        formatter: (param: { data: { event?: AnomalyEvent } }) => {
-          const event = param.data?.event;
-          if (!event) return "";
-          const actual = event.actual_value == null ? "-" : `${numFmt(event.actual_value)} kWh`;
-          const expected = event.expected_value == null ? "-" : `${numFmt(event.expected_value)} kWh`;
-          const duration = event.duration_hours == null ? "-" : `${Number(event.duration_hours.toFixed(1))}h`;
-          return `<div style="font-weight:650;margin-bottom:4px">${event.type}</div>
-            <div style="font-size:11px;color:${theme.muted};margin-bottom:7px">${event.site_id} / ${event.building_id}<br/>${clock(new Date(event.start_time).getTime())}</div>
+        formatter: (params: Array<{ seriesName: string; data: unknown; value: unknown }>) => {
+          if (!Array.isArray(params) || params.length === 0) return "";
+          const actualParam = params.find((p) => p.seriesName === "Actual Consumption");
+          const expectedParam = params.find((p) => p.seriesName === "Expected Baseline");
+          const pv = Array.isArray(actualParam?.value) ? (actualParam.value as [number, number | null]) : null;
+          const ts = pv?.[0] ?? null;
+          const actualVal = pv?.[1] ?? null;
+          const expectedVal = Array.isArray(expectedParam?.value) ? (expectedParam.value as [number, number | null])[1] : null;
+          if (ts == null) return "";
+          const event = eventsByTs.get(ts);
+          if (event) {
+            const actual = event.actual_value == null ? "-" : `${numFmt(event.actual_value)} kWh`;
+            const expected = event.expected_value == null ? "-" : `${numFmt(event.expected_value)} kWh`;
+            const duration = event.duration_hours == null ? "-" : `${Number(event.duration_hours.toFixed(1))}h`;
+            return `<div style="font-weight:650;margin-bottom:4px">${event.type}</div>
+              <div style="font-size:11px;color:${theme.muted};margin-bottom:7px">${event.site_id} / ${event.building_id}<br/>${clock(new Date(event.start_time).getTime())}</div>
+              <div style="display:grid;grid-template-columns:auto auto;gap:3px 12px">
+                <span style="color:${theme.muted}">Severity</span><b>${event.severity}</b>
+                <span style="color:${theme.muted}">Actual</span><b style="font-family:${MONO}">${actual}</b>
+                <span style="color:${theme.muted}">Expected</span><b style="font-family:${MONO}">${expected}</b>
+                <span style="color:${theme.muted}">Duration</span><b style="font-family:${MONO}">${duration}</b>
+              </div>`;
+          }
+          if (actualVal == null && expectedVal == null) return "";
+          const actualStr = actualVal == null ? "-" : `${numFmt(actualVal)} kWh`;
+          const expectedStr = expectedVal == null ? "-" : `${numFmt(expectedVal)} kWh`;
+          return `<div style="font-size:11px;color:${theme.muted};margin-bottom:6px">${clock(ts)}</div>
             <div style="display:grid;grid-template-columns:auto auto;gap:3px 12px">
-              <span style="color:${theme.muted}">Severity</span><b>${event.severity}</b>
-              <span style="color:${theme.muted}">Actual</span><b style="font-family:${MONO}">${actual}</b>
-              <span style="color:${theme.muted}">Expected</span><b style="font-family:${MONO}">${expected}</b>
-              <span style="color:${theme.muted}">Duration</span><b style="font-family:${MONO}">${duration}</b>
+              <span style="color:${theme.muted}">Actual</span><b style="font-family:${MONO}">${actualStr}</b>
+              <span style="color:${theme.muted}">Expected</span><b style="font-family:${MONO}">${expectedStr}</b>
             </div>`;
         },
       },
@@ -413,7 +432,6 @@ export function buildUnifiedAnomalyTimeline(
           lineStyle: { width: 1.5, color: theme.muted, type: [5, 4] },
           itemStyle: { color: theme.muted },
           z: 2,
-          tooltip: { show: false },
         },
         ...(baselineFutureData.length > 0 ? [{
           name: "Forecast",
@@ -444,7 +462,6 @@ export function buildUnifiedAnomalyTimeline(
               }
             : undefined,
           z: 3,
-          tooltip: { show: false },
           markLine: cursorMark,
         },
         {
@@ -452,6 +469,7 @@ export function buildUnifiedAnomalyTimeline(
           type: "scatter",
           data: markerData,
           z: 4,
+          tooltip: { show: false },
         },
       ],
     };
