@@ -4,7 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@/components/common/primitives";
+import { AlertFeed } from "@/components/features/anomaly/anomaly-alert-feed";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
+import { useAlerts } from "@/hooks/use-alerts";
 import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
 import { clock, fmt } from "@/lib/format";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
@@ -157,35 +159,6 @@ function eventsResponseFrom(events: AnomalyEvent[], page: number): AnomalyEvents
   };
 }
 
-function SeverityMeter({ overview }: { overview: AnomalyOverview }) {
-  const entries: Array<{ severity: AnomalySeverity; label: string }> = [
-    { severity: "Critical", label: "Critical" },
-    { severity: "High", label: "High" },
-    { severity: "Medium", label: "Medium" },
-    { severity: "Low", label: "Low" },
-  ];
-  const max = Math.max(1, ...entries.map(({ severity }) => overview.severity_counts[severity] ?? 0));
-
-  return (
-    <div className="severity-stack">
-      {entries.map(({ severity, label }) => {
-        const count = overview.severity_counts[severity] ?? 0;
-        return (
-          <div className="severity-line" key={severity}>
-            <div className="severity-line-top">
-              <span>{label}</span>
-              <b className="mono">{fmt(count)}</b>
-            </div>
-            <div className="severity-track">
-              <i style={{ width: `${Math.max(4, (count / max) * 100)}%`, background: `var(--anom-${severity.toLowerCase()})` }} />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function SelectionGate({ siteSelected }: { siteSelected: boolean }) {
   return (
     <div className="anomaly-gate">
@@ -281,6 +254,7 @@ export function AnomalyPage() {
   const [selected, setSelected] = useState<AnomalyEvent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { statuses, acknowledge, resolve, reopen } = useAlerts();
 
   const replayQuery = useMemo<AnomalyQuery>(() => ({
     site: filters.site,
@@ -304,6 +278,10 @@ export function AnomalyPage() {
   const events = useMemo(() => eventsResponseFrom(sortedEvents, safePage), [safePage, sortedEvents]);
   const typeEntries = Object.entries(visibleOverview.type_counts).slice(0, 6);
   const visibleSelected = selected && visibleTimeline.items.some((event) => event.id === selected.id) ? selected : null;
+  const openAlertCount = useMemo(
+    () => visibleTimeline.items.filter((e) => (e.severity === "Critical" || e.severity === "High") && (statuses[e.id] ?? "Open") === "Open").length,
+    [visibleTimeline.items, statuses],
+  );
   const siteEvents = useMemo(() => (filters.site === "all" ? [] : (siteEventsBySite[filters.site] ?? [])), [filters.site, siteEventsBySite]);
   const filteredPrimaryUsages = useMemo(
     () => [...new Set(siteEvents.map((event) => event.primary_space_usage).filter(Boolean))].sort() as string[],
@@ -636,8 +614,21 @@ export function AnomalyPage() {
           </div>
 
           <aside className="anomaly-rail">
-            <Card title="Severity" icon="alert" iconTone="red" sub="Distribution in view">
-              <SeverityMeter overview={visibleOverview} />
+            <Card
+              title="Alerts"
+              icon="bell"
+              iconTone="red"
+              sub="Critical and High severity events"
+              actions={openAlertCount > 0 ? <span className="alert-count-badge">{openAlertCount}</span> : undefined}
+            >
+              <AlertFeed
+                events={visibleTimeline.items}
+                statuses={statuses}
+                onAcknowledge={acknowledge}
+                onResolve={resolve}
+                onReopen={reopen}
+                onSelect={setSelected}
+              />
             </Card>
 
             <Card title="Type Profile" icon="layers" sub="Most common event classes">
