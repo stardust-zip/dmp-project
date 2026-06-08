@@ -528,7 +528,24 @@ table.tbl tbody tr:last-child td { border-bottom: none; }
 .severity-line-top b { color: var(--ink); font-size: 12px; font-weight: 700; }
 .severity-track { height: 7px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
 .severity-track i { display: block; height: 100%; border-radius: 999px; }
-.anomaly-event-table tbody td { padding-top: 8px; padding-bottom: 8px; }
+.anomaly-event-table { table-layout: fixed; min-width: 0; }
+.anomaly-event-table th:nth-child(1),
+.anomaly-event-table td:nth-child(1) { width: 118px; }
+.anomaly-event-table th:nth-child(2),
+.anomaly-event-table td:nth-child(2) { width: 88px; }
+.anomaly-event-table th:nth-child(5),
+.anomaly-event-table td:nth-child(5) { width: 92px; }
+.anomaly-event-table th:nth-child(6),
+.anomaly-event-table td:nth-child(6),
+.anomaly-event-table th:nth-child(7),
+.anomaly-event-table td:nth-child(7) { width: 94px; }
+.anomaly-event-table tbody td {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.anomaly-event-table .type-chip { max-width: 100%; }
 .simulator-panel {
   display: grid;
   grid-template-columns: auto minmax(220px, 1fr);

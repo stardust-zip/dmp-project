@@ -584,7 +584,7 @@ export function AnomalyPage() {
               }
             >
               <div className="anomaly-table-scroll">
-                <table className="tbl tbl-clickable anomaly-event-table" style={{ minWidth: 1080 }}>
+                <table className="tbl tbl-clickable anomaly-event-table">
                   <thead>
                     <tr>
                       <th>Time</th>
