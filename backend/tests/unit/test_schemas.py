@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone
 from pydantic import ValidationError
-from src.schemas import TelemetryDataPayload, IngestionStatus
+from src.schemas import IngestionStatus, ModelTrainingRequest, TelemetryDataPayload
 
 
 def test_telemetry_payload_enforces_utc():
@@ -59,3 +59,37 @@ def test_location_create_metadata_optional():
     from src.schemas import LocationCreate
     loc = LocationCreate(id="B1", location_type_id="office", name="Building 1")
     assert loc.metadata is None
+
+
+def test_model_training_request_normalizes_metrics():
+    payload = ModelTrainingRequest(
+        site_id="SiteA",
+        metrics=[" Electricity ", "WATER"],
+        time_range_start="2026-06-01T00:00:00Z",
+        time_range_end="2026-06-02T00:00:00Z",
+    )
+
+    assert payload.metrics == ["electricity", "water"]
+    assert payload.model_task == "forecasting"
+    assert payload.data_source == "csv"
+
+
+def test_model_training_request_rejects_invalid_time_range():
+    with pytest.raises(ValidationError, match="time_range_end must be after"):
+        ModelTrainingRequest(
+            site_id="SiteA",
+            metrics=["electricity"],
+            time_range_start="2026-06-02T00:00:00Z",
+            time_range_end="2026-06-01T00:00:00Z",
+        )
+
+
+def test_model_training_request_rejects_algorithm_selection():
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ModelTrainingRequest(
+            site_id="SiteA",
+            metrics=["electricity"],
+            time_range_start="2026-06-01T00:00:00Z",
+            time_range_end="2026-06-02T00:00:00Z",
+            algorithm="lightgbm",
+        )
