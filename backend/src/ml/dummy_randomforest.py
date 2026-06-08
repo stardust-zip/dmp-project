@@ -1,13 +1,12 @@
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, mean_absolute_error, root_mean_squared_error
-
 from src.ml.base import BaseModelTrainer
 
 
 class RandomForestTrainer(BaseModelTrainer):
-    def __init__(self, n_estimators=100):
+    def __init__(self, model_name, n_estimators=100):
         super().__init__(
-            model_name="RandomForestBaseline",
+            model_name=model_name,
             model=RandomForestRegressor(n_estimators=n_estimators, random_state=42),
         )
 

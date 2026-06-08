@@ -27,7 +27,9 @@ class BaseModelTrainer(ABC):
         metrics = self.evaluate(y_test, predictions)
 
         # 4. Log to MLflow
-        mlflow.sklearn.log_model(self.model, artifact_path="model")  # type: ignore
+        mlflow.sklearn.log_model(
+            self.model, artifact_path="model", registered_model_name=self.model_name
+        )  # type: ignore
         mlflow.log_metrics(metrics)
         if hasattr(self.model, "n_estimators"):
             mlflow.log_param("n_estimators", self.model.n_estimators)
