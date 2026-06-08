@@ -192,8 +192,10 @@ grafana_data/
 /data
 
 # Claude Code Plugins
+*/.omc/
 .omc/
 .claude/
+*/.codegraph/
 
 # Jetbrains
 .idea
