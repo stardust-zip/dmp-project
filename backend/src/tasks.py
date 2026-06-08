@@ -1,7 +1,9 @@
 from pathlib import Path
+import re
 from time import perf_counter
 
 from celery import Celery
+from mlflow.tracking import MlflowClient
 from src.core.config import settings
 from src.database import SessionLocal
 from src.models import AIPipelineLog
@@ -13,10 +15,23 @@ from src.schemas import (
 )
 
 import mlflow
+import mlflow.pyfunc
 
 redis_url = settings.REDIS_URL
 celery_app = Celery("dmp_tasks", broker=redis_url, backend=redis_url)
 METER_DATA_DIR = Path("/app/data/building-data-genome-project-2/data/meters/cleaned")
+
+
+class MockEnergyModel(mlflow.pyfunc.PythonModel):
+    def __init__(self, default_score: float):
+        self.default_score = default_score
+
+    def predict(self, context, model_input):  # type: ignore[no-untyped-def]
+        try:
+            row_count = len(model_input)
+        except TypeError:
+            row_count = 1
+        return [self.default_score] * row_count
 
 
 def _cleaned_meter_csv_path(metric_type: str) -> Path:
@@ -85,6 +100,13 @@ def train_model_task(
             )
             metrics = _mock_training_metrics(request)
             mlflow.log_metrics(metrics)
+            registered_model_name = _registered_model_name(request)
+            _log_registered_model(
+                request=request,
+                model_name=registered_model_name,
+                run_id=run.info.run_id,
+                default_score=next(iter(metrics.values())),
+            )
 
             pipeline_log.mlflow_run_id = run.info.run_id
             pipeline_log.execution_time_ms = int((perf_counter() - start) * 1000)
@@ -98,6 +120,7 @@ def train_model_task(
                 "building_id": request.building_id,
                 "metrics": request.metrics,
                 "algorithm": selected_algorithm.value,
+                "model_name": registered_model_name,
                 "scores": metrics,
             }
 
@@ -119,7 +142,7 @@ def _training_request_from_args(
     model_task: str,
 ) -> ModelTrainingRequest:
     if training_request is not None:
-        return ModelTrainingRequest(**training_request)
+        return ModelTrainingRequest(**_training_request_payload(training_request))
 
     from datetime import datetime, timedelta, timezone
 
@@ -135,6 +158,15 @@ def _training_request_from_args(
     )
 
 
+def _training_request_payload(training_request: dict) -> dict:
+    allowed_fields = set(ModelTrainingRequest.model_fields)
+    return {
+        key: value
+        for key, value in training_request.items()
+        if key in allowed_fields and value is not None
+    }
+
+
 def _datasource_label(request: ModelTrainingRequest) -> str:
     if TrainingDataSource(request.data_source) == TrainingDataSource.CSV:
         if request.csv_path:
@@ -143,6 +175,55 @@ def _datasource_label(request: ModelTrainingRequest) -> str:
             _cleaned_meter_csv_path(metric).name for metric in request.metrics
         )
     return "database"
+
+
+def _registered_model_name(request: ModelTrainingRequest) -> str:
+    task = ModelTask(request.model_task).value
+    return _safe_model_name(f"dmp_energy_{task}")
+
+
+def _safe_model_name(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return normalized.strip("._-") or "dmp_energy_model"
+
+
+def _log_registered_model(
+    *,
+    request: ModelTrainingRequest,
+    model_name: str,
+    run_id: str,
+    default_score: float,
+) -> None:
+    mlflow.pyfunc.log_model(
+        artifact_path="model",
+        python_model=MockEnergyModel(default_score=default_score),
+        registered_model_name=model_name,
+    )
+
+    client = MlflowClient()
+    versions = client.search_model_versions(
+        f"name = '{model_name}' and run_id = '{run_id}'"
+    )
+    for version in versions:
+        version_number = str(version.version)
+        client.set_model_version_tag(
+            model_name,
+            version_number,
+            "model_task",
+            ModelTask(request.model_task).value,
+        )
+        client.set_model_version_tag(
+            model_name, version_number, "site_id", request.site_id
+        )
+        client.set_model_version_tag(
+            model_name, version_number, "metrics", ",".join(request.metrics)
+        )
+        client.set_model_version_tag(
+            model_name,
+            version_number,
+            "data_source",
+            TrainingDataSource(request.data_source).value,
+        )
 
 
 def _mock_training_metrics(request: ModelTrainingRequest) -> dict[str, float]:

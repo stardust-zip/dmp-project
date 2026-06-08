@@ -142,6 +142,30 @@ class ModelTrainingResponse(BaseSchema):
     triggered_by: str
 
 
+class ModelTrainingValidationMetric(BaseSchema):
+    metric: str
+    known_metric: bool
+    db_rows: int = 0
+    csv_rows: int = 0
+    available_in_db: bool = False
+    available_in_csv: bool = False
+    enough_rows: bool = False
+    required_rows: int
+    messages: list[str] = Field(default_factory=list)
+
+
+class ModelTrainingValidationResponse(BaseSchema):
+    valid: bool
+    data_source: TrainingDataSource
+    site_id: str
+    building_id: str | None = None
+    target_building_ids: list[str] = Field(default_factory=list)
+    required_rows_per_metric: int
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    metrics: list[ModelTrainingValidationMetric] = Field(default_factory=list)
+
+
 # -----------------------------------------
 # Payloads for Seeding Asset Data (from metadata.csv)
 # -----------------------------------------
