@@ -6,6 +6,7 @@ from src.database import SessionLocal
 from src.ml.data import DataLoader
 from src.ml.dummy_randomforest import RandomForestTrainer
 from src.models import AIPipelineLog
+from src.schemas import ModelTask
 
 import mlflow
 
@@ -23,10 +24,22 @@ def _cleaned_meter_csv_path(metric_type: str) -> Path:
 
 
 @celery_app.task(bind=True, name="train_model_task")
-def train_model_task(self, target_building_id: str, metric_type: str):
+def train_model_task(
+    self,
+    target_building_id: str,
+    metric_type: str,
+    data_source: str,
+    model_task: str = ModelTask.Forecasting.value,
+):
     """
     Orchestrates the ML pipeline: Data Loading -> Training -> DB Logging.
     """
+    parsed_model_task = ModelTask(model_task)
+    if parsed_model_task != ModelTask.Forecasting:
+        raise NotImplementedError(
+            f"Training for model_task='{parsed_model_task.value}' is not implemented."
+        )
+
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     mlflow.set_experiment("dmp_energy_forecasting")
     data_path = _cleaned_meter_csv_path(metric_type)
@@ -34,6 +47,7 @@ def train_model_task(self, target_building_id: str, metric_type: str):
     db = SessionLocal()
     pipeline_log = AIPipelineLog(
         type="Training",
+        model_task=parsed_model_task.value,
         datasource_used=data_path.name,
         status="Running",
         execution_time_ms=0,
@@ -44,6 +58,14 @@ def train_model_task(self, target_building_id: str, metric_type: str):
 
     try:
         with mlflow.start_run() as run:
+            mlflow.set_tags(
+                {
+                    "model_task": parsed_model_task.value,
+                    "metric_type": metric_type,
+                    "building_id": target_building_id,
+                    "data_source": data_source,
+                }
+            )
             loader = DataLoader(str(data_path))
             X, y = loader.load_timeseries_target(target_column=target_building_id)
 

@@ -66,6 +66,8 @@ alert_status_enum = Enum("Open", "Acknowledged", "Resolved", name="alert_status"
 
 job_type_enum = Enum("Training", "Inference", name="job_type")
 
+model_task_enum = Enum("forecasting", "anomaly_detection", name="model_task")
+
 job_status_enum = Enum("Success", "Failed", "Running", name="job_status")
 
 ingestion_status_enum = Enum(
@@ -199,6 +201,12 @@ class ContextData(SQLAlchemyKwargsMixin, Base):
 class AIPipelineLog(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "ai_pipeline_log"
     type = Column(job_type_enum, nullable=False)
+    model_task = Column(
+        model_task_enum,
+        nullable=False,
+        default="forecasting",
+        server_default="forecasting",
+    )
     mlflow_run_id = Column(String, nullable=False)
     datasource_used = Column(String, nullable=True)
     execution_time_ms = Column(Integer, nullable=False)

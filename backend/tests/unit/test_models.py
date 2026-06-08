@@ -44,12 +44,28 @@ def test_trigger_training_success(mock_delay):
 
     assert response.status_code == 200
     assert response.json()["task_id"] == "mock-task-uuid-123"
-    assert response.json()["message"] == "Training job queued using csv data."
+    assert (
+        response.json()["message"] == "forecasting training job queued using csv data."
+    )
+    assert response.json()["model_task"] == "forecasting"
     mock_delay.assert_called_once_with(
         target_building_id="TestBuilding",
         metric_type="water",
         data_source="csv",
+        model_task="forecasting",
     )
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_unimplemented_anomaly_training(mock_delay):
+    response = client.post(
+        "/api/v1/models/train"
+        "?building_id=TestBuilding&metric_type=water&model_task=anomaly_detection"
+    )
+
+    assert response.status_code == 501
+    assert "not implemented" in response.json()["detail"]
+    mock_delay.assert_not_called()
 
 
 @patch("src.api.v1.endpoints.models._mlflow_client")
@@ -60,7 +76,7 @@ def test_get_model_versions_returns_run_ids_and_metrics(mock_mlflow_client):
             name="forecasting_v1",
             version="1",
             run_id="run-1",
-            tags={"active": "false"},
+            tags={"active": "false", "model_task": "forecasting"},
             current_stage="None",
             creation_timestamp=100,
             last_updated_timestamp=200,
@@ -91,6 +107,7 @@ def test_get_model_versions_returns_run_ids_and_metrics(mock_mlflow_client):
                 "name": "forecasting_v1",
                 "version": "2",
                 "run_id": "run-2",
+                "model_task": None,
                 "metrics": {"mae": 0.2, "rmse": 0.4},
                 "tags": {"active": "true"},
                 "current_stage": "Production",
@@ -101,8 +118,9 @@ def test_get_model_versions_returns_run_ids_and_metrics(mock_mlflow_client):
                 "name": "forecasting_v1",
                 "version": "1",
                 "run_id": "run-1",
+                "model_task": "forecasting",
                 "metrics": {"mae": 0.1, "rmse": 0.3},
-                "tags": {"active": "false"},
+                "tags": {"active": "false", "model_task": "forecasting"},
                 "current_stage": "None",
                 "creation_timestamp": 100,
                 "last_updated_timestamp": 200,
@@ -324,6 +342,7 @@ def test_get_pipeline_logs_returns_paginated_logs():
         id=log_id,
         type=SimpleNamespace(name="Training"),
         status=SimpleNamespace(name="Success"),
+        model_task="forecasting",
         mlflow_run_id="run-123",
         datasource_used="db",
         execution_time_ms=2400,
@@ -357,6 +376,7 @@ def test_get_pipeline_logs_returns_paginated_logs():
             {
                 "id": str(log_id),
                 "type": "Training",
+                "model_task": "forecasting",
                 "status": "Success",
                 "mlflow_run_id": "run-123",
                 "datasource_used": "db",
