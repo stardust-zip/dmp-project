@@ -6,6 +6,7 @@ from src.api.v1.endpoints import (
     consumption,
     export,
     forecast,
+    metadata,
     models,
     telemetry,
 )
@@ -23,3 +24,4 @@ api_router.include_router(
     consumption.router, prefix="/consumption", tags=["consumption"]
 )
 api_router.include_router(export.router, prefix="/export", tags=["export"])
+api_router.include_router(metadata.router, prefix="/metadata", tags=["metadata"])

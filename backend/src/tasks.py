@@ -1,9 +1,10 @@
-from celery import Celery
 from pathlib import Path
+
+from celery import Celery
 from src.core.config import settings
 from src.database import SessionLocal
-from src.ml.dummy_randomforest import RandomForestTrainer
 from src.ml.data import DataLoader
+from src.ml.dummy_randomforest import RandomForestTrainer
 from src.models import AIPipelineLog
 
 import mlflow
@@ -46,7 +47,9 @@ def train_model_task(self, target_building_id: str, metric_type: str):
             loader = DataLoader(str(data_path))
             X, y = loader.load_timeseries_target(target_column=target_building_id)
 
-            trainer = RandomForestTrainer(n_estimators=50)
+            model_name = f"dmp_{metric_type}_{target_building_id}"
+
+            trainer = RandomForestTrainer(model_name=model_name, n_estimators=50)
 
             metrics = trainer.train_and_evaluate(X, y)
 
