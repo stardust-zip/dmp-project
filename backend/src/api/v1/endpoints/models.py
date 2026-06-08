@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
@@ -173,20 +173,24 @@ async def get_model_versions(
 
 @router.post("/train")
 async def trigger_training(
-    building_id: str,
-    metric_type: str,
+    building_id: str = "Panther_parking_Lorriane",
+    metric_type: str = "electricity",
+    data_source: str = Query(
+        "csv", description="Choose 'csv' for baseline or 'db' for live data"
+    ),
     current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
 ):
     """
     Trigger training job for the forecasting model via Celery.
     """
-    task = train_model_task.delay(  # type: ignore
+    task = train_model_task.delay(
         target_building_id=building_id,
         metric_type=metric_type,
+        data_source=data_source,
     )
 
     return {
-        "message": "Training job queued successfully.",
+        "message": f"Training job queued using {data_source} data.",
         "task_id": task.id,
         "triggered_by": current_user.email,
     }

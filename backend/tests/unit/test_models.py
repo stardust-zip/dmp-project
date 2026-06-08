@@ -41,10 +41,11 @@ def test_trigger_training_success(mock_delay):
 
     assert response.status_code == 200
     assert response.json()["task_id"] == "mock-task-uuid-123"
-    assert response.json()["message"] == "Training job queued successfully."
+    assert response.json()["message"] == "Training job queued using csv data."
     mock_delay.assert_called_once_with(
         target_building_id="TestBuilding",
         metric_type="water",
+        data_source="csv",
     )
 
 
