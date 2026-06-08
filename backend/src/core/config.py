@@ -14,10 +14,14 @@ class Settings(BaseSettings):
     MLFLOW_TRACKING_URI: str = "http://mlflow:5000"
 
     # Security
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
+    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+    ]
     SECRET_KEY: str = "demo_super_secret_key_very_secret_key"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days in minutes
+    ANOMALY_DATA_DIR: str = "data/processed/anomaly-detection"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

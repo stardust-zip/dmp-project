@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Icon } from "@/components/common/icons";
 import { fmt } from "@/lib/format";
-import type { IconName, Kpi, Severity, Tone } from "@/types";
+import type { AnomalySeverity, IconName, Kpi, Severity, Tone } from "@/types";
 
 const TONES: Record<Tone, [string, string]> = {
   accent: ["var(--accent-soft)", "var(--accent-600)"],
@@ -26,6 +26,16 @@ export function SeverityBadge({ sev }: { sev: Severity }) {
     <span className={`badge badge-${sev}`}>
       <i className="bdot" />
       {labels[sev]}
+    </span>
+  );
+}
+
+export function AnomalySeverityBadge({ severity }: { severity: AnomalySeverity }) {
+  const key = severity.toLowerCase();
+  return (
+    <span className={`badge badge-anomaly-${key}`}>
+      <i className="bdot" />
+      {severity}
     </span>
   );
 }
@@ -109,6 +119,7 @@ export function KpiCard({
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRenderWindow(true);
       setClosing(false);
       return;
@@ -285,14 +296,75 @@ export function Select<T extends string>({
   onChange: (value: T) => void;
   options: Array<{ value: T; label: string }>;
 }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+
+    const closeIfOutside = (event: PointerEvent) => {
+      if (!wrapRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeIfOutside);
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const choose = (nextValue: T) => {
+    onChange(nextValue);
+    setOpen(false);
+  };
+
   return (
-    <select className="select" value={value} onChange={(event) => onChange(event.target.value as T)}>
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+    <div className="select-wrap" ref={wrapRef}>
+      <button
+        className={`select-trigger ${open ? "is-open" : ""}`}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span>{selected?.label ?? "Select"}</span>
+        <Icon name="chevDown" />
+      </button>
+      {open && (
+        <div className="select-menu" role="listbox" tabIndex={-1}>
+          {options.map((option) => (
+            <button
+              className={`select-option ${option.value === value ? "is-selected" : ""}`}
+              key={option.value}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              onClick={() => choose(option.value)}
+            >
+              <span>{option.label}</span>
+              {option.value === value && <Icon name="check" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

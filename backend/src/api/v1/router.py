@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from src.api.v1.endpoints import (
     alerts,
+    anomalies,
     auth,
     consumption,
     export,
@@ -16,6 +17,7 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(telemetry.router, prefix="/telemetry", tags=["telemetry"])
 api_router.include_router(models.router, prefix="/models", tags=["models"])
 api_router.include_router(alerts.router, prefix="/alerts", tags=["alerts"])
+api_router.include_router(anomalies.router, prefix="/anomalies", tags=["anomalies"])
 api_router.include_router(forecast.router, prefix="/forecast", tags=["forecast"])
 api_router.include_router(
     consumption.router, prefix="/consumption", tags=["consumption"]
