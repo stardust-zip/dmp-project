@@ -392,7 +392,7 @@ export function buildUnifiedAnomalyTimeline(
           color: theme.muted,
           fontSize: 11,
           fontFamily: MONO,
-          formatter: (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value)),
+          formatter: (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(2)}k` : value.toFixed(2)),
         },
         splitLine: { lineStyle: { color: theme.grid, type: "dashed" } },
         axisLine: { show: false },
