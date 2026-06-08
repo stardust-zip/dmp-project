@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
+import { MAIN_NAV, hasAnyRole } from "@/lib/rbac";
 
 const ACCENTS = {
   blue: { "--accent": "#2563eb", "--accent-600": "#2563eb", "--accent-700": "#1d4ed8", "--accent-soft": "#eff6ff", "--accent-softer": "#f5f9ff", "--accent-border": "#bfdbfe" },
@@ -19,27 +21,34 @@ const ACCENT_DARK = {
   slate: { "--accent-soft": "#1e293b", "--accent-softer": "#172033", "--accent-border": "#38465f" },
 };
 
-const NAV = [
-  { href: "/dashboard", label: "Dashboard", icon: "grid" as const },
-  { href: "/anomaly", label: "Anomaly Detection", icon: "pulse" as const, badge: 15 },
-  { href: "/forecast", label: "Forecasting", icon: "trend" as const },
-];
-
 const DATE_RANGES = ["Last 24 hours", "Last 7 days", "Last 30 days", "This month", "Quarter to date", "Custom range..."];
 
 function routeLabel(pathname: string) {
   if (pathname.startsWith("/anomaly")) return "Anomaly Detection";
   if (pathname.startsWith("/forecast")) return "Forecasting";
+  if (pathname.startsWith("/models")) return "AI Engineering";
   return "Dashboard";
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const { session, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [dateRange, setDateRange] = useState("Last 24 hours");
   const [dateOpen, setDateOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const meta = useMemo(() => routeLabel(pathname), [pathname]);
+  const user = session?.user;
+  const navItems = useMemo(() => MAIN_NAV.filter((item) => hasAnyRole(user, item.roles)), [user]);
+  const initials = useMemo(() => {
+    const source = user?.fullName || user?.email || "User";
+    return source
+      .split(/[\s@._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join("");
+  }, [user]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -61,6 +70,10 @@ export function AppShell({ children }: { children: ReactNode }) {
     return undefined;
   }, [dateOpen, profileOpen]);
 
+  if (pathname === "/login") {
+    return children;
+  }
+
   return (
     <div className={`app${collapsed ? " collapsed" : ""}`}>
       <aside className="sidebar">
@@ -76,7 +89,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <div className="sb-section">Monitoring</div>
         <nav className="sb-nav">
-          {NAV.map((item) => {
+          {navItems.map((item) => {
             const active = pathname === item.href || (pathname === "/" && item.href === "/dashboard");
             return (
               <Link key={item.href} className={`sb-item${active ? " active" : ""}`} href={item.href} title={item.label}>
@@ -176,18 +189,19 @@ export function AppShell({ children }: { children: ReactNode }) {
                 setDateOpen(false);
               }}
             >
-              <div className="avatar">JR</div>
+              <div className="avatar">{initials}</div>
               <div className="profile-meta">
-                <b>Jordan Rivera</b>
-                <span>Energy Analyst</span>
+                <b>{user?.fullName ?? "User"}</b>
+                <span>{user?.roleLabel ?? "Authenticated"}</span>
               </div>
               <Icon name="chevDown" style={{ width: 14, height: 14, color: "var(--muted)" }} />
             </div>
             {profileOpen && (
               <div style={{ position: "absolute", top: 44, right: 0, width: 210, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "var(--shadow-lg)", padding: 5, zIndex: 40 }}>
                 <div style={{ padding: "8px 11px 9px", borderBottom: "1px solid var(--border)", marginBottom: 4 }}>
-                  <div style={{ fontWeight: 650, fontSize: 13 }}>Jordan Rivera</div>
-                  <div style={{ fontSize: 11.5, color: "var(--muted)" }}>jordan.rivera@acme.com</div>
+                  <div style={{ fontWeight: 650, fontSize: 13 }}>{user?.fullName ?? "User"}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{user?.email}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{user?.roleLabel}</div>
                 </div>
                 {[
                   ["users", "Account"],
@@ -200,7 +214,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   </button>
                 ))}
                 <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 4 }}>
-                  <button className="sb-item" style={{ height: 32, fontSize: 12.5, color: "var(--red)" }}>
+                  <button className="sb-item" style={{ height: 32, fontSize: 12.5, color: "var(--red)" }} onClick={signOut}>
                     <Icon name="external" />
                     <span>Sign out</span>
                   </button>
