@@ -17,6 +17,7 @@ type SimBounds = { start: number; end: number };
 type Filters = {
   site: string;
   building: string;
+  primaryUsage: string;
   severity: string;
   type: string;
   range: DateRange;
@@ -287,12 +288,13 @@ function SimulationControls({
 }
 
 export function AnomalyPage() {
-  const [filters, setFilters] = useState<Filters>({ site: "all", building: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
+  const [filters, setFilters] = useState<Filters>({ site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
   const [page, setPage] = useState(1);
-  const [facets, setFacets] = useState<AnomalyFacets>({ sites: [], buildings: [], severities: ["Critical", "High", "Medium", "Low"], types: [] });
+  const [facets, setFacets] = useState<AnomalyFacets>({ sites: [], buildings: [], severities: ["Critical", "High", "Medium", "Low"], types: [], primary_usage_types: [] });
+  const [filteredPrimaryUsages, setFilteredPrimaryUsages] = useState<string[]>([]);
   const [filteredBuildings, setFilteredBuildings] = useState<string[]>([]);
   const allBuildingsRef = useRef<string[]>([]);
-  const buildingsBySiteRef = useRef<Record<string, string[]>>({});
+  const siteEventsRef = useRef<Record<string, AnomalyEvent[]>>({});
   const [rawTimeline, setRawTimeline] = useState<AnomalyTimelineResponse>(EMPTY_TIMELINE);
   const [simBounds, setSimBounds] = useState<SimBounds | null>(null);
   const [simNow, setSimNow] = useState<number | null>(null);
@@ -314,7 +316,11 @@ export function AnomalyPage() {
   const isGated = filters.building === "all";
   const visibleTimeline = useMemo(() => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)), [rawTimeline, simNow]);
   const visibleOverview = useMemo(() => overviewFromEvents(visibleTimeline.items), [visibleTimeline.items]);
-  const sortedEvents = useMemo(() => sortEvents(visibleTimeline.items, filters.sort), [filters.sort, visibleTimeline.items]);
+  const filteredItems = useMemo(
+    () => filters.primaryUsage === "all" ? visibleTimeline.items : visibleTimeline.items.filter((e) => e.primary_space_usage === filters.primaryUsage),
+    [filters.primaryUsage, visibleTimeline.items],
+  );
+  const sortedEvents = useMemo(() => sortEvents(filteredItems, filters.sort), [filters.sort, filteredItems]);
   const totalPages = Math.max(1, Math.ceil(sortedEvents.length / PER_PAGE));
   const safePage = Math.min(page, totalPages);
   const events = useMemo(() => eventsResponseFrom(sortedEvents, safePage), [safePage, sortedEvents]);
@@ -337,30 +343,37 @@ export function AnomalyPage() {
     return () => controller.abort();
   }, []);
 
-  // Derive buildings for the selected site from the timeline endpoint,
-  // which does respect site_id filtering (unlike the flat facets list).
+  // Derive primary usages and buildings for the selected site (and usage) from cached timeline data.
   useEffect(() => {
     if (filters.site === "all") {
+      setFilteredPrimaryUsages([]);
       setFilteredBuildings(allBuildingsRef.current);
       return;
     }
-    // Serve from cache if we already fetched this site
-    if (buildingsBySiteRef.current[filters.site]) {
-      setFilteredBuildings(buildingsBySiteRef.current[filters.site]);
+
+    const derive = (items: AnomalyEvent[]) => {
+      const usages = [...new Set(items.map((e) => e.primary_space_usage).filter(Boolean))].sort() as string[];
+      setFilteredPrimaryUsages(usages);
+      const source = filters.primaryUsage === "all" ? items : items.filter((e) => e.primary_space_usage === filters.primaryUsage);
+      setFilteredBuildings([...new Set(source.map((e) => e.building_id))].sort());
+    };
+
+    if (siteEventsRef.current[filters.site]) {
+      derive(siteEventsRef.current[filters.site]);
       return;
     }
+
     const controller = new AbortController();
     getAnomalyTimeline({ site: filters.site, limit: 1500 }, controller.signal)
       .then((data) => {
-        const buildings = [...new Set(data.items.map((e) => e.building_id))].sort();
-        buildingsBySiteRef.current[filters.site] = buildings;
-        setFilteredBuildings(buildings);
+        siteEventsRef.current[filters.site] = data.items;
+        derive(data.items);
       })
       .catch((err: Error) => {
         if (err.name !== "AbortError") console.error(err);
       });
     return () => controller.abort();
-  }, [filters.site]);
+  }, [filters.site, filters.primaryUsage]);
 
   // Fetch event data only once a specific building is chosen
   useEffect(() => {
@@ -410,6 +423,8 @@ export function AnomalyPage() {
 
   const buildingOptions = filters.site === "all"
     ? [{ value: "all" as const, label: "Select a site first" }]
+    : filters.primaryUsage === "all"
+    ? [{ value: "all" as const, label: "Select a usage type first" }]
     : [{ value: "all" as const, label: "All Buildings" }, ...filteredBuildings.map((b) => ({ value: b, label: b }))];
 
   return (
@@ -429,7 +444,7 @@ export function AnomalyPage() {
           <button
             className="btn btn-sm btn-ghost"
             onClick={() => {
-              setFilters({ site: "all", building: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
+              setFilters({ site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
               setPage(1);
               setSelected(null);
               setIsPlaying(false);
@@ -446,16 +461,28 @@ export function AnomalyPage() {
               value={filters.site}
               onChange={(value) => {
                 set("site", value);
+                set("primaryUsage", "all");
                 set("building", "all");
               }}
               options={[{ value: "all", label: "All Sites" }, ...facets.sites.map((site) => ({ value: site, label: site }))]}
+            />
+          </Field>
+          <Field label="Primary Usage">
+            <Select
+              value={filters.primaryUsage}
+              onChange={(value) => {
+                set("primaryUsage", value);
+                set("building", "all");
+              }}
+              disabled={filters.site === "all"}
+              options={[{ value: "all", label: "All Usage Types" }, ...filteredPrimaryUsages.map((u) => ({ value: u, label: u }))]}
             />
           </Field>
           <Field label="Building">
             <Select
               value={filters.building}
               onChange={(value) => set("building", value)}
-              disabled={filters.site === "all"}
+              disabled={filters.site === "all" || filters.primaryUsage === "all"}
               options={buildingOptions}
             />
           </Field>
@@ -467,9 +494,6 @@ export function AnomalyPage() {
           </Field>
           <Field label="Date Range">
             <Select value={filters.range} onChange={(value) => set("range", value)} options={[{ value: "scored", label: "Oct-Dec 2017" }, { value: "2017", label: "2017" }, { value: "2016", label: "2016" }, { value: "all", label: "All Dates" }]} />
-          </Field>
-          <Field label="Sort">
-            <Select value={filters.sort} onChange={(value) => set("sort", value)} options={[{ value: "severity", label: "Severity First" }, { value: "newest", label: "Newest First" }, { value: "oldest", label: "Oldest First" }, { value: "duration", label: "Longest First" }]} />
           </Field>
         </div>
       </Card>
@@ -556,7 +580,11 @@ export function AnomalyPage() {
               icon="table"
               sub="Click any row to inspect the event"
               noBody
-              actions={loading ? <span className="muted row" style={{ gap: 6 }}><Spinner /> Loading</span> : undefined}
+              actions={
+                loading
+                  ? <span className="muted row" style={{ gap: 6}}><Spinner /> Loading</span>
+                  : <div style={{ width: 148 }}><Select value={filters.sort} onChange={(value) => set("sort", value)} options={[{ value: "severity", label: "Severity First" }, { value: "newest", label: "Newest First" }, { value: "oldest", label: "Oldest First" }, { value: "duration", label: "Longest First" }]} /></div>
+              }
             >
               <div className="anomaly-table-scroll">
                 <table className="tbl tbl-clickable anomaly-event-table" style={{ minWidth: 1080 }}>

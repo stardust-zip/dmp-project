@@ -240,4 +240,5 @@ async def get_anomaly_facets():
         "buildings": sorted([str(value) for value in events["building_id"].dropna().unique()]),
         "severities": SEVERITIES,
         "types": sorted([str(value) for value in events["type"].dropna().unique()]),
+        "primary_usage_types": sorted([str(value) for value in events["primary_space_usage"].dropna().unique()]),
     }

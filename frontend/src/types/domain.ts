@@ -168,6 +168,7 @@ export interface AnomalyFacets {
   buildings: string[];
   severities: AnomalySeverity[];
   types: string[];
+  primary_usage_types: string[];
 }
 
 export interface AnomalyTimelinePoint {

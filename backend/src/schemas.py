@@ -215,6 +215,7 @@ class AnomalyFacetsResponse(BaseSchema):
     buildings: list[str]
     severities: list[str]
     types: list[str]
+    primary_usage_types: list[str]
 
 
 class AnomalyTimelinePointResponse(BaseSchema):
