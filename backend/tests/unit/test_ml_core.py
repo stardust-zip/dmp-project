@@ -14,7 +14,7 @@ def test_random_forest_trainer(mock_mlflow):
     )
     y = pd.Series([100, 110, 105, 115])
 
-    trainer = RandomForestTrainer(n_estimators=5)
+    trainer = RandomForestTrainer(model_name="forecasting_test", n_estimators=5)
 
     metrics = trainer.train_and_evaluate(X, y)
 
@@ -24,6 +24,10 @@ def test_random_forest_trainer(mock_mlflow):
 
     mock_mlflow.log_metrics.assert_called_once()
     mock_mlflow.sklearn.log_model.assert_called_once()
+    assert (
+        mock_mlflow.sklearn.log_model.call_args.kwargs["registered_model_name"]
+        == "forecasting_test"
+    )
 
 
 @patch("src.ml.base.mlflow")
