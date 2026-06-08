@@ -4,6 +4,7 @@ import type {
   AnomalyOverview,
   AnomalyTimelineResponse,
 } from "@/types";
+import { authHeaders } from "@/lib/auth-api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/backend";
 
@@ -35,7 +36,10 @@ function params(query: AnomalyQuery = {}) {
 }
 
 async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { signal });
+  const response = await fetch(`${API_BASE}${path}`, {
+    signal,
+    headers: authHeaders(),
+  });
   if (!response.ok) {
     throw new Error(`API request failed: ${response.status}`);
   }
