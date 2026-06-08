@@ -11,6 +11,11 @@ class IngestionStatus(Enum):
     Network_Timeout = "Network_Timeout"
 
 
+class ModelTask(str, Enum):
+    Forecasting = "forecasting"
+    AnomalyDetection = "anomaly_detection"
+
+
 class BaseSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True, use_enum_values=True)
 
@@ -39,6 +44,7 @@ class ModelVersionResponse(BaseSchema):
     name: str
     version: str
     run_id: str
+    model_task: ModelTask | None = None
     metrics: dict[str, float]
     tags: dict[str, str] = Field(default_factory=dict)
     current_stage: str | None = None

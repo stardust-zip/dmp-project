@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from src.database import get_db
 from src.models import AIPipelineLog
 from src.schemas import (
+    ModelTask,
     ModelRollbackRequest,
     ModelRollbackResponse,
     ModelVersionResponse,
@@ -22,6 +23,7 @@ router = APIRouter()
 PRODUCTION_ALIAS = "production"
 ACTIVE_TAG = "active"
 STAGE_TAG = "stage"
+MODEL_TASK_TAG = "model_task"
 
 
 def _mlflow_client() -> MlflowClient:
@@ -39,12 +41,16 @@ def _model_version_response(
             detail="Model version has no associated run ID.",
         )
     run = client.get_run(run_id)
+    tags = dict(getattr(model_version, "tags", {}) or {})
+    run_tags = dict(getattr(run.data, "tags", {}) or {})
+    model_task = tags.get(MODEL_TASK_TAG) or run_tags.get(MODEL_TASK_TAG)
     return ModelVersionResponse(
         name=model_version.name,
         version=str(model_version.version),
         run_id=run_id,
+        model_task=model_task,
         metrics=dict(run.data.metrics),
-        tags=dict(getattr(model_version, "tags", {}) or {}),
+        tags=tags,
         current_stage=getattr(model_version, "current_stage", None),
         creation_timestamp=getattr(model_version, "creation_timestamp", None),
         last_updated_timestamp=getattr(model_version, "last_updated_timestamp", None),
@@ -179,23 +185,35 @@ async def get_model_versions(
 async def trigger_training(
     building_id: str = "Panther_parking_Lorriane",
     metric_type: str = "electricity",
+    model_task: ModelTask = Query(
+        ModelTask.Forecasting,
+        description="ML task to train. Currently only forecasting has an implemented trainer.",
+    ),
     data_source: str = Query(
         "csv", description="Choose 'csv' for baseline or 'db' for live data"
     ),
     current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
 ):
     """
-    Trigger training job for the forecasting model via Celery.
+    Trigger training job for a supported model task via Celery.
     """
+    if model_task != ModelTask.Forecasting:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=f"Training for model_task='{model_task.value}' is not implemented.",
+        )
+
     task = train_model_task.delay(
         target_building_id=building_id,
         metric_type=metric_type,
         data_source=data_source,
+        model_task=model_task.value,
     )
 
     return {
-        "message": f"Training job queued using {data_source} data.",
+        "message": f"{model_task.value} training job queued using {data_source} data.",
         "task_id": task.id,
+        "model_task": model_task.value,
         "triggered_by": current_user.email,
     }
 
@@ -278,6 +296,9 @@ async def get_pipeline_logs(
         {
             "id": str(log.id),
             "type": log.type.name if hasattr(log.type, "name") else log.type,
+            "model_task": (
+                log.model_task.name if hasattr(log.model_task, "name") else log.model_task
+            ),
             "status": log.status.name if hasattr(log.status, "name") else log.status,
             "mlflow_run_id": log.mlflow_run_id,
             "datasource_used": log.datasource_used,
