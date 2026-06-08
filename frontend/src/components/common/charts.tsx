@@ -23,6 +23,13 @@ interface ChartTheme {
 type ChartOption = Record<string, unknown>;
 type ChartBuilder = (theme: ChartTheme, instance: ECharts) => ChartOption;
 type TooltipParam = { axisValue: string | number; name?: string; value: number | [number, number]; color?: string; seriesName?: string };
+type DataZoomSnapshot = {
+  start?: number;
+  end?: number;
+  startValue?: string | number;
+  endValue?: string | number;
+};
+type OptionWithDataZoom = ChartOption & { dataZoom?: Array<Record<string, unknown>> };
 
 function cssVar(name: string) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -64,12 +71,14 @@ export function EChart({
   height = 300,
   themeKey,
   style,
+  preserveDataZoom = false,
 }: {
   build: ChartBuilder;
   deps?: unknown[];
   height?: number;
   themeKey?: string;
   style?: CSSProperties;
+  preserveDataZoom?: boolean;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const instance = useRef<ECharts | null>(null);
@@ -88,8 +97,23 @@ export function EChart({
 
   useEffect(() => {
     if (!instance.current) return;
-    instance.current.setOption(build(chartTheme(), instance.current) as EChartsOption, true);
-  }, [build, themeKey, ...deps]);
+    const zoomState = preserveDataZoom
+      ? ((instance.current.getOption() as { dataZoom?: DataZoomSnapshot[] } | undefined)?.dataZoom ?? []).map((zoom) => ({
+          start: zoom.start,
+          end: zoom.end,
+          startValue: zoom.startValue,
+          endValue: zoom.endValue,
+        }))
+      : [];
+    const nextOption = build(chartTheme(), instance.current) as OptionWithDataZoom;
+    if (preserveDataZoom && Array.isArray(nextOption.dataZoom)) {
+      nextOption.dataZoom = nextOption.dataZoom.map((zoom, index) => ({
+        ...zoom,
+        ...(zoomState[index] ?? {}),
+      }));
+    }
+    instance.current.setOption(nextOption as EChartsOption, true);
+  }, [build, preserveDataZoom, themeKey, ...deps]);
 
   return <div ref={ref} className="chart" style={{ height, width: "100%", ...style }} />;
 }
@@ -274,7 +298,10 @@ function anomalyDotSize(severity: AnomalySeverity) {
   return 7;
 }
 
-export function buildUnifiedAnomalyTimeline(timeline: AnomalyTimelineResponse): ChartBuilder {
+export function buildUnifiedAnomalyTimeline(
+  timeline: AnomalyTimelineResponse,
+  options: { cursorTime?: number; axisMin?: number; axisMax?: number } = {},
+): ChartBuilder {
   return (theme) => {
     const points = [...timeline.points].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const events = timeline.items;
@@ -301,6 +328,22 @@ export function buildUnifiedAnomalyTimeline(timeline: AnomalyTimelineResponse): 
       { xAxis: new Date(gap.start_time).getTime() },
       { xAxis: new Date(gap.end_time).getTime() },
     ]);
+    const cursorMark = options.cursorTime == null
+      ? undefined
+      : {
+          silent: true,
+          symbol: "none",
+          lineStyle: { color: theme.border2, type: "solid", width: 1.4 },
+          label: {
+            show: true,
+            formatter: "Sim time",
+            position: "insideStartTop",
+            color: theme.muted,
+            fontSize: 10,
+            padding: [2, 4],
+          },
+          data: [{ xAxis: options.cursorTime }],
+        };
 
     return {
       grid: { left: 8, right: 16, top: 18, bottom: 54, containLabel: true },
@@ -325,6 +368,8 @@ export function buildUnifiedAnomalyTimeline(timeline: AnomalyTimelineResponse): 
       },
       xAxis: {
         type: "time",
+        min: options.axisMin,
+        max: options.axisMax,
         boundaryGap: false,
         axisLine: { lineStyle: { color: theme.grid } },
         axisTick: { show: false },
@@ -388,6 +433,7 @@ export function buildUnifiedAnomalyTimeline(timeline: AnomalyTimelineResponse): 
             : undefined,
           z: 3,
           tooltip: { show: false },
+          markLine: cursorMark,
         },
         {
           name: "Anomaly",

@@ -43,6 +43,8 @@ export type IconName =
   | "external"
   | "check"
   | "plus"
+  | "play"
+  | "pause"
   | "arrowUp"
   | "arrowDown"
   | "arrowRight"

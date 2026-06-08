@@ -534,6 +534,33 @@ table.tbl tbody tr:last-child td { border-bottom: none; }
 .attention-main span { color: var(--muted); font-size: 11.5px; }
 .attention-meta { color: var(--muted); font-size: 11.5px; }
 .anomaly-event-table tbody td { padding-top: 8px; padding-bottom: 8px; }
+.simulator-panel {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr);
+  gap: 10px 14px;
+  align-items: center;
+  padding: 0 0 14px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.simulator-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.simulator-speed { width: 96px; }
+.simulator-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 9px;
+  min-width: 0;
+  color: var(--muted);
+}
+.simulator-readout b { color: var(--ink); font-size: 12.5px; font-weight: 700; }
+.simulator-slider {
+  grid-column: 1 / -1;
+  width: 100%;
+  accent-color: var(--accent-600);
+  cursor: pointer;
+}
+.simulator-slider:disabled { cursor: not-allowed; opacity: .45; }
 .anomaly-gate { display: flex; align-items: center; justify-content: center; min-height: 320px; padding: 48px 24px; }
 .anomaly-gate-inner { max-width: 440px; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
 .anomaly-gate-icon { width: 52px; height: 52px; border-radius: 14px; background: var(--accent-soft); color: var(--accent-600); display: grid; place-items: center; margin-bottom: 4px; }
@@ -549,4 +576,6 @@ table.tbl tbody tr:last-child td { border-bottom: none; }
 
 @media (max-width: 720px) {
   .anomaly-filter-grid { grid-template-columns: 1fr; }
+  .simulator-panel { grid-template-columns: 1fr; }
+  .simulator-readout { justify-content: flex-start; flex-wrap: wrap; }
 }

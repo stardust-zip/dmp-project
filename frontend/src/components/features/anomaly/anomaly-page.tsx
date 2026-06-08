@@ -5,12 +5,14 @@ import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts"
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@/components/common/primitives";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
-import { getAnomalyEvents, getAnomalyFacets, getAnomalyOverview, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
+import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
 import { clock, fmt, fmt1 } from "@/lib/format";
-import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineResponse, Tone } from "@/types";
+import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
 type DateRange = "all" | "2017" | "2016" | "scored";
 type SortKey = "severity" | "newest" | "oldest" | "duration";
+type SpeedOption = "1" | "6" | "24";
+type SimBounds = { start: number; end: number };
 
 type Filters = {
   site: string;
@@ -22,17 +24,16 @@ type Filters = {
 };
 
 const PER_PAGE = 25;
-
-const EMPTY_OVERVIEW: AnomalyOverview = {
-  total_anomalies: 0,
-  critical_anomalies: 0,
-  buildings_affected: 0,
-  most_affected_site: null,
-  time_min: null,
-  time_max: null,
-  severity_counts: { Critical: 0, High: 0, Medium: 0, Low: 0 },
-  type_counts: {},
-};
+const SIMULATION_FETCH_LIMIT = 5000;
+const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+const TICK_MS = 250;
+const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
+  { value: "1", label: "1h/s" },
+  { value: "6", label: "6h/s" },
+  { value: "24", label: "24h/s" },
+];
+const SEVERITY_RANK: Record<AnomalySeverity, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
 
 const EMPTY_TIMELINE: AnomalyTimelineResponse = { items: [], points: [], gaps: [] };
 
@@ -66,16 +67,95 @@ function severityTone(severity: AnomalySeverity): Tone {
   return "accent";
 }
 
-function queryFrom(filters: Filters, page: number): AnomalyQuery {
+function timeOf(value: string) {
+  return new Date(value).getTime();
+}
+
+function localTimestamp(ts: number) {
+  const d = new Date(ts);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function timelineBounds(timeline: AnomalyTimelineResponse): SimBounds | null {
+  const timestamps = [
+    ...timeline.points.map((point) => timeOf(point.timestamp)),
+    ...timeline.items.map((event) => timeOf(event.start_time)),
+    ...timeline.items.flatMap((event) => (event.end_time ? [timeOf(event.end_time)] : [])),
+    ...timeline.gaps.flatMap((gap) => [timeOf(gap.start_time), timeOf(gap.end_time)]),
+  ].filter(Number.isFinite);
+
+  if (timestamps.length === 0) return null;
+  return { start: Math.min(...timestamps), end: Math.max(...timestamps) };
+}
+
+function clampGap(gap: AnomalyTimelineGap, simNow: number): AnomalyTimelineGap | null {
+  const start = timeOf(gap.start_time);
+  if (!Number.isFinite(start) || start > simNow) return null;
+  const end = Math.min(timeOf(gap.end_time), simNow);
+  return { ...gap, end_time: localTimestamp(end) };
+}
+
+function timelineUntil(timeline: AnomalyTimelineResponse, simNow: number): AnomalyTimelineResponse {
   return {
-    site: filters.site,
-    building: filters.building,
-    severity: filters.severity,
-    type: filters.type,
-    sort: filters.sort,
+    points: timeline.points.filter((point) => timeOf(point.timestamp) <= simNow),
+    items: timeline.items.filter((event) => timeOf(event.start_time) <= simNow),
+    gaps: timeline.gaps.map((gap) => clampGap(gap, simNow)).filter((gap): gap is AnomalyTimelineGap => gap != null),
+  };
+}
+
+function sortEvents(events: AnomalyEvent[], sort: SortKey) {
+  return [...events].sort((a, b) => {
+    if (sort === "oldest") return timeOf(a.start_time) - timeOf(b.start_time);
+    if (sort === "duration") return (b.duration_hours ?? -1) - (a.duration_hours ?? -1);
+    if (sort === "severity") {
+      const bySeverity = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
+      if (bySeverity !== 0) return bySeverity;
+    }
+    return timeOf(b.start_time) - timeOf(a.start_time);
+  });
+}
+
+function overviewFromEvents(events: AnomalyEvent[]): AnomalyOverview {
+  const severity_counts: Record<AnomalySeverity, number> = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+  const type_counts: Record<string, number> = {};
+  const buildings = new Set<string>();
+  const siteCounts = new Map<string, number>();
+  let timeMin: number | null = null;
+  let timeMax: number | null = null;
+
+  events.forEach((event) => {
+    severity_counts[event.severity] += 1;
+    type_counts[event.type] = (type_counts[event.type] ?? 0) + 1;
+    buildings.add(event.building_id);
+    siteCounts.set(event.site_id, (siteCounts.get(event.site_id) ?? 0) + 1);
+    const start = timeOf(event.start_time);
+    if (Number.isFinite(start)) {
+      timeMin = timeMin == null ? start : Math.min(timeMin, start);
+      timeMax = timeMax == null ? start : Math.max(timeMax, start);
+    }
+  });
+
+  const mostAffectedSite = [...siteCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  return {
+    total_anomalies: events.length,
+    critical_anomalies: severity_counts.Critical,
+    buildings_affected: buildings.size,
+    most_affected_site: mostAffectedSite,
+    time_min: timeMin == null ? null : localTimestamp(timeMin),
+    time_max: timeMax == null ? null : localTimestamp(timeMax),
+    severity_counts,
+    type_counts,
+  };
+}
+
+function eventsResponseFrom(events: AnomalyEvent[], page: number): AnomalyEventsResponse {
+  const offset = (page - 1) * PER_PAGE;
+  return {
+    total: events.length,
     limit: PER_PAGE,
-    offset: (page - 1) * PER_PAGE,
-    ...rangeQuery(filters.range),
+    offset,
+    items: events.slice(offset, offset + PER_PAGE),
   };
 }
 
@@ -145,6 +225,67 @@ function SelectionGate({ siteSelected }: { siteSelected: boolean }) {
   );
 }
 
+function SimulationControls({
+  bounds,
+  simNow,
+  isPlaying,
+  speed,
+  disabled,
+  onPlayToggle,
+  onReset,
+  onScrub,
+  onSpeedChange,
+}: {
+  bounds: SimBounds | null;
+  simNow: number | null;
+  isPlaying: boolean;
+  speed: SpeedOption;
+  disabled: boolean;
+  onPlayToggle: () => void;
+  onReset: () => void;
+  onScrub: (value: number) => void;
+  onSpeedChange: (value: SpeedOption) => void;
+}) {
+  const canPlay = !!bounds && simNow != null && bounds.end > bounds.start && !disabled;
+  const progress = bounds && simNow != null && bounds.end > bounds.start
+    ? ((simNow - bounds.start) / (bounds.end - bounds.start)) * 100
+    : 0;
+
+  return (
+    <div className="simulator-panel">
+      <div className="simulator-controls">
+        <button className="btn btn-sm btn-primary" type="button" disabled={!canPlay} onClick={onPlayToggle}>
+          <Icon name={isPlaying ? "pause" : "play"} />
+          {isPlaying ? "Pause" : "Play"}
+        </button>
+        <button className="btn btn-sm" type="button" disabled={!canPlay} onClick={onReset}>
+          <Icon name="refresh" />
+          Reset
+        </button>
+        <div className="simulator-speed">
+          <Select value={speed} onChange={onSpeedChange} disabled={!canPlay} options={SPEED_OPTIONS} />
+        </div>
+      </div>
+      <div className="simulator-readout">
+        <span className="tag-cap">Simulated time</span>
+        <b className="mono">{simNow == null ? "-" : clock(simNow)}</b>
+        <span className="mono muted">{Math.max(0, Math.min(100, progress)).toFixed(0)}%</span>
+      </div>
+      <input
+        className="simulator-slider"
+        type="range"
+        disabled={!canPlay}
+        min={bounds?.start ?? 0}
+        max={bounds?.end ?? 0}
+        step={MINUTE_MS}
+        value={simNow ?? bounds?.start ?? 0}
+        onChange={(event) => onScrub(Number(event.target.value))}
+        aria-label="Simulated time"
+      />
+    </div>
+  );
+}
+
 export function AnomalyPage() {
   const [filters, setFilters] = useState<Filters>({ site: "all", building: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
   const [page, setPage] = useState(1);
@@ -152,17 +293,34 @@ export function AnomalyPage() {
   const [filteredBuildings, setFilteredBuildings] = useState<string[]>([]);
   const allBuildingsRef = useRef<string[]>([]);
   const buildingsBySiteRef = useRef<Record<string, string[]>>({});
-  const [overview, setOverview] = useState<AnomalyOverview>(EMPTY_OVERVIEW);
-  const [events, setEvents] = useState<AnomalyEventsResponse>({ total: 0, limit: PER_PAGE, offset: 0, items: [] });
-  const [timeline, setTimeline] = useState<AnomalyTimelineResponse>(EMPTY_TIMELINE);
+  const [rawTimeline, setRawTimeline] = useState<AnomalyTimelineResponse>(EMPTY_TIMELINE);
+  const [simBounds, setSimBounds] = useState<SimBounds | null>(null);
+  const [simNow, setSimNow] = useState<number | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [speed, setSpeed] = useState<SpeedOption>("6");
   const [selected, setSelected] = useState<AnomalyEvent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const query = useMemo(() => queryFrom(filters, page), [filters, page]);
-  const chartQuery = useMemo<AnomalyQuery>(() => ({ ...queryFrom(filters, 1), limit: 1500, offset: 0, sort: "newest" }), [filters]);
+  const replayQuery = useMemo<AnomalyQuery>(() => ({
+    site: filters.site,
+    building: filters.building,
+    severity: filters.severity,
+    type: filters.type,
+    limit: SIMULATION_FETCH_LIMIT,
+    ...rangeQuery(filters.range),
+  }), [filters]);
 
   const isGated = filters.building === "all";
+  const visibleTimeline = useMemo(() => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)), [rawTimeline, simNow]);
+  const visibleOverview = useMemo(() => overviewFromEvents(visibleTimeline.items), [visibleTimeline.items]);
+  const sortedEvents = useMemo(() => sortEvents(visibleTimeline.items, filters.sort), [filters.sort, visibleTimeline.items]);
+  const totalPages = Math.max(1, Math.ceil(sortedEvents.length / PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const events = useMemo(() => eventsResponseFrom(sortedEvents, safePage), [safePage, sortedEvents]);
+  const attentionEvents = useMemo(() => sortEvents(visibleTimeline.items, "severity"), [visibleTimeline.items]);
+  const typeEntries = Object.entries(visibleOverview.type_counts).slice(0, 6);
+  const visibleSelected = selected && visibleTimeline.items.some((event) => event.id === selected.id) ? selected : null;
 
   // Load all facets on mount
   useEffect(() => {
@@ -206,23 +364,20 @@ export function AnomalyPage() {
 
   // Fetch event data only once a specific building is chosen
   useEffect(() => {
-    if (query.building === "all") {
-      setLoading(false);
+    if (replayQuery.building === "all") {
       return;
     }
     const controller = new AbortController();
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError(null);
-    Promise.all([
-      getAnomalyOverview(query, controller.signal),
-      getAnomalyEvents(query, controller.signal),
-      getAnomalyTimeline(chartQuery, controller.signal),
-    ])
-      .then(([nextOverview, nextEvents, nextTimeline]) => {
-        setOverview(nextOverview);
-        setEvents(nextEvents);
-        setTimeline(nextTimeline);
+    getAnomalyTimeline(replayQuery, controller.signal)
+      .then((nextTimeline) => {
+        const nextBounds = timelineBounds(nextTimeline);
+        setRawTimeline(nextTimeline);
+        setSimBounds(nextBounds);
+        setSimNow(nextBounds?.start ?? null);
+        setIsPlaying(false);
       })
       .catch((err: Error) => {
         if (err.name !== "AbortError") setError(err.message);
@@ -230,15 +385,28 @@ export function AnomalyPage() {
       .finally(() => setLoading(false));
 
     return () => controller.abort();
-  }, [chartQuery, query]);
+  }, [replayQuery]);
+
+  useEffect(() => {
+    if (!isPlaying || !simBounds || simBounds.end <= simBounds.start) return;
+    const interval = window.setInterval(() => {
+      setSimNow((current) => {
+        if (current == null) return current;
+        const next = Math.min(current + Number(speed) * HOUR_MS * (TICK_MS / 1000), simBounds.end);
+        if (next >= simBounds.end) setIsPlaying(false);
+        return next;
+      });
+    }, TICK_MS);
+
+    return () => window.clearInterval(interval);
+  }, [isPlaying, simBounds, speed]);
 
   const set = (key: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [key]: value }));
     setPage(1);
+    setSelected(null);
+    setIsPlaying(false);
   };
-
-  const totalPages = Math.max(1, Math.ceil(events.total / PER_PAGE));
-  const typeEntries = Object.entries(overview.type_counts).slice(0, 6);
 
   const buildingOptions = filters.site === "all"
     ? [{ value: "all" as const, label: "Select a site first" }]
@@ -256,13 +424,15 @@ export function AnomalyPage() {
       <Card
         icon="filter"
         title="Filters"
-        sub={isGated ? "Select a site and building to begin" : `${fmt(events.total)} anomalies match`}
+        sub={isGated ? "Select a site and building to begin" : `${fmt(events.total)} anomalies visible at simulated time`}
         actions={
           <button
             className="btn btn-sm btn-ghost"
             onClick={() => {
               setFilters({ site: "all", building: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
               setPage(1);
+              setSelected(null);
+              setIsPlaying(false);
             }}
           >
             <Icon name="refresh" /> Reset
@@ -320,7 +490,7 @@ export function AnomalyPage() {
               title="Timeline"
               icon="pulse"
               iconTone="red"
-              sub="Actual (solid) vs baseline (dashed). Dots colored by severity."
+              sub="Historical replay reveals points and anomalies up to simulated time."
               actions={
                 <div className="legend">
                   {(["Critical", "High", "Medium", "Low"] as AnomalySeverity[]).map((severity) => (
@@ -336,7 +506,48 @@ export function AnomalyPage() {
                 </div>
               }
             >
-              {loading ? <div className="empty"><Spinner /> Loading timeline...</div> : <EChart build={buildUnifiedAnomalyTimeline(timeline)} deps={[timeline]} themeKey="unified-anomaly" height={312} />}
+              <SimulationControls
+                bounds={simBounds}
+                simNow={simNow}
+                isPlaying={isPlaying}
+                speed={speed}
+                disabled={loading}
+                onPlayToggle={() => {
+                  if (!simBounds || simNow == null) return;
+                  if (simNow >= simBounds.end) setSimNow(simBounds.start);
+                  setIsPlaying((current) => !current);
+                }}
+                onReset={() => {
+                  if (!simBounds) return;
+                  setSimNow(simBounds.start);
+                  setIsPlaying(false);
+                  setPage(1);
+                  setSelected(null);
+                }}
+                onScrub={(value) => {
+                  if (!simBounds) return;
+                  setSimNow(Math.max(simBounds.start, Math.min(simBounds.end, value)));
+                  setIsPlaying(false);
+                  setPage(1);
+                  setSelected(null);
+                }}
+                onSpeedChange={setSpeed}
+              />
+              {loading ? (
+                <div className="empty"><Spinner /> Loading timeline...</div>
+              ) : (
+                <EChart
+                  build={buildUnifiedAnomalyTimeline(visibleTimeline, {
+                    cursorTime: simNow ?? undefined,
+                    axisMin: simBounds?.start,
+                    axisMax: simBounds?.end,
+                  })}
+                  deps={[visibleTimeline, simNow, simBounds?.start, simBounds?.end]}
+                  themeKey="unified-anomaly"
+                  height={312}
+                  preserveDataZoom
+                />
+              )}
             </Card>
 
             <Card
@@ -367,7 +578,7 @@ export function AnomalyPage() {
                       </tr>
                     )}
                     {events.items.map((event) => (
-                      <tr key={event.id} className={selected?.id === event.id ? "sel" : ""} onClick={() => setSelected(event)}>
+                      <tr key={event.id} className={visibleSelected?.id === event.id ? "sel" : ""} onClick={() => setSelected(event)}>
                         <td className="mono" style={{ color: "var(--muted)" }}>{eventTime(event)}</td>
                         <td>{event.site_id}</td>
                         <td className="t-strong">{event.building_id}</td>
@@ -390,11 +601,11 @@ export function AnomalyPage() {
                   Showing <b style={{ color: "var(--ink-2)" }}>{events.total === 0 ? 0 : events.offset + 1}-{Math.min(events.offset + events.limit, events.total)}</b> of <b style={{ color: "var(--ink-2)" }}>{fmt(events.total)}</b>
                 </span>
                 <div className="pager-btns">
-                  <button className="pg" disabled={page === 1} onClick={() => setPage(1)}>{"<<"}</button>
-                  <button className="pg" disabled={page === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}><Icon name="chevLeft" style={{ width: 13, height: 13 }} /></button>
-                  <button className="pg on">{page}</button>
-                  <button className="pg" disabled={page === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}><Icon name="chevRight" style={{ width: 13, height: 13 }} /></button>
-                  <button className="pg" disabled={page === totalPages} onClick={() => setPage(totalPages)}>{">>"}</button>
+                  <button className="pg" disabled={safePage === 1} onClick={() => setPage(1)}>{"<<"}</button>
+                  <button className="pg" disabled={safePage === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}><Icon name="chevLeft" style={{ width: 13, height: 13 }} /></button>
+                  <button className="pg on">{safePage}</button>
+                  <button className="pg" disabled={safePage === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}><Icon name="chevRight" style={{ width: 13, height: 13 }} /></button>
+                  <button className="pg" disabled={safePage === totalPages} onClick={() => setPage(totalPages)}>{">>"}</button>
                 </div>
               </div>
             </Card>
@@ -402,18 +613,18 @@ export function AnomalyPage() {
 
           <aside className="anomaly-rail">
             <Card title="Severity" icon="alert" iconTone="red" sub="Distribution in view">
-              <SeverityMeter overview={overview} />
+              <SeverityMeter overview={visibleOverview} />
             </Card>
 
             <Card title="Attention Queue" icon="flag" iconTone="orange" sub="Highest priority rows">
-              <AttentionQueue events={events.items} onSelect={setSelected} />
+              <AttentionQueue events={attentionEvents} onSelect={setSelected} />
             </Card>
 
             <Card title="Type Profile" icon="layers" sub="Most common event classes">
               <div className="anomaly-type-list">
                 {typeEntries.length === 0 && <div className="empty" style={{ padding: 18 }}>No anomaly types match.</div>}
                 {typeEntries.map(([type, count]) => {
-                  const ratio = overview.total_anomalies ? Math.max(4, (count / overview.total_anomalies) * 100) : 0;
+                  const ratio = visibleOverview.total_anomalies ? Math.max(4, (count / visibleOverview.total_anomalies) * 100) : 0;
                   return (
                     <div className="type-row" key={type}>
                       <div>
@@ -430,7 +641,7 @@ export function AnomalyPage() {
         </div>
       )}
 
-      {selected && <AnomalyEventDrawer event={selected} onClose={() => setSelected(null)} />}
+      {visibleSelected && <AnomalyEventDrawer event={visibleSelected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
