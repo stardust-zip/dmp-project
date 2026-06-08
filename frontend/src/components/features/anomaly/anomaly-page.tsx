@@ -541,8 +541,9 @@ export function AnomalyPage() {
                     cursorTime: simNow ?? undefined,
                     axisMin: simBounds?.start,
                     axisMax: simBounds?.end,
+                    futurePoints: simNow == null ? [] : rawTimeline.points.filter((p) => timeOf(p.timestamp) >= simNow && timeOf(p.timestamp) <= simNow + 6 * 60 * 60 * 1000),
                   })}
-                  deps={[visibleTimeline, simNow, simBounds?.start, simBounds?.end]}
+                  deps={[visibleTimeline, simNow, simBounds?.start, simBounds?.end, rawTimeline.points]}
                   themeKey="unified-anomaly"
                   height={312}
                   preserveDataZoom

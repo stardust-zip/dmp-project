@@ -300,7 +300,7 @@ function anomalyDotSize(severity: AnomalySeverity) {
 
 export function buildUnifiedAnomalyTimeline(
   timeline: AnomalyTimelineResponse,
-  options: { cursorTime?: number; axisMin?: number; axisMax?: number } = {},
+  options: { cursorTime?: number; axisMin?: number; axisMax?: number; futurePoints?: AnomalyTimelineResponse["points"] } = {},
 ): ChartBuilder {
   return (theme) => {
     const points = [...timeline.points].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -313,10 +313,10 @@ export function buildUnifiedAnomalyTimeline(
       new Date(point.timestamp).getTime(),
       point.actual_value == null ? null : point.actual_value,
     ]);
-    const baselineData = points.map((point) => [
-      new Date(point.timestamp).getTime(),
-      point.expected_value == null ? null : point.expected_value,
-    ]);
+    const cursorMs = options.cursorTime;
+    const baselinePastData = points.map((p) => [new Date(p.timestamp).getTime(), p.expected_value ?? null]);
+    const rawFuture = (options.futurePoints ?? []).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const baselineFutureData = rawFuture.map((p) => [new Date(p.timestamp).getTime(), p.expected_value ?? null]);
 
     const markerData = markerEvents.map((e) => ({
       value: [new Date(e.start_time).getTime(), e.actual_value!],
@@ -409,12 +409,24 @@ export function buildUnifiedAnomalyTimeline(
           smooth: 0.35,
           connectNulls: false,
           showSymbol: false,
-          data: baselineData,
+          data: baselinePastData,
           lineStyle: { width: 1.5, color: theme.muted, type: [5, 4] },
           itemStyle: { color: theme.muted },
           z: 2,
           tooltip: { show: false },
         },
+        ...(baselineFutureData.length > 0 ? [{
+          name: "Forecast",
+          type: "line",
+          smooth: 0.35,
+          connectNulls: false,
+          showSymbol: false,
+          data: baselineFutureData,
+          lineStyle: { width: 1.2, color: theme.muted, type: [3, 6], opacity: 0.4 },
+          itemStyle: { color: theme.muted },
+          z: 2,
+          tooltip: { show: false },
+        }] : []),
         {
           name: "Actual Consumption",
           type: "line",
