@@ -8,6 +8,7 @@ dependencies = [
     # Core Data & ML
     "pandas>=2.2.0",
     "numpy>=1.26.0",
+    "pyarrow>=24.0.0",
     "scikit-learn>=1.4.0",
     "xgboost>=2.0.3",
     "statsmodels>=0.14.2",

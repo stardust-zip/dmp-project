@@ -1,4 +1,5 @@
 export type Severity = "critical" | "warning" | "info";
+export type AnomalySeverity = "Low" | "Medium" | "High" | "Critical";
 export type AlertStatus = "Open" | "Acknowledged" | "Resolved";
 export type BuildingStatus = "green" | "yellow" | "red";
 export type Tone = "accent" | "slate" | "red" | "orange" | "green" | "violet" | "amber";
@@ -123,6 +124,52 @@ export interface AnomalySummary {
   tone: Tone;
   delta: number;
   sub: string;
+}
+
+export interface AnomalyEvent {
+  id: string;
+  site_id: string;
+  building_id: string;
+  primary_space_usage?: string | null;
+  timestamp: string;
+  start_time: string;
+  end_time?: string | null;
+  duration_hours?: number | null;
+  severity: AnomalySeverity;
+  type: string;
+  actual_value?: number | null;
+  expected_value?: number | null;
+  deviation_percent?: number | null;
+  reason: string;
+}
+
+export interface AnomalyOverview {
+  total_anomalies: number;
+  critical_anomalies: number;
+  buildings_affected: number;
+  most_affected_site?: string | null;
+  time_min?: string | null;
+  time_max?: string | null;
+  severity_counts: Record<AnomalySeverity, number>;
+  type_counts: Record<string, number>;
+}
+
+export interface AnomalyEventsResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: AnomalyEvent[];
+}
+
+export interface AnomalyFacets {
+  sites: string[];
+  buildings: string[];
+  severities: AnomalySeverity[];
+  types: string[];
+}
+
+export interface AnomalyTimelineResponse {
+  items: AnomalyEvent[];
 }
 
 export interface ForecastKpi {

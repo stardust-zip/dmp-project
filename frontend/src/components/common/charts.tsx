@@ -3,8 +3,9 @@
 import { useEffect, useRef, type CSSProperties } from "react";
 import * as echarts from "echarts";
 import type { ECharts, EChartsOption } from "echarts";
-import { ANOMALY_SERIES, BY_BUILDING, FC_HISTORY, FORECAST, PERF_TREND, TREND, TREND_FC } from "@/lib/mock-data";
+import { ANOMALY_SERIES, BY_BUILDING, FC_HISTORY, FORECAST, TREND, TREND_FC } from "@/lib/mock-data";
 import { clock, clockShort } from "@/lib/format";
+import type { AnomalyEvent, AnomalySeverity } from "@/types";
 
 interface ChartTheme {
   ink: string;
@@ -252,6 +253,90 @@ export function buildAnomalyTimeline(): ChartBuilder {
           itemStyle: { color: theme.accent },
           areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: theme.dark ? "rgba(37,99,235,.28)" : "rgba(37,99,235,.14)" }, { offset: 1, color: "rgba(37,99,235,0)" }]) },
           markPoint: { data: marks, symbol: "circle", label: { show: false } },
+          z: 3,
+        },
+      ],
+    };
+  };
+}
+
+const ANOMALY_SEVERITY_RANK: Record<AnomalySeverity, number> = {
+  Low: 0,
+  Medium: 1,
+  High: 2,
+  Critical: 3,
+};
+
+function anomalyColor(severity: AnomalySeverity, theme: ChartTheme) {
+  if (severity === "Critical") return theme.red;
+  if (severity === "High") return theme.orange;
+  if (severity === "Medium") return "#ca8a04";
+  return theme.accent;
+}
+
+export function buildUnifiedAnomalyTimeline(events: AnomalyEvent[]): ChartBuilder {
+  return (theme) => {
+    const sorted = [...events].sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+    const data = sorted.map((event) => {
+      const start = new Date(event.start_time).getTime();
+      const duration = event.duration_hours ?? 1;
+      return {
+        value: [start, ANOMALY_SEVERITY_RANK[event.severity], duration],
+        event,
+        symbolSize: Math.max(7, Math.min(20, 7 + Math.log2(duration + 1) * 3)),
+        itemStyle: {
+          color: anomalyColor(event.severity, theme),
+          borderColor: theme.surface,
+          borderWidth: 2,
+        },
+      };
+    });
+
+    return {
+      grid: { left: 8, right: 16, top: 18, bottom: 54, containLabel: true },
+      tooltip: {
+        trigger: "item",
+        ...tooltipStyle(theme),
+        formatter: (param: { data: { event: AnomalyEvent } }) => {
+          const event = param.data.event;
+          const actual = event.actual_value == null ? "-" : `${numFmt(event.actual_value)} kWh`;
+          const expected = event.expected_value == null ? "-" : `${numFmt(event.expected_value)} kWh`;
+          const duration = event.duration_hours == null ? "-" : `${Number(event.duration_hours.toFixed(1))}h`;
+          return `<div style="font-weight:650;margin-bottom:4px">${event.type}</div>
+            <div style="font-size:11px;color:${theme.muted};margin-bottom:7px">${event.site_id} / ${event.building_id}<br/>${clock(new Date(event.start_time).getTime())}</div>
+            <div style="display:grid;grid-template-columns:auto auto;gap:3px 12px">
+              <span style="color:${theme.muted}">Severity</span><b>${event.severity}</b>
+              <span style="color:${theme.muted}">Actual</span><b style="font-family:${MONO}">${actual}</b>
+              <span style="color:${theme.muted}">Expected</span><b style="font-family:${MONO}">${expected}</b>
+              <span style="color:${theme.muted}">Duration</span><b style="font-family:${MONO}">${duration}</b>
+            </div>`;
+        },
+      },
+      xAxis: {
+        type: "time",
+        boundaryGap: false,
+        axisLine: { lineStyle: { color: theme.grid } },
+        axisTick: { show: false },
+        axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: true },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: "category",
+        data: ["Low", "Medium", "High", "Critical"],
+        axisLabel: { color: theme.muted, fontSize: 11, fontWeight: 600 },
+        axisLine: { show: false },
+        axisTick: { show: false },
+        splitLine: { lineStyle: { color: theme.grid, type: "dashed" } },
+      },
+      dataZoom: [
+        { type: "inside", start: 0, end: 100 },
+        { type: "slider", start: 0, end: 100, height: 18, bottom: 14, borderColor: theme.grid, fillerColor: theme.dark ? "rgba(37,99,235,.18)" : "rgba(37,99,235,.10)", textStyle: { color: theme.muted, fontSize: 10 } },
+      ],
+      series: [
+        {
+          name: "Anomaly events",
+          type: "scatter",
+          data,
           z: 3,
         },
       ],

@@ -173,3 +173,49 @@ class AlertResponse(BaseModel):
     severity: str
     description: str
     is_resolved: bool
+
+
+class AnomalyEventResponse(BaseSchema):
+    id: str
+    site_id: str
+    building_id: str
+    primary_space_usage: str | None = None
+    timestamp: datetime
+    start_time: datetime
+    end_time: datetime | None = None
+    duration_hours: float | None = None
+    severity: str
+    type: str
+    actual_value: float | None = None
+    expected_value: float | None = None
+    deviation_percent: float | None = None
+    reason: str
+
+
+class AnomalyEventsResponse(BaseSchema):
+    total: int
+    limit: int
+    offset: int
+    items: list[AnomalyEventResponse]
+
+
+class AnomalyOverviewResponse(BaseSchema):
+    total_anomalies: int
+    critical_anomalies: int
+    buildings_affected: int
+    most_affected_site: str | None = None
+    time_min: datetime | None = None
+    time_max: datetime | None = None
+    severity_counts: dict[str, int]
+    type_counts: dict[str, int]
+
+
+class AnomalyFacetsResponse(BaseSchema):
+    sites: list[str]
+    buildings: list[str]
+    severities: list[str]
+    types: list[str]
+
+
+class AnomalyTimelineResponse(BaseSchema):
+    items: list[AnomalyEventResponse]

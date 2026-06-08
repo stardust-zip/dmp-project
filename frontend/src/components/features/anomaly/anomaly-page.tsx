@@ -1,138 +1,203 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { buildAnomalyTimeline, EChart } from "@/components/common/charts";
+import { useEffect, useMemo, useState } from "react";
+import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
-import { Card, Field, Select, SeverityBadge, StatusBadge, toneStyle } from "@/components/common/primitives";
-import { AlertDrawer } from "@/components/features/anomaly/alert-drawer";
-import { ALERTS_ALL, ALERT_TYPES, ANOMALY_SUMMARY, BUILDINGS, SITES } from "@/lib/mock-data";
-import { clock, fmt } from "@/lib/format";
-import type { Alert } from "@/types";
+import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@/components/common/primitives";
+import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
+import { getAnomalyEvents, getAnomalyFacets, getAnomalyOverview, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
+import { clock, fmt, fmt1 } from "@/lib/format";
+import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, Tone } from "@/types";
 
-type SortKey = "ts" | "building" | "actual" | "expected" | "dev" | "sev";
+type DateRange = "all" | "2017" | "2016" | "scored";
+type SortKey = "severity" | "newest" | "oldest" | "duration";
+
 type Filters = {
   site: string;
   building: string;
-  range: string;
   severity: string;
   type: string;
+  range: DateRange;
+  sort: SortKey;
 };
 
-function AnomalySummaryCard({ c }: { c: (typeof ANOMALY_SUMMARY)[number] }) {
-  const positive = c.delta > 0;
+const PER_PAGE = 25;
+
+const EMPTY_OVERVIEW: AnomalyOverview = {
+  total_anomalies: 0,
+  critical_anomalies: 0,
+  buildings_affected: 0,
+  most_affected_site: null,
+  time_min: null,
+  time_max: null,
+  severity_counts: { Critical: 0, High: 0, Medium: 0, Low: 0 },
+  type_counts: {},
+};
+
+function rangeQuery(range: DateRange) {
+  if (range === "scored") return { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" };
+  if (range === "2017") return { start: "2017-01-01T00:00:00", end: "2017-12-31T23:00:00" };
+  if (range === "2016") return { start: "2016-01-01T00:00:00", end: "2016-12-31T23:00:00" };
+  return {};
+}
+
+function eventTime(event: AnomalyEvent) {
+  return clock(new Date(event.start_time).getTime());
+}
+
+function valueCell(value?: number | null) {
+  return value == null ? <span className="muted">-</span> : <span>{fmt(value)}</span>;
+}
+
+function durationLabel(hours?: number | null) {
+  if (hours == null) return "-";
+  if (hours < 24) return `${fmt1(hours)}h`;
+  const days = Math.floor(hours / 24);
+  const rest = Math.round(hours % 24);
+  return rest ? `${days}d ${rest}h` : `${days}d`;
+}
+
+function severityTone(severity: AnomalySeverity): Tone {
+  if (severity === "Critical") return "red";
+  if (severity === "High") return "orange";
+  if (severity === "Medium") return "amber";
+  return "accent";
+}
+
+function queryFrom(filters: Filters, page: number): AnomalyQuery {
+  return {
+    site: filters.site,
+    building: filters.building,
+    severity: filters.severity,
+    type: filters.type,
+    sort: filters.sort,
+    limit: PER_PAGE,
+    offset: (page - 1) * PER_PAGE,
+    ...rangeQuery(filters.range),
+  };
+}
+
+function SeverityMeter({ overview }: { overview: AnomalyOverview }) {
+  const entries: Array<{ severity: AnomalySeverity; label: string }> = [
+    { severity: "Critical", label: "Critical" },
+    { severity: "High", label: "High" },
+    { severity: "Medium", label: "Medium" },
+    { severity: "Low", label: "Low" },
+  ];
+  const max = Math.max(1, ...entries.map(({ severity }) => overview.severity_counts[severity] ?? 0));
+
   return (
-    <div className="kpi">
-      <div className="kpi-top">
-        <span className="kpi-label">{c.label}</span>
-        <span className="kpi-ic" style={toneStyle(c.tone)}>
-          <Icon name={c.icon} />
-        </span>
-      </div>
-      <div className="kpi-val" style={{ fontSize: "calc(var(--kpi-val) + 1px)" }}>{c.value}</div>
-      <div className="kpi-foot">
-        <span className={`delta ${positive ? "up" : "down"}`}>
-          <Icon name={positive ? "arrowUp" : "arrowDown"} style={{ width: 12, height: 12 }} />
-          {positive ? "+" : ""}{c.delta}
-        </span>
-        <span style={{ color: "var(--muted-2)" }}>.</span>
-        <span>{c.sub}</span>
-      </div>
+    <div className="severity-stack">
+      {entries.map(({ severity, label }) => {
+        const count = overview.severity_counts[severity] ?? 0;
+        return (
+          <div className="severity-line" key={severity}>
+            <div className="severity-line-top">
+              <span>{label}</span>
+              <b className="mono">{fmt(count)}</b>
+            </div>
+            <div className="severity-track">
+              <i style={{ width: `${Math.max(4, (count / max) * 100)}%`, background: `var(--anom-${severity.toLowerCase()})` }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AttentionQueue({ events, onSelect }: { events: AnomalyEvent[]; onSelect: (event: AnomalyEvent) => void }) {
+  const rows = events.slice(0, 6);
+  return (
+    <div className="attention-list">
+      {rows.length === 0 && <div className="empty" style={{ padding: 18 }}>No urgent events in this filter.</div>}
+      {rows.map((event) => (
+        <button className="attention-row" key={event.id} type="button" onClick={() => onSelect(event)}>
+          <span className="attention-dot" style={{ background: `var(--anom-${event.severity.toLowerCase()})` }} />
+          <span className="attention-main">
+            <b>{event.building_id}</b>
+            <span>{event.type}</span>
+          </span>
+          <span className="attention-meta mono">{durationLabel(event.duration_hours)}</span>
+        </button>
+      ))}
     </div>
   );
 }
 
 export function AnomalyPage() {
-  const [filters, setFilters] = useState<Filters>({ site: "all", building: "all", range: "7d", severity: "all", type: "all" });
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "ts", dir: "desc" });
+  const [filters, setFilters] = useState<Filters>({ site: "all", building: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
   const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<Alert | null>(null);
-  const perPage = 8;
+  const [facets, setFacets] = useState<AnomalyFacets>({ sites: [], buildings: [], severities: ["Critical", "High", "Medium", "Low"], types: [] });
+  const [overview, setOverview] = useState<AnomalyOverview>(EMPTY_OVERVIEW);
+  const [events, setEvents] = useState<AnomalyEventsResponse>({ total: 0, limit: PER_PAGE, offset: 0, items: [] });
+  const [timeline, setTimeline] = useState<AnomalyEvent[]>([]);
+  const [selected, setSelected] = useState<AnomalyEvent | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const query = useMemo(() => queryFrom(filters, page), [filters, page]);
+  const chartQuery = useMemo<AnomalyQuery>(() => ({ ...queryFrom(filters, 1), limit: 1500, offset: 0, sort: "newest" }), [filters]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getAnomalyFacets(controller.signal)
+      .then(setFacets)
+      .catch((err: Error) => {
+        if (err.name !== "AbortError") setError(err.message);
+      });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    setError(null);
+    Promise.all([
+      getAnomalyOverview(query, controller.signal),
+      getAnomalyEvents(query, controller.signal),
+      getAnomalyTimeline(chartQuery, controller.signal),
+    ])
+      .then(([nextOverview, nextEvents, nextTimeline]) => {
+        setOverview(nextOverview);
+        setEvents(nextEvents);
+        setTimeline(nextTimeline.items);
+      })
+      .catch((err: Error) => {
+        if (err.name !== "AbortError") setError(err.message);
+      })
+      .finally(() => setLoading(false));
+
+    return () => controller.abort();
+  }, [chartQuery, query]);
 
   const set = (key: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [key]: value }));
     setPage(1);
   };
 
-  const buildingOptions = useMemo(() => {
-    const list = filters.site === "all" ? BUILDINGS : BUILDINGS.filter((building) => building.site === filters.site);
-    return [{ value: "all", label: "All Buildings" }, ...list.map((building) => ({ value: building.id, label: building.name }))];
-  }, [filters.site]);
-
-  const filtered = useMemo(() => {
-    const rows = ALERTS_ALL.filter((alert) => {
-      if (filters.site !== "all" && alert.building.site !== filters.site) return false;
-      if (filters.building !== "all" && alert.building.id !== filters.building) return false;
-      if (filters.severity !== "all" && alert.sev !== filters.severity) return false;
-      if (filters.type !== "all" && alert.type !== filters.type) return false;
-      if (search) {
-        const query = search.toLowerCase();
-        return (
-          alert.id.toLowerCase().includes(query) ||
-          alert.building.name.toLowerCase().includes(query) ||
-          alert.meter.toLowerCase().includes(query) ||
-          alert.type.toLowerCase().includes(query)
-        );
-      }
-      return true;
-    });
-    const dir = sort.dir === "asc" ? 1 : -1;
-    return [...rows].sort((a, b) => {
-      const severityRank = { critical: 3, warning: 2, info: 1 };
-      const values = {
-        ts: [a.ts, b.ts],
-        building: [a.building.name, b.building.name],
-        actual: [a.actual ?? 0, b.actual ?? 0],
-        expected: [a.expected ?? 0, b.expected ?? 0],
-        dev: [a.dev ?? 0, b.dev ?? 0],
-        sev: [severityRank[a.sev], severityRank[b.sev]],
-      }[sort.key];
-      const [x, y] = values;
-      if (x < y) return -1 * dir;
-      if (x > y) return 1 * dir;
-      return 0;
-    });
-  }, [filters, search, sort]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
-  const pageRows = filtered.slice((page - 1) * perPage, page * perPage);
-
-  const toggleSort = (key: SortKey) => {
-    setSort((current) => (current.key === key ? { key, dir: current.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
-  };
-
-  const SortTh = ({ k, children, right }: { k: SortKey; children: React.ReactNode; right?: boolean }) => (
-    <th className="sortable" onClick={() => toggleSort(k)} style={right ? { textAlign: "right" } : undefined}>
-      <span className="th-in" style={right ? { flexDirection: "row-reverse" } : undefined}>
-        {children}
-        {sort.key === k && <Icon name={sort.dir === "asc" ? "arrowUp" : "arrowDown"} className="sort-ind" style={{ width: 12, height: 12 }} />}
-      </span>
-    </th>
-  );
+  const totalPages = Math.max(1, Math.ceil(events.total / PER_PAGE));
+  const typeEntries = Object.entries(overview.type_counts).slice(0, 6);
 
   return (
-    <div className="page">
-      <div className="page-head">
+    <div className="page anomaly-page">
+      <div className="page-head anomaly-head">
         <div>
           <h1 className="page-title">Anomaly Detection</h1>
-          <p className="page-sub">Investigate abnormal electricity consumption behavior</p>
-        </div>
-        <div className="page-head-actions">
-          <button className="btn"><Icon name="download" /> Export</button>
-          <button className="btn btn-primary"><Icon name="flag" /> Create Rule</button>
+          <p className="page-sub">Building-level triage by site, hour, severity, and event type</p>
         </div>
       </div>
 
       <Card
         icon="filter"
         title="Filters"
-        sub={`${filtered.length} of ${ALERTS_ALL.length} alerts match`}
+        sub={`${fmt(events.total)} anomalies match`}
         actions={
           <button
             className="btn btn-sm btn-ghost"
             onClick={() => {
-              setFilters({ site: "all", building: "all", range: "7d", severity: "all", type: "all" });
-              setSearch("");
+              setFilters({ site: "all", building: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
               setPage(1);
             }}
           >
@@ -141,115 +206,147 @@ export function AnomalyPage() {
         }
         style={{ marginBottom: "var(--gap)" }}
       >
-        <div className="grid" style={{ gridTemplateColumns: "repeat(5, minmax(0,1fr))", gap: 12 }}>
+        <div className="grid anomaly-filter-grid">
           <Field label="Site">
-            <Select value={filters.site} onChange={(value) => { set("site", value); set("building", "all"); }} options={[{ value: "all", label: "All Sites" }, ...SITES.map((site) => ({ value: site, label: site }))]} />
+            <Select value={filters.site} onChange={(value) => { set("site", value); set("building", "all"); }} options={[{ value: "all", label: "All Sites" }, ...facets.sites.map((site) => ({ value: site, label: site }))]} />
           </Field>
           <Field label="Building">
-            <Select value={filters.building} onChange={(value) => set("building", value)} options={buildingOptions} />
-          </Field>
-          <Field label="Date Range">
-            <Select value={filters.range} onChange={(value) => set("range", value)} options={[{ value: "24h", label: "Last 24 Hours" }, { value: "7d", label: "Last 7 Days" }, { value: "30d", label: "Last 30 Days" }, { value: "90d", label: "Last 90 Days" }]} />
+            <Select value={filters.building} onChange={(value) => set("building", value)} options={[{ value: "all", label: "All Buildings" }, ...facets.buildings.map((building) => ({ value: building, label: building }))]} />
           </Field>
           <Field label="Severity">
-            <Select value={filters.severity} onChange={(value) => set("severity", value)} options={[{ value: "all", label: "All Severities" }, { value: "critical", label: "Critical" }, { value: "warning", label: "Warning" }, { value: "info", label: "Info" }]} />
+            <Select value={filters.severity} onChange={(value) => set("severity", value)} options={[{ value: "all", label: "All Severities" }, ...facets.severities.map((severity) => ({ value: severity, label: severity }))]} />
           </Field>
-          <Field label="Alert Type">
-            <Select value={filters.type} onChange={(value) => set("type", value)} options={[{ value: "all", label: "All Types" }, ...ALERT_TYPES.map((type) => ({ value: type, label: type }))]} />
+          <Field label="Type">
+            <Select value={filters.type} onChange={(value) => set("type", value)} options={[{ value: "all", label: "All Types" }, ...facets.types.map((type) => ({ value: type, label: type }))]} />
+          </Field>
+          <Field label="Date Range">
+            <Select value={filters.range} onChange={(value) => set("range", value)} options={[{ value: "scored", label: "Oct-Dec 2017" }, { value: "2017", label: "2017" }, { value: "2016", label: "2016" }, { value: "all", label: "All Dates" }]} />
+          </Field>
+          <Field label="Sort">
+            <Select value={filters.sort} onChange={(value) => set("sort", value)} options={[{ value: "severity", label: "Severity First" }, { value: "newest", label: "Newest First" }, { value: "oldest", label: "Oldest First" }, { value: "duration", label: "Longest First" }]} />
           </Field>
         </div>
       </Card>
 
-      <Card
-        title="Anomaly Timeline"
-        icon="pulse"
-        iconTone="red"
-        sub="Actual consumption vs. expected baseline - anomalies marked in red"
-        actions={
-          <div className="legend">
-            <span className="leg" style={{ color: "var(--accent-600)" }}><i style={{ background: "var(--accent-600)" }} /> Actual</span>
-            <span className="leg"><i className="dash" style={{ color: "var(--muted)" }} /> Expected Baseline</span>
-            <span className="leg" style={{ color: "var(--red)" }}><i style={{ background: "var(--red)", width: 8, height: 8, borderRadius: "50%" }} /> Anomaly</span>
-          </div>
-        }
-        style={{ marginBottom: "var(--gap)" }}
-      >
-        <EChart build={buildAnomalyTimeline()} deps={[]} themeKey="anomaly" height={320} />
-      </Card>
+      {error && (
+        <div className="empty anomaly-error">
+          Could not load anomaly results. Confirm the backend is running and the notebook exports exist.
+          <div className="mono" style={{ marginTop: 6 }}>{error}</div>
+        </div>
+      )}
 
-      <div className="grid" style={{ gridTemplateColumns: "repeat(4, minmax(0,1fr))", marginBottom: "var(--gap)" }}>
-        {ANOMALY_SUMMARY.map((summary) => <AnomalySummaryCard key={summary.key} c={summary} />)}
+      <div className="grid anomaly-main-grid">
+        <div className="anomaly-workspace">
+          <Card
+            title="Timeline"
+            icon="pulse"
+            iconTone="red"
+            sub="Each marker is one anomaly. Larger markers lasted longer."
+            actions={
+              <div className="legend">
+                {(["Critical", "High", "Medium", "Low"] as AnomalySeverity[]).map((severity) => (
+                  <span className="leg" key={severity}>
+                    <i style={{ background: `var(--anom-${severity.toLowerCase()})`, width: 8, height: 8, borderRadius: "50%" }} />
+                    {severity}
+                  </span>
+                ))}
+              </div>
+            }
+          >
+            {loading ? <div className="empty"><Spinner /> Loading timeline...</div> : <EChart build={buildUnifiedAnomalyTimeline(timeline)} deps={[timeline]} themeKey="unified-anomaly" height={312} />}
+          </Card>
+
+          <Card
+            title="Event Log"
+            icon="table"
+            sub="Click any row to inspect the event"
+            noBody
+            actions={loading ? <span className="muted row" style={{ gap: 6 }}><Spinner /> Loading</span> : undefined}
+          >
+            <div className="anomaly-table-scroll">
+              <table className="tbl tbl-clickable anomaly-event-table" style={{ minWidth: 1080 }}>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Site</th>
+                    <th>Building</th>
+                    <th>Type</th>
+                    <th>Severity</th>
+                    <th style={{ textAlign: "right" }}>Actual</th>
+                    <th style={{ textAlign: "right" }}>Expected</th>
+                    <th style={{ textAlign: "right" }}>Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!loading && events.items.length === 0 && (
+                    <tr>
+                      <td colSpan={8}><div className="empty">No anomalies match your filters.</div></td>
+                    </tr>
+                  )}
+                  {events.items.map((event) => (
+                    <tr key={event.id} className={selected?.id === event.id ? "sel" : ""} onClick={() => setSelected(event)}>
+                      <td className="mono" style={{ color: "var(--muted)" }}>{eventTime(event)}</td>
+                      <td>{event.site_id}</td>
+                      <td className="t-strong">{event.building_id}</td>
+                      <td>
+                        <span className="type-chip" style={toneStyle(severityTone(event.severity))}>
+                          {event.type}
+                        </span>
+                      </td>
+                      <td><AnomalySeverityBadge severity={event.severity} /></td>
+                      <td className="mono" style={{ textAlign: "right" }}>{valueCell(event.actual_value)}</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{valueCell(event.expected_value)}</td>
+                      <td className="mono" style={{ textAlign: "right" }}>{durationLabel(event.duration_hours)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="pager">
+              <span>
+                Showing <b style={{ color: "var(--ink-2)" }}>{events.total === 0 ? 0 : events.offset + 1}-{Math.min(events.offset + events.limit, events.total)}</b> of <b style={{ color: "var(--ink-2)" }}>{fmt(events.total)}</b>
+              </span>
+              <div className="pager-btns">
+                <button className="pg" disabled={page === 1} onClick={() => setPage(1)}>{"<<"}</button>
+                <button className="pg" disabled={page === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}><Icon name="chevLeft" style={{ width: 13, height: 13 }} /></button>
+                <button className="pg on">{page}</button>
+                <button className="pg" disabled={page === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}><Icon name="chevRight" style={{ width: 13, height: 13 }} /></button>
+                <button className="pg" disabled={page === totalPages} onClick={() => setPage(totalPages)}>{">>"}</button>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        <aside className="anomaly-rail">
+          <Card title="Severity" icon="alert" iconTone="red" sub="Distribution in view">
+            <SeverityMeter overview={overview} />
+          </Card>
+
+          <Card title="Attention Queue" icon="flag" iconTone="orange" sub="Highest priority rows">
+            <AttentionQueue events={events.items} onSelect={setSelected} />
+          </Card>
+
+          <Card title="Type Profile" icon="layers" sub="Most common event classes">
+            <div className="anomaly-type-list">
+              {typeEntries.length === 0 && <div className="empty" style={{ padding: 18 }}>No anomaly types match.</div>}
+              {typeEntries.map(([type, count]) => {
+                const ratio = overview.total_anomalies ? Math.max(4, (count / overview.total_anomalies) * 100) : 0;
+                return (
+                  <div className="type-row" key={type}>
+                    <div>
+                      <b>{type}</b>
+                      <span className="mono">{fmt(count)}</span>
+                    </div>
+                    <div className="bar"><i style={{ width: `${ratio}%`, background: "var(--accent-600)" }} /></div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </aside>
       </div>
 
-      <Card
-        title="Alert Log"
-        icon="table"
-        sub="Click any row to investigate"
-        actions={
-          <div className="search" style={{ width: 220 }}>
-            <Icon name="search" />
-            <input placeholder="Search alerts, meters, buildings..." value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} />
-          </div>
-        }
-        noBody
-      >
-        <div style={{ overflowX: "auto" }}>
-          <table className="tbl tbl-clickable" style={{ minWidth: 920 }}>
-            <thead>
-              <tr>
-                <SortTh k="ts">Timestamp</SortTh>
-                <SortTh k="building">Building</SortTh>
-                <th>Meter ID</th>
-                <SortTh k="actual" right>Actual</SortTh>
-                <SortTh k="expected" right>Expected</SortTh>
-                <SortTh k="dev" right>Deviation</SortTh>
-                <th>Anomaly Type</th>
-                <SortTh k="sev">Severity</SortTh>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pageRows.length === 0 && (
-                <tr>
-                  <td colSpan={9}><div className="empty">No alerts match your filters.</div></td>
-                </tr>
-              )}
-              {pageRows.map((alert) => (
-                <tr key={alert.id} className={selected?.id === alert.id ? "sel" : ""} onClick={() => setSelected(alert)}>
-                  <td className="mono" style={{ color: "var(--muted)" }}>{clock(alert.ts)}</td>
-                  <td className="t-strong">{alert.building.name}</td>
-                  <td className="mono meter-id">{alert.meter}</td>
-                  <td className="mono" style={{ textAlign: "right" }}>{alert.actual != null ? fmt(alert.actual) : "-"}</td>
-                  <td className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{alert.expected != null ? fmt(alert.expected) : "-"}</td>
-                  <td className="mono" style={{ textAlign: "right" }}>
-                    {alert.dev == null ? <span className="muted">-</span> : <span className={alert.dev > 0 ? "dev-pos" : "dev-neg"}>{alert.dev > 0 ? "+" : ""}{alert.dev.toFixed(1)}%</span>}
-                  </td>
-                  <td>{alert.type}</td>
-                  <td><SeverityBadge sev={alert.sev} /></td>
-                  <td><StatusBadge status={alert.status} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="pager">
-          <span>
-            Showing <b style={{ color: "var(--ink-2)" }}>{filtered.length === 0 ? 0 : (page - 1) * perPage + 1}-{Math.min(page * perPage, filtered.length)}</b> of <b style={{ color: "var(--ink-2)" }}>{filtered.length}</b>
-          </span>
-          <div className="pager-btns">
-            <button className="pg" disabled={page === 1} onClick={() => setPage(1)}>{"<<"}</button>
-            <button className="pg" disabled={page === 1} onClick={() => setPage((current) => current - 1)}><Icon name="chevLeft" style={{ width: 13, height: 13 }} /></button>
-            {Array.from({ length: Math.min(totalPages, 7) }).map((_, index) => {
-              const pageNumber = index + 1;
-              return <button key={pageNumber} className={`pg${pageNumber === page ? " on" : ""}`} onClick={() => setPage(pageNumber)}>{pageNumber}</button>;
-            })}
-            <button className="pg" disabled={page === totalPages} onClick={() => setPage((current) => current + 1)}><Icon name="chevRight" style={{ width: 13, height: 13 }} /></button>
-            <button className="pg" disabled={page === totalPages} onClick={() => setPage(totalPages)}>{">>"}</button>
-          </div>
-        </div>
-      </Card>
-
-      {selected && <AlertDrawer alert={selected} onClose={() => setSelected(null)} />}
+      {selected && <AnomalyEventDrawer event={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }

@@ -5,6 +5,7 @@
 mlflow_artifacts/
 mlruns/
 .ipynb_checkpoints/
+.venv/
 
 personal_docs/
 
@@ -16,7 +17,12 @@ grafana_data/
 /data
 
 # Claude Code Plugins
+*/.omc/
 .omc/
+.claude/
+*/.codegraph/
 
 # Jetbrains
 .idea
+
+
