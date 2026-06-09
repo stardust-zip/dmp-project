@@ -27,6 +27,7 @@ function routeLabel(pathname: string) {
   if (pathname.startsWith("/anomaly")) return "Anomaly Detection";
   if (pathname.startsWith("/forecast")) return "Forecasting";
   if (pathname.startsWith("/models")) return "AI Engineering";
+  if (pathname.startsWith("/assets")) return "Sites & Meters";
   return "Dashboard";
 }
 
@@ -103,10 +104,6 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <div className="sb-section">Workspace</div>
         <nav className="sb-nav">
-          <button className="sb-item" title="Sites">
-            <Icon name="map" />
-            <span>Sites &amp; Meters</span>
-          </button>
           <button className="sb-item" title="Reports">
             <Icon name="doc" />
             <span>Reports</span>
