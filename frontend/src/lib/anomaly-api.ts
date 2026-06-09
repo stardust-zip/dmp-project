@@ -54,6 +54,7 @@ export function getAnomalyTimeline(query: AnomalyQuery, signal?: AbortSignal) {
   return apiGet<AnomalyTimelineResponse>(`/api/v1/anomalies/timeline${params(query)}`, signal);
 }
 
-export function getAnomalyFacets(signal?: AbortSignal) {
-  return apiGet<AnomalyFacets>("/api/v1/anomalies/facets", signal);
+export function getAnomalyFacets(site?: string, signal?: AbortSignal) {
+  const qs = site && site !== "all" ? `?site_id=${encodeURIComponent(site)}` : "";
+  return apiGet<AnomalyFacets>(`/api/v1/anomalies/facets${qs}`, signal);
 }

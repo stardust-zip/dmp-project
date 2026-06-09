@@ -7,6 +7,7 @@ from src.ml.anomaly_events import (
     SEVERITIES,
     event_records,
     filter_events,
+    filter_series,
     load_anomaly_events,
     sort_events,
 )
@@ -44,6 +45,120 @@ def _filtered(
         start=_query_time(start),
         end=_query_time(end),
     )
+
+
+def _clip_interval(
+    interval_start: pd.Timestamp,
+    interval_end: pd.Timestamp,
+    window_start: pd.Timestamp | None,
+    window_end: pd.Timestamp | None,
+) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    if pd.isna(interval_start) or pd.isna(interval_end):
+        return None
+    start_value = max(interval_start, window_start) if window_start is not None else interval_start
+    end_value = min(interval_end, window_end) if window_end is not None else interval_end
+    if end_value < start_value:
+        return None
+    return start_value, end_value
+
+
+def _merge_gaps(
+    gaps: list[tuple[pd.Timestamp, pd.Timestamp]],
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    if not gaps:
+        return []
+
+    merged: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for start_value, end_value in sorted(gaps, key=lambda item: item[0]):
+        if not merged or start_value > merged[-1][1]:
+            merged.append((start_value, end_value))
+            continue
+        merged[-1] = (merged[-1][0], max(merged[-1][1], end_value))
+    return merged
+
+
+def _timeline_points_and_gaps(
+    *,
+    site_id: str | None,
+    building_id: str | None,
+    events: pd.DataFrame,
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[list[dict], list[dict]]:
+    if not building_id:
+        return [], []
+
+    window_start = _query_time(start)
+    window_end = _query_time(end)
+    series = filter_series(
+        site_id=site_id,
+        building_id=building_id,
+        start=window_start,
+        end=window_end,
+    )
+
+    points: list[dict] = []
+    raw_gaps: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+
+    if not series.empty:
+        series = (
+            series.dropna(subset=["timestamp"])
+            .sort_values("timestamp")
+            .groupby("timestamp", as_index=True)
+            .agg({"actual_value": "last", "expected_value": "last"})
+        )
+        first_ts = window_start if window_start is not None else series.index.min()
+        last_ts = window_end if window_end is not None else series.index.max()
+        if first_ts is not None and last_ts is not None and last_ts >= first_ts:
+            hourly_index = pd.date_range(
+                first_ts.floor("h"),
+                last_ts.floor("h"),
+                freq="h",
+            )
+            dense = series.reindex(hourly_index)
+            missing_start: pd.Timestamp | None = None
+            missing_end: pd.Timestamp | None = None
+
+            for ts, row in dense.iterrows():
+                actual = row["actual_value"]
+                expected = row["expected_value"]
+                points.append(
+                    {
+                        "timestamp": ts.to_pydatetime(),
+                        "actual_value": None if pd.isna(actual) else float(actual),
+                        "expected_value": None if pd.isna(expected) else float(expected),
+                    }
+                )
+
+                if pd.isna(actual):
+                    missing_start = ts if missing_start is None else missing_start
+                    missing_end = ts + pd.Timedelta(hours=1)
+                elif missing_start is not None and missing_end is not None:
+                    raw_gaps.append((missing_start, missing_end))
+                    missing_start = None
+                    missing_end = None
+
+            if missing_start is not None and missing_end is not None:
+                raw_gaps.append((missing_start, missing_end))
+
+    missing_events = events[events["actual_value"].isna()]
+    for row in missing_events.itertuples(index=False):
+        start_value = pd.Timestamp(row.start_time)
+        end_source = row.end_time if row.end_time is not None and not pd.isna(row.end_time) else row.start_time
+        end_value = pd.Timestamp(end_source)
+        clipped = _clip_interval(start_value, end_value, window_start, window_end)
+        if clipped is not None:
+            raw_gaps.append(clipped)
+
+    gaps = [
+        {
+            "start_time": start_value.to_pydatetime(),
+            "end_time": end_value.to_pydatetime(),
+            "reason": "Missing actual data",
+        }
+        for start_value, end_value in _merge_gaps(raw_gaps)
+    ]
+    return points, gaps
 
 
 @router.get("/overview", response_model=AnomalyOverviewResponse)
@@ -106,8 +221,15 @@ async def get_anomaly_timeline(
     limit: int = Query(1000, ge=1, le=5000),
 ):
     events = _filtered(site_id, building_id, severity, type, start, end)
-    events = sort_events(events, "newest").head(limit)
-    return {"items": event_records(events)}
+    timeline_events = sort_events(events, "newest").head(limit)
+    points, gaps = _timeline_points_and_gaps(
+        site_id=site_id,
+        building_id=building_id,
+        events=events,
+        start=start,
+        end=end,
+    )
+    return {"items": event_records(timeline_events), "points": points, "gaps": gaps}
 
 
 @router.get("/facets", response_model=AnomalyFacetsResponse)
@@ -118,4 +240,5 @@ async def get_anomaly_facets():
         "buildings": sorted([str(value) for value in events["building_id"].dropna().unique()]),
         "severities": SEVERITIES,
         "types": sorted([str(value) for value in events["type"].dropna().unique()]),
+        "primary_usage_types": sorted([str(value) for value in events["primary_space_usage"].dropna().unique()]),
     }

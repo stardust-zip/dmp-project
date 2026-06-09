@@ -43,6 +43,8 @@ export type IconName =
   | "external"
   | "check"
   | "plus"
+  | "play"
+  | "pause"
   | "arrowUp"
   | "arrowDown"
   | "arrowRight"
@@ -166,10 +168,25 @@ export interface AnomalyFacets {
   buildings: string[];
   severities: AnomalySeverity[];
   types: string[];
+  primary_usage_types: string[];
+}
+
+export interface AnomalyTimelinePoint {
+  timestamp: string;
+  actual_value?: number | null;
+  expected_value?: number | null;
+}
+
+export interface AnomalyTimelineGap {
+  start_time: string;
+  end_time: string;
+  reason: string;
 }
 
 export interface AnomalyTimelineResponse {
   items: AnomalyEvent[];
+  points: AnomalyTimelinePoint[];
+  gaps: AnomalyTimelineGap[];
 }
 
 export interface ForecastKpi {

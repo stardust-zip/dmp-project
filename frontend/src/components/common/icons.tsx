@@ -41,6 +41,8 @@ const ICONS: Record<IconName, string[]> = {
   external: ["M15 3h6v6", "M10 14 21 3", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"],
   check: ["M20 6 9 17l-5-5"],
   plus: ["M12 5v14", "M5 12h14"],
+  play: ["M8 5v14l11-7z"],
+  pause: ["M8 5v14", "M16 5v14"],
   arrowUp: ["M12 19V5", "M5 12l7-7 7 7"],
   arrowDown: ["M12 5v14", "M5 12l7 7 7-7"],
   arrowRight: ["M5 12h14", "M13 5l7 7-7 7"],

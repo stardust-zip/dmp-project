@@ -4,7 +4,9 @@ from src.core.config import settings
 from src.ml.anomaly_events import (
     event_records,
     filter_events,
+    filter_series,
     load_anomaly_events,
+    load_anomaly_series,
     sort_events,
 )
 
@@ -103,3 +105,18 @@ def test_filter_sort_and_serialize_anomaly_events(tmp_path, monkeypatch):
     assert records[0]["deviation_percent"] == 100.0
 
     load_anomaly_events.cache_clear()
+
+
+def test_filter_series_keeps_non_anomaly_points(tmp_path, monkeypatch):
+    _write_fixture_exports(tmp_path)
+    monkeypatch.setattr(settings, "ANOMALY_DATA_DIR", str(tmp_path))
+    load_anomaly_series.cache_clear()
+
+    series = filter_series(site_id="S2", building_id="B2")
+
+    assert len(series) == 2
+    assert series["is_anomaly"].tolist() == [True, False]
+    assert series["actual_value"].tolist() == [200.0, 99.0]
+    assert series["expected_value"].tolist() == [100.0, 100.0]
+
+    load_anomaly_series.cache_clear()
