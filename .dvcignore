@@ -3,3 +3,4 @@
 # https://dvc.org/doc/user-guide/dvcignore
 
 .ipynb_checkpoints/
+.Trash-0/
