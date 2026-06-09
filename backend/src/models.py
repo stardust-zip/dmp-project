@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    PrimaryKeyConstraint,
     String,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -138,6 +139,23 @@ class Device(StringIDMixin, Base):
     # Relationships
     location = relationship("Location", back_populates="devices")
     type = relationship("DeviceType")
+    metric_capabilities = relationship(
+        "DeviceMetricCapability",
+        cascade="all, delete-orphan",
+        back_populates="device",
+    )
+
+
+class DeviceMetricCapability(SQLAlchemyKwargsMixin, Base):
+    __tablename__ = "device_metric_capability"
+    device_id = Column(String, ForeignKey("device.id"), nullable=False)
+    metric_type_id = Column(String, ForeignKey("metric_type.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
+    __table_args__ = (PrimaryKeyConstraint("device_id", "metric_type_id"),)
+
+    device = relationship("Device", back_populates="metric_capabilities")
+    metric_type = relationship("MetricType")
 
 
 # -----------------------------------------

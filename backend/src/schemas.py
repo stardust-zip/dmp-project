@@ -185,6 +185,54 @@ class LocationCreate(BaseSchema):
     )
 
 
+class SiteCreate(BaseSchema):
+    id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    metadata: dict[str, Any] | None = None
+
+
+class BuildingCreate(BaseSchema):
+    id: str = Field(..., min_length=1)
+    site_id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    location_type_id: str = Field(default="building", min_length=1)
+    metadata: dict[str, Any] | None = None
+
+
+class LocationUpdate(BaseSchema):
+    name: str | None = Field(default=None, min_length=1)
+    parent_id: str | None = Field(default=None, min_length=1)
+    location_type_id: str | None = Field(default=None, min_length=1)
+    metadata: dict[str, Any] | None = None
+    archived: bool | None = None
+
+
+class LocationResponse(BaseSchema):
+    id: str
+    parent_id: str | None = None
+    name: str
+    location_type: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    archived: bool = False
+
+
+class MetricTypeCreate(BaseSchema):
+    id: str = Field(..., min_length=1)
+    unit: str | None = None
+    description: str | None = None
+
+
+class MetricTypeUpdate(BaseSchema):
+    unit: str | None = None
+    description: str | None = None
+
+
+class MetricTypeResponse(BaseSchema):
+    id: str
+    unit: str | None = None
+    description: str | None = None
+
+
 class DeviceCreate(BaseSchema):
     """Payload for registering a new virtual sensor/meter for a building."""
 
@@ -195,6 +243,29 @@ class DeviceCreate(BaseSchema):
     location_id: str = Field(..., description="Must match a Location ID")
     device_type_id: str = Field(default="virtual_meter")
     status: str = Field(default="Active")
+
+
+class DeviceRegisterRequest(BaseSchema):
+    id: str = Field(..., min_length=1)
+    building_id: str = Field(..., min_length=1)
+    device_type_id: str = Field(default="virtual_meter", min_length=1)
+    status: str = Field(default="Active", min_length=1)
+    metric_type_ids: list[str] = Field(default_factory=list)
+
+
+class DeviceUpdate(BaseSchema):
+    building_id: str | None = Field(default=None, min_length=1)
+    device_type_id: str | None = Field(default=None, min_length=1)
+    status: str | None = Field(default=None, min_length=1)
+    metric_type_ids: list[str] | None = None
+
+
+class DeviceResponse(BaseSchema):
+    id: str
+    building_id: str
+    device_type_id: str
+    status: str
+    metric_type_ids: list[str] = Field(default_factory=list)
 
 
 # -----------------------------------------
