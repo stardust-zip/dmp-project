@@ -24,6 +24,9 @@ STAGE1_TYPE_LABELS = {
 
 
 def _project_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
     return Path(__file__).resolve().parents[3]
 
 
