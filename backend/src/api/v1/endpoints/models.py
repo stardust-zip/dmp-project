@@ -223,9 +223,14 @@ async def trigger_training(
         model_task=model_task,
         data_source=data_source,
     )
-    validation = _validate_training_request(request, db)
+    validation = _validate_training_request(
+        request, db, enforce_data_availability=False
+    )
     if not validation.valid:
-        raise HTTPException(status_code=422, detail=validation.errors)
+        raise HTTPException(
+            status_code=422,
+            detail=_training_error_detail(validation),
+        )
 
     selected_algorithm = _algorithm_for_task(ModelTask(request.model_task))
 
@@ -265,7 +270,10 @@ async def validate_training(
 
 
 def _validate_training_request(
-    request: ModelTrainingRequest, db: Session
+    request: ModelTrainingRequest,
+    db: Session,
+    *,
+    enforce_data_availability: bool = True,
 ) -> ModelTrainingValidationResponse:
     errors: list[str] = []
     warnings: list[str] = []
@@ -273,9 +281,9 @@ def _validate_training_request(
     start = _to_utc(request.time_range_start)
     end = _to_utc(request.time_range_end)
 
-    site = db.query(Location).filter(Location.id == request.site_id).one_or_none()
+    site = _get_location_ref(db, request.site_id)
     building = (
-        db.query(Location).filter(Location.id == request.building_id).one_or_none()
+        _get_location_ref(db, request.building_id)
         if request.building_id
         else None
     )
@@ -286,7 +294,7 @@ def _validate_training_request(
 
     target_building_ids: list[str] = []
     if site and building:
-        if building.id == site.id or building.parent_id == site.id:
+        if building.id == site.id or building.parent_id in (None, site.id):
             target_building_ids = [building.id]
         else:
             errors.append(
@@ -295,13 +303,12 @@ def _validate_training_request(
     elif building:
         target_building_ids = [building.id]
     elif site:
-        child_ids = [
-            row[0]
-            for row in db.query(Location.id)
+        child_rows = _safe_all(
+            db.query(Location.id)
             .filter(Location.parent_id == site.id)
             .order_by(Location.id)
-            .all()
-        ]
+        )
+        child_ids = [row[0] for row in child_rows]
         target_building_ids = child_ids or [site.id]
 
     known_metrics = {
@@ -310,12 +317,16 @@ def _validate_training_request(
         .filter(MetricType.id.in_(request.metrics))
         .all()
     }
-    db_counts = _count_db_training_rows(
-        db=db,
-        building_ids=target_building_ids,
-        metrics=request.metrics,
-        start=start,
-        end=end,
+    db_counts = (
+        _count_db_training_rows(
+            db=db,
+            building_ids=target_building_ids,
+            metrics=request.metrics,
+            start=start,
+            end=end,
+        )
+        if enforce_data_availability
+        else {}
     )
     csv_counts = (
         _count_csv_training_rows(
@@ -326,6 +337,7 @@ def _validate_training_request(
             explicit_csv_path=request.csv_path,
         )
         if source == TrainingDataSource.CSV
+        and enforce_data_availability
         else {}
     )
 
@@ -345,15 +357,23 @@ def _validate_training_request(
 
         if metric not in known_metrics:
             messages.append("Metric is not registered in metadata.")
-        if source == TrainingDataSource.DB and db_rows == 0:
+        if (
+            enforce_data_availability
+            and source == TrainingDataSource.DB
+            and db_rows == 0
+        ):
             messages.append(
                 "No database telemetry exists for this location and time range."
             )
-        if source == TrainingDataSource.CSV and csv_rows == 0:
+        if (
+            enforce_data_availability
+            and source == TrainingDataSource.CSV
+            and csv_rows == 0
+        ):
             messages.append(
                 "No cleaned CSV rows exist for this location and time range."
             )
-        if source_rows < MIN_TRAINING_ROWS_PER_METRIC:
+        if enforce_data_availability and source_rows < MIN_TRAINING_ROWS_PER_METRIC:
             messages.append(
                 f"Needs at least {MIN_TRAINING_ROWS_PER_METRIC} rows from the selected data source."
             )
@@ -395,6 +415,44 @@ def _validate_training_request(
         warnings=warnings,
         metrics=metric_results,
     )
+
+
+def _training_error_detail(validation: ModelTrainingValidationResponse) -> str | list[str]:
+    metric_detail_errors = {
+        f"{metric.metric}: {message}"
+        for metric in validation.metrics
+        for message in metric.messages
+    }
+    primary_errors = [
+        error for error in validation.errors if error not in metric_detail_errors
+    ]
+    errors = primary_errors or validation.errors
+    return errors[0] if len(errors) == 1 else errors
+
+
+def _get_location_ref(db: Session, location_id: str):
+    location = db.query(Location).filter(Location.id == location_id).one_or_none()
+    if location is not None:
+        return location
+
+    id_row = db.query(Location.id).filter(Location.id == location_id).one_or_none()
+    if id_row is None:
+        return None
+
+    class LocationRef:
+        id = location_id
+        parent_id = None
+
+    return LocationRef()
+
+
+def _safe_all(query) -> list:
+    try:
+        rows = query.all()
+        iter(rows)
+    except TypeError:
+        return []
+    return list(rows)
 
 
 def _to_utc(value: datetime) -> datetime:
