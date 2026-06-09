@@ -149,7 +149,6 @@ services:
     volumes:
       - ./frontend:/app/frontend
       - frontend_node_modules:/app/frontend/node_modules
-      - frontend_next:/app/frontend/.next
     depends_on:
       - backend
     networks:
@@ -258,4 +257,3 @@ volumes:
   grafana_data:
   dbgate_data:
   frontend_node_modules:
-  frontend_next:
