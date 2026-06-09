@@ -8,7 +8,7 @@ import { AlertFeed } from "@/components/features/anomaly/anomaly-alert-feed";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
 import { useAlerts } from "@/hooks/use-alerts";
 import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
-import { clock, fmt } from "@/lib/format";
+import { clock, fmt, fmtKwh } from "@/lib/format";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
 type DateRange = "all" | "2017" | "2016" | "scored";
@@ -53,7 +53,7 @@ function eventTime(event: AnomalyEvent) {
 }
 
 function valueCell(value?: number | null) {
-  return value == null ? <span className="muted">-</span> : <span>{fmt(value)}</span>;
+  return value == null ? <span className="muted">-</span> : <span>{fmtKwh(value)}</span>;
 }
 
 function severityTone(severity: AnomalySeverity): Tone {

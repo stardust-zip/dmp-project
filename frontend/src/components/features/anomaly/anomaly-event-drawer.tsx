@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, toneStyle } from "@/components/common/primitives";
-import { clock, fmt, fmt1 } from "@/lib/format";
+import { clock, fmt, fmt1, fmtKwh } from "@/lib/format";
 import type { AnomalyEvent } from "@/types";
 
 function asTime(value: string) {
@@ -11,7 +11,7 @@ function asTime(value: string) {
 }
 
 function valueLabel(value?: number | null) {
-  return value == null ? "-" : `${fmt(value)} kWh`;
+  return value == null ? "-" : `${fmtKwh(value)} kWh`;
 }
 
 const HOUR_MS = 3_600_000;
