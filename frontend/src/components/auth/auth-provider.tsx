@@ -18,8 +18,14 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<AuthSession | null>(() => readStoredSession());
-  const [status, setStatus] = useState<AuthStatus>(() => (readStoredSession() ? "authenticated" : "unauthenticated"));
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [status, setStatus] = useState<AuthStatus>("loading");
+
+  useEffect(() => {
+    const storedSession = readStoredSession();
+    setSession(storedSession);
+    setStatus(storedSession ? "authenticated" : "unauthenticated");
+  }, []);
 
   useEffect(() => {
     if (!session) return undefined;
