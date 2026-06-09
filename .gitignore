@@ -5,6 +5,7 @@
 mlflow_artifacts/
 mlruns/
 .ipynb_checkpoints/
+.Trash-0/
 .venv/
 
 personal_docs/
@@ -24,5 +25,3 @@ grafana_data/
 
 # Jetbrains
 .idea
-
-

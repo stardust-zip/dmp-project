@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { AuthGate } from "@/components/auth/auth-gate";
+import { AuthProvider } from "@/components/auth/auth-provider";
 import { AppShell } from "@/components/common/app-shell";
 import "@/styles/globals.css";
 
@@ -12,7 +14,11 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="en">
       <body>
-        <AppShell>{children}</AppShell>
+        <AuthProvider>
+          <AuthGate>
+            <AppShell>{children}</AppShell>
+          </AuthGate>
+        </AuthProvider>
       </body>
     </html>
   );

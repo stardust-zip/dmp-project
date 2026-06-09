@@ -4,18 +4,32 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import ValidationError
-from src.api.v1.endpoints.auth import MOCK_DB
+from sqlalchemy.orm import Session
+
+from src import models
 from src.core.config import settings
+from src.database import get_db
 from src.schemas import TokenPayload, UserResponse
 from starlette.status import HTTP_403_FORBIDDEN
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
 
-def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]) -> UserResponse:
+def to_user_response(user: models.User) -> UserResponse:
+    return UserResponse(
+        id=str(user.id),
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+    )
+
+
+def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)],
+    db: Annotated[Session, Depends(get_db)],
+) -> UserResponse:
     """
     Decodes token and fetches user.
-    After the demo, just swap `MOCK_DB.get()` with `db.query(User).filter(...)`.
     """
     try:
         payload = jwt.decode(
@@ -33,13 +47,15 @@ def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]) -> UserRespo
             status_code=HTTP_403_FORBIDDEN, detail="Token missing subject"
         )
 
-    # --- DEMO SPECIFIC LOGIC ---
-    # TODO: Replace with real DB session injection and query
-    user_data = MOCK_DB.get(token_data.sub)
-    if not user_data:
+    user = (
+        db.query(models.User)
+        .filter(models.User.email == token_data.sub)
+        .one_or_none()
+    )
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return UserResponse(**user_data)
+    return to_user_response(user)
 
 
 # RBAC Dependencies

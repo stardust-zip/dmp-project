@@ -98,7 +98,9 @@ services:
         condition: service_healthy
     networks:
       - dmp_network
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+    command: >
+      sh -c "python -m src.seeders.users &&
+      uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -141,7 +143,12 @@ services:
       - "3001:3000"
     environment:
       - VITE_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=/api/backend
       - BACKEND_API_URL=http://backend:8000
+      - WATCHPACK_POLLING=true
+    volumes:
+      - ./frontend:/app/frontend
+      - frontend_node_modules:/app/frontend/node_modules
     depends_on:
       - backend
     networks:
@@ -249,3 +256,4 @@ volumes:
   prom_data:
   grafana_data:
   dbgate_data:
+  frontend_node_modules:

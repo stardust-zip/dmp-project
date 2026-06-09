@@ -2,13 +2,37 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class IngestionStatus(Enum):
     Success = "Success"
     Device_Error = "Device_Error"
     Network_Timeout = "Network_Timeout"
+
+
+class ModelTask(str, Enum):
+    Forecasting = "forecasting"
+    AnomalyDetection = "anomaly_detection"
+    Prediction = "prediction"
+
+
+class TrainingDataSource(str, Enum):
+    CSV = "csv"
+    DB = "db"
+
+
+class MLAlgorithm(str, Enum):
+    RandomForest = "random_forest"
+    LinearRegression = "linear_regression"
+    LightGBM = "lightgbm"
 
 
 class BaseSchema(BaseModel):
@@ -28,6 +52,25 @@ class TokenPayload(BaseSchema):
     role: Optional[str] = None
 
 
+class UserRole(str, Enum):
+    Admin = "Admin"
+    AIEngineer = "AI_Engineer"
+    Operator = "Operator"
+    PO = "PO"
+    Developer = "Developer"
+
+
+class UserCreate(BaseSchema):
+    email: EmailStr
+    full_name: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    role: UserRole
+
+
+class UserRoleUpdate(BaseSchema):
+    role: UserRole
+
+
 class UserResponse(BaseSchema):
     id: str
     email: EmailStr
@@ -39,6 +82,7 @@ class ModelVersionResponse(BaseSchema):
     name: str
     version: str
     run_id: str
+    model_task: ModelTask | None = None
     metrics: dict[str, float]
     tags: dict[str, str] = Field(default_factory=dict)
     current_stage: str | None = None
@@ -67,6 +111,80 @@ class ModelRollbackResponse(BaseSchema):
     promoted_by: str
 
 
+class ModelTrainingRequest(BaseSchema):
+    model_config = ConfigDict(
+        from_attributes=True,
+        use_enum_values=True,
+        extra="forbid",
+    )
+
+    site_id: str = Field(..., min_length=1, description="Site to train on.")
+    building_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional building to train on inside the selected site.",
+    )
+    metrics: list[str] = Field(..., min_length=1, description="Metrics to include.")
+    time_range_start: datetime
+    time_range_end: datetime
+    model_task: ModelTask = ModelTask.Forecasting
+    data_source: TrainingDataSource = TrainingDataSource.CSV
+    csv_path: str | None = Field(
+        default=None,
+        description="Optional CSV path when data_source is csv.",
+    )
+
+    @field_validator("metrics")
+    @classmethod
+    def normalize_metrics(cls, value: list[str]) -> list[str]:
+        metrics = [metric.strip().lower() for metric in value if metric.strip()]
+        if not metrics:
+            raise ValueError("At least one metric is required")
+        return metrics
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "ModelTrainingRequest":
+        if self.time_range_end <= self.time_range_start:
+            raise ValueError("time_range_end must be after time_range_start")
+        return self
+
+
+class ModelTrainingResponse(BaseSchema):
+    message: str
+    task_id: str
+    model_task: ModelTask
+    data_source: TrainingDataSource
+    algorithm: MLAlgorithm
+    site_id: str
+    building_id: str | None = None
+    metrics: list[str]
+    triggered_by: str
+
+
+class ModelTrainingValidationMetric(BaseSchema):
+    metric: str
+    known_metric: bool
+    db_rows: int = 0
+    csv_rows: int = 0
+    available_in_db: bool = False
+    available_in_csv: bool = False
+    enough_rows: bool = False
+    required_rows: int
+    messages: list[str] = Field(default_factory=list)
+
+
+class ModelTrainingValidationResponse(BaseSchema):
+    valid: bool
+    data_source: TrainingDataSource
+    site_id: str
+    building_id: str | None = None
+    target_building_ids: list[str] = Field(default_factory=list)
+    required_rows_per_metric: int
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    metrics: list[ModelTrainingValidationMetric] = Field(default_factory=list)
+
+
 # -----------------------------------------
 # Payloads for Seeding Asset Data (from metadata.csv)
 # -----------------------------------------
@@ -86,6 +204,54 @@ class LocationCreate(BaseSchema):
     )
 
 
+class SiteCreate(BaseSchema):
+    id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    metadata: dict[str, Any] | None = None
+
+
+class BuildingCreate(BaseSchema):
+    id: str = Field(..., min_length=1)
+    site_id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    location_type_id: str = Field(default="building", min_length=1)
+    metadata: dict[str, Any] | None = None
+
+
+class LocationUpdate(BaseSchema):
+    name: str | None = Field(default=None, min_length=1)
+    parent_id: str | None = Field(default=None, min_length=1)
+    location_type_id: str | None = Field(default=None, min_length=1)
+    metadata: dict[str, Any] | None = None
+    archived: bool | None = None
+
+
+class LocationResponse(BaseSchema):
+    id: str
+    parent_id: str | None = None
+    name: str
+    location_type: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    archived: bool = False
+
+
+class MetricTypeCreate(BaseSchema):
+    id: str = Field(..., min_length=1)
+    unit: str | None = None
+    description: str | None = None
+
+
+class MetricTypeUpdate(BaseSchema):
+    unit: str | None = None
+    description: str | None = None
+
+
+class MetricTypeResponse(BaseSchema):
+    id: str
+    unit: str | None = None
+    description: str | None = None
+
+
 class DeviceCreate(BaseSchema):
     """Payload for registering a new virtual sensor/meter for a building."""
 
@@ -96,6 +262,29 @@ class DeviceCreate(BaseSchema):
     location_id: str = Field(..., description="Must match a Location ID")
     device_type_id: str = Field(default="virtual_meter")
     status: str = Field(default="Active")
+
+
+class DeviceRegisterRequest(BaseSchema):
+    id: str = Field(..., min_length=1)
+    building_id: str = Field(..., min_length=1)
+    device_type_id: str = Field(default="virtual_meter", min_length=1)
+    status: str = Field(default="Active", min_length=1)
+    metric_type_ids: list[str] = Field(default_factory=list)
+
+
+class DeviceUpdate(BaseSchema):
+    building_id: str | None = Field(default=None, min_length=1)
+    device_type_id: str | None = Field(default=None, min_length=1)
+    status: str | None = Field(default=None, min_length=1)
+    metric_type_ids: list[str] | None = None
+
+
+class DeviceResponse(BaseSchema):
+    id: str
+    building_id: str
+    device_type_id: str
+    status: str
+    metric_type_ids: list[str] = Field(default_factory=list)
 
 
 # -----------------------------------------

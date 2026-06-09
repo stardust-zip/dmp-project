@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    PrimaryKeyConstraint,
     String,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -65,6 +66,10 @@ alert_severity_enum = Enum("Warning", "Critical", "Emergency", name="alert_sever
 alert_status_enum = Enum("Open", "Acknowledged", "Resolved", name="alert_status")
 
 job_type_enum = Enum("Training", "Inference", name="job_type")
+
+model_task_enum = Enum(
+    "forecasting", "anomaly_detection", "prediction", name="model_task"
+)
 
 job_status_enum = Enum("Success", "Failed", "Running", name="job_status")
 
@@ -134,6 +139,23 @@ class Device(StringIDMixin, Base):
     # Relationships
     location = relationship("Location", back_populates="devices")
     type = relationship("DeviceType")
+    metric_capabilities = relationship(
+        "DeviceMetricCapability",
+        cascade="all, delete-orphan",
+        back_populates="device",
+    )
+
+
+class DeviceMetricCapability(SQLAlchemyKwargsMixin, Base):
+    __tablename__ = "device_metric_capability"
+    device_id = Column(String, ForeignKey("device.id"), nullable=False)
+    metric_type_id = Column(String, ForeignKey("metric_type.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
+    __table_args__ = (PrimaryKeyConstraint("device_id", "metric_type_id"),)
+
+    device = relationship("Device", back_populates="metric_capabilities")
+    metric_type = relationship("MetricType")
 
 
 # -----------------------------------------
@@ -199,6 +221,12 @@ class ContextData(SQLAlchemyKwargsMixin, Base):
 class AIPipelineLog(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "ai_pipeline_log"
     type = Column(job_type_enum, nullable=False)
+    model_task = Column(
+        model_task_enum,
+        nullable=False,
+        default="forecasting",
+        server_default="forecasting",
+    )
     mlflow_run_id = Column(String, nullable=False)
     datasource_used = Column(String, nullable=True)
     execution_time_ms = Column(Integer, nullable=False)
