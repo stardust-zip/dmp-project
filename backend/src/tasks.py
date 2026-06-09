@@ -179,7 +179,8 @@ def _datasource_label(request: ModelTrainingRequest) -> str:
 
 def _registered_model_name(request: ModelTrainingRequest) -> str:
     task = ModelTask(request.model_task).value
-    return _safe_model_name(f"dmp_energy_{task}")
+    metric_segment = "_".join(request.metrics)
+    return _safe_model_name(f"dmp_energy_{task}_{request.site_id}_{metric_segment}")
 
 
 def _safe_model_name(value: str) -> str:
