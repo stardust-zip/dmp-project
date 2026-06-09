@@ -30,6 +30,7 @@ def _override_db_with_query_results(results_by_model):
     def query(model):
         query_mock = Mock()
         query_mock.filter.return_value = query_mock
+        query_mock.order_by.return_value = query_mock
         query_mock.limit.return_value = query_mock
         query_mock.all.return_value = results_by_model[model]
         return query_mock
@@ -78,13 +79,15 @@ def test_list_locations_returns_dropdown_metadata():
                 "name": "Cora",
                 "location_type": "lodging",
                 "metadata": {"sqm": 1000.5, "timezone": "UTC"},
+                "archived": False,
             },
             {
                 "id": "Panther_parking_Lorriane",
                 "parent_id": "Panther",
                 "name": "Lorriane",
                 "location_type": "parking",
-                "metadata": None,
+                "metadata": {},
+                "archived": False,
             },
         ]
     }

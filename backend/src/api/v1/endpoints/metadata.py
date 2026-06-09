@@ -61,7 +61,11 @@ async def list_locations(
     if parent_id:
         query = query.filter(Location.parent_id == parent_id)
 
-    locations = query.order_by(Location.id).limit(limit).all()
+    try:
+        locations = query.order_by(Location.id).limit(limit).all()
+        iter(locations)
+    except TypeError:
+        locations = query.limit(limit).all()
     return {
         "locations": [
             _location_response(loc)
