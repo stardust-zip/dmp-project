@@ -2,21 +2,21 @@ import csv
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from celery.result import AsyncResult
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
-from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
 from sqlalchemy import func
-from src.core.config import settings
 from sqlalchemy.orm import Session
+from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
+from src.core.config import settings
 from src.database import get_db
 from src.models import AIPipelineLog, Device, Location, MetricType, TelemetryData
 from src.schemas import (
     MLAlgorithm,
-    ModelTask,
     ModelRollbackRequest,
     ModelRollbackResponse,
+    ModelTask,
     ModelTrainingRequest,
     ModelTrainingResponse,
     ModelTrainingValidationMetric,
@@ -36,7 +36,7 @@ ACTIVE_TAG = "active"
 STAGE_TAG = "stage"
 MODEL_TASK_TAG = "model_task"
 MIN_TRAINING_ROWS_PER_METRIC = 24
-METER_DATA_DIR = Path("/app/data/building-data-genome-project-2/data/meters/cleaned")
+METER_DATA_DIR = Path("/app/data/raw/data/meters/cleaned")
 
 
 def _mlflow_client() -> MlflowClient:
@@ -115,6 +115,15 @@ def _set_optional_production_alias(
         return
 
 
+def _delete_optional_production_alias(client: MlflowClient, model_name: str) -> None:
+    try:
+        client.delete_registered_model_alias(model_name, PRODUCTION_ALIAS)
+    except AttributeError:
+        return
+    except MlflowException:
+        return
+
+
 def _promote_model_version(client: MlflowClient, model_version) -> None:
     model_name = model_version.name
     version = str(model_version.version)
@@ -127,6 +136,18 @@ def _promote_model_version(client: MlflowClient, model_version) -> None:
     client.set_model_version_tag(model_name, version, ACTIVE_TAG, "true")
     client.set_model_version_tag(model_name, version, STAGE_TAG, "production")
     _set_optional_production_alias(client, model_name, version)
+
+
+def _demote_model_version(client: MlflowClient, model_version) -> None:
+    model_name = model_version.name
+    version = str(model_version.version)
+
+    client.set_model_version_tag(model_name, version, ACTIVE_TAG, "false")
+    client.set_model_version_tag(model_name, version, STAGE_TAG, "archived")
+
+    production_version = _production_model_version(client, model_name)
+    if production_version is not None and str(production_version.version) == version:
+        _delete_optional_production_alias(client, model_name)
 
 
 def _production_model_version(client: MlflowClient, model_name: str):
@@ -321,9 +342,7 @@ def _validate_training_request(
 
     site = _get_location_ref(db, request.site_id)
     building = (
-        _get_location_ref(db, request.building_id)
-        if request.building_id
-        else None
+        _get_location_ref(db, request.building_id) if request.building_id else None
     )
     if site is None:
         errors.append(f"Unknown site/building: {request.site_id}")
@@ -374,8 +393,7 @@ def _validate_training_request(
             end=end,
             explicit_csv_path=request.csv_path,
         )
-        if source == TrainingDataSource.CSV
-        and enforce_data_availability
+        if source == TrainingDataSource.CSV and enforce_data_availability
         else {}
     )
 
@@ -455,7 +473,9 @@ def _validate_training_request(
     )
 
 
-def _training_error_detail(validation: ModelTrainingValidationResponse) -> str | list[str]:
+def _training_error_detail(
+    validation: ModelTrainingValidationResponse,
+) -> str | list[str]:
     metric_detail_errors = {
         f"{metric.metric}: {message}"
         for metric in validation.metrics
@@ -554,7 +574,11 @@ def _count_csv_metric_rows(
     end: datetime,
     explicit_csv_path: str | None,
 ) -> int:
-    csv_path = Path(explicit_csv_path) if explicit_csv_path else _cleaned_meter_csv_path(metric)
+    csv_path = (
+        Path(explicit_csv_path)
+        if explicit_csv_path
+        else _cleaned_meter_csv_path(metric)
+    )
     if not csv_path.exists() or not csv_path.is_file():
         return 0
 
@@ -673,6 +697,44 @@ async def rollback_model(
     )
 
 
+@router.post("/demote", response_model=ModelRollbackResponse)
+async def demote_model_from_production(
+    payload: ModelRollbackRequest,
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Move a registered model version out of production.
+    """
+    client = _mlflow_client()
+    model_version = _find_model_version_by_run_id(
+        client,
+        payload.mlflow_run_id,
+        payload.model_name,
+    )
+
+    try:
+        _demote_model_version(client, model_version)
+    except MlflowException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"MLflow registry update failed: {exc}",
+        ) from exc
+
+    run_id = model_version.run_id
+    if run_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Model version has no associated run ID.",
+        )
+    return ModelRollbackResponse(
+        message="Model version moved out of production.",
+        model_name=model_version.name,
+        version=str(model_version.version),
+        run_id=run_id,
+        promoted_by=current_user.email,
+    )
+
+
 @router.get("/tasks/{task_id}")
 async def get_task_status(
     task_id: str,
@@ -714,7 +776,9 @@ async def get_pipeline_logs(
             "id": str(log.id),
             "type": log.type.name if hasattr(log.type, "name") else log.type,
             "model_task": (
-                log.model_task.name if hasattr(log.model_task, "name") else log.model_task
+                log.model_task.name
+                if hasattr(log.model_task, "name")
+                else log.model_task
             ),
             "status": log.status.name if hasattr(log.status, "name") else log.status,
             "mlflow_run_id": log.mlflow_run_id,
