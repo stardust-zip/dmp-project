@@ -14,12 +14,22 @@ function valueLabel(value?: number | null) {
   return value == null ? "-" : `${fmt(value)} kWh`;
 }
 
+const HOUR_MS = 3_600_000;
+
 function buildingLabel(buildingId: string) {
   const parts = buildingId.split("_");
   return parts.length >= 3 ? parts.slice(2).join("_") : buildingId;
 }
 
-export function AnomalyEventDrawer({ event, onClose }: { event: AnomalyEvent; onClose: () => void }) {
+function durationLabel(hours: number) {
+  if (hours < 1) return "<1h";
+  if (hours < 24) return `${Math.round(hours)}h`;
+  const days = Math.floor(hours / 24);
+  const rem = Math.round(hours % 24);
+  return rem > 0 ? `${days}d ${rem}h` : `${days}d`;
+}
+
+export function AnomalyEventDrawer({ event, simNow, onClose }: { event: AnomalyEvent; simNow: number | null; onClose: () => void }) {
   useEffect(() => {
     const handler = (keyboardEvent: KeyboardEvent) => {
       if (keyboardEvent.key === "Escape") onClose();
@@ -27,6 +37,13 @@ export function AnomalyEventDrawer({ event, onClose }: { event: AnomalyEvent; on
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
+
+  const endMs = event.end_time ? new Date(event.end_time).getTime() : null;
+  const startMs = new Date(event.start_time).getTime();
+  const isOngoing = simNow != null && endMs != null && endMs > simNow;
+  const displayDuration = isOngoing && simNow != null
+    ? (simNow - startMs) / HOUR_MS
+    : (event.duration_hours ?? null);
 
   const deviation = event.deviation_percent == null ? null : `${event.deviation_percent > 0 ? "+" : ""}${fmt1(event.deviation_percent)}%`;
 
@@ -59,7 +76,8 @@ export function AnomalyEventDrawer({ event, onClose }: { event: AnomalyEvent; on
             <dt>Building</dt><dd>{buildingLabel(event.building_id)}</dd>
             <dt>Usage</dt><dd>{event.primary_space_usage || "-"}</dd>
             <dt>Start</dt><dd className="mono">{asTime(event.start_time)}</dd>
-            <dt>End</dt><dd className="mono">{event.end_time ? asTime(event.end_time) : "-"}</dd>
+            <dt>End</dt><dd className="mono">{isOngoing ? <span className="muted">Ongoing</span> : event.end_time ? asTime(event.end_time) : "-"}</dd>
+            <dt>Duration</dt><dd className="mono">{displayDuration != null ? `${durationLabel(displayDuration)}${isOngoing ? " so far" : ""}` : "-"}</dd>
             <dt>Severity</dt><dd>{event.severity}</dd>
             <dt>Actual</dt><dd className="mono">{valueLabel(event.actual_value)}</dd>
             <dt>Expected</dt><dd className="mono">{valueLabel(event.expected_value)}</dd>

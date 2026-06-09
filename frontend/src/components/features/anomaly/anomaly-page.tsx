@@ -652,7 +652,7 @@ export function AnomalyPage() {
         </div>
       )}
 
-      {visibleSelected && <AnomalyEventDrawer event={visibleSelected} onClose={() => setSelected(null)} />}
+      {visibleSelected && <AnomalyEventDrawer event={visibleSelected} simNow={simNow} onClose={() => setSelected(null)} />}
     </div>
   );
 }
