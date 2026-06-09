@@ -1,14 +1,14 @@
-import os
-import math
 import argparse
+import math
+import os
+
 import pandas as pd
 from sqlalchemy.orm import Session
+from src import models, schemas
 from src.database import SessionLocal, init_db
-from src import models
-from src import schemas
 from src.schemas import IngestionStatus
 
-DATA_DIR = "/app/data/building-data-genome-project-2/data"
+DATA_DIR = "/app/data/raw/data"
 
 
 def get_or_create(db: Session, model, **kwargs):

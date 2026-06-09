@@ -1,7 +1,8 @@
-from pathlib import Path
 import re
+from pathlib import Path
 from time import perf_counter
 
+import mlflow.pyfunc
 from celery import Celery
 from mlflow.tracking import MlflowClient
 from src.core.config import settings
@@ -15,11 +16,10 @@ from src.schemas import (
 )
 
 import mlflow
-import mlflow.pyfunc
 
 redis_url = settings.REDIS_URL
 celery_app = Celery("dmp_tasks", broker=redis_url, backend=redis_url)
-METER_DATA_DIR = Path("/app/data/building-data-genome-project-2/data/meters/cleaned")
+METER_DATA_DIR = Path("/app/data/raw/data/meters/cleaned")
 
 
 class MockEnergyModel(mlflow.pyfunc.PythonModel):
@@ -120,7 +120,7 @@ def train_model_task(
                 "building_id": request.building_id,
                 "metrics": request.metrics,
                 "algorithm": selected_algorithm.value,
-                "model_name": registered_model_name,
+                # "model_name": registered_model_name,
                 "scores": metrics,
             }
 
