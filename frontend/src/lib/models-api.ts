@@ -8,6 +8,12 @@ export interface RegisteredModel {
   creation_timestamp?: number | null;
   last_updated_timestamp?: number | null;
   tags: Record<string, string>;
+  production_version?: {
+    version: string;
+    run_id?: string | null;
+    current_stage?: string | null;
+    status?: string | null;
+  } | null;
   latest_versions: Array<{
     version: string;
     current_stage?: string | null;

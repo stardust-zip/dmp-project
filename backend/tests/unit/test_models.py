@@ -362,6 +362,12 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
         current_stage="Production",
         status="READY",
     )
+    production_version = SimpleNamespace(
+        version=2,
+        run_id="run-2",
+        current_stage="None",
+        status="READY",
+    )
     registered_model = SimpleNamespace(
         name="forecasting_v1",
         description="Forecast energy consumption",
@@ -372,6 +378,7 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
     )
     client_mock = Mock()
     client_mock.search_registered_models.return_value = [registered_model]
+    client_mock.get_model_version_by_alias.return_value = production_version
     mock_mlflow_client.return_value = client_mock
 
     response = client.get("/api/v1/models/")
@@ -385,6 +392,12 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
                 "creation_timestamp": 100,
                 "last_updated_timestamp": 200,
                 "tags": {"domain": "forecasting"},
+                "production_version": {
+                    "version": "2",
+                    "run_id": "run-2",
+                    "current_stage": "None",
+                    "status": "READY",
+                },
                 "latest_versions": [
                     {
                         "version": "3",

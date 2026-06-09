@@ -129,6 +129,31 @@ def _promote_model_version(client: MlflowClient, model_version) -> None:
     _set_optional_production_alias(client, model_name, version)
 
 
+def _production_model_version(client: MlflowClient, model_name: str):
+    try:
+        return client.get_model_version_by_alias(model_name, PRODUCTION_ALIAS)
+    except AttributeError:
+        pass
+    except MlflowException:
+        pass
+
+    versions = _search_model_versions(client, f"name = '{model_name}'")
+    production_versions = [
+        version
+        for version in versions
+        if (getattr(version, "tags", {}) or {}).get(ACTIVE_TAG) == "true"
+        or (getattr(version, "tags", {}) or {}).get(STAGE_TAG) == "production"
+        or getattr(version, "current_stage", None) == "Production"
+    ]
+    if not production_versions:
+        return None
+
+    return max(
+        production_versions,
+        key=lambda version: getattr(version, "last_updated_timestamp", 0) or 0,
+    )
+
+
 @router.get("/")
 async def list_models(current_user: UserResponse = Depends(get_current_user)):
     """
@@ -145,6 +170,7 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
 
     models_data = []
     for rm in registered_models:
+        production_version = _production_model_version(client, rm.name)
         models_data.append(
             {
                 "name": rm.name,
@@ -152,6 +178,18 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
                 "creation_timestamp": rm.creation_timestamp,
                 "last_updated_timestamp": rm.last_updated_timestamp,
                 "tags": dict(getattr(rm, "tags", {}) or {}),
+                "production_version": (
+                    {
+                        "version": str(production_version.version),
+                        "run_id": getattr(production_version, "run_id", None),
+                        "current_stage": getattr(
+                            production_version, "current_stage", None
+                        ),
+                        "status": getattr(production_version, "status", None),
+                    }
+                    if production_version is not None
+                    else None
+                ),
                 "latest_versions": [
                     {
                         "version": str(v.version),
