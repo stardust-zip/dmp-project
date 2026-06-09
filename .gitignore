@@ -24,5 +24,6 @@ grafana_data/
 
 # Jetbrains
 .idea
+__pycache__/
 
-
+building-data-genome-project-2/

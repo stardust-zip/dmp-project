@@ -5,7 +5,7 @@ import * as echarts from "echarts";
 import type { ECharts, EChartsOption } from "echarts";
 import { ANOMALY_SERIES, BY_BUILDING, FC_HISTORY, FORECAST, TREND, TREND_FC } from "@/lib/mock-data";
 import { clock, clockShort } from "@/lib/format";
-import type { AnomalyEvent, AnomalySeverity } from "@/types";
+import type { AnomalySeverity, AnomalyTimelineResponse } from "@/types";
 
 interface ChartTheme {
   ink: string;
@@ -23,6 +23,13 @@ interface ChartTheme {
 type ChartOption = Record<string, unknown>;
 type ChartBuilder = (theme: ChartTheme, instance: ECharts) => ChartOption;
 type TooltipParam = { axisValue: string | number; name?: string; value: number | [number, number]; color?: string; seriesName?: string };
+type DataZoomSnapshot = {
+  start?: number;
+  end?: number;
+  startValue?: string | number;
+  endValue?: string | number;
+};
+type OptionWithDataZoom = ChartOption & { dataZoom?: Array<Record<string, unknown>> };
 
 function cssVar(name: string) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -64,12 +71,14 @@ export function EChart({
   height = 300,
   themeKey,
   style,
+  preserveDataZoom = false,
 }: {
   build: ChartBuilder;
   deps?: unknown[];
   height?: number;
   themeKey?: string;
   style?: CSSProperties;
+  preserveDataZoom?: boolean;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const instance = useRef<ECharts | null>(null);
@@ -88,8 +97,23 @@ export function EChart({
 
   useEffect(() => {
     if (!instance.current) return;
-    instance.current.setOption(build(chartTheme(), instance.current) as EChartsOption, true);
-  }, [build, themeKey, ...deps]);
+    const zoomState = preserveDataZoom
+      ? ((instance.current.getOption() as { dataZoom?: DataZoomSnapshot[] } | undefined)?.dataZoom ?? []).map((zoom) => ({
+          start: zoom.start,
+          end: zoom.end,
+          startValue: zoom.startValue,
+          endValue: zoom.endValue,
+        }))
+      : [];
+    const nextOption = build(chartTheme(), instance.current) as OptionWithDataZoom;
+    if (preserveDataZoom && Array.isArray(nextOption.dataZoom)) {
+      nextOption.dataZoom = nextOption.dataZoom.map((zoom, index) => ({
+        ...zoom,
+        ...(zoomState[index] ?? {}),
+      }));
+    }
+    instance.current.setOption(nextOption as EChartsOption, true);
+  }, [build, preserveDataZoom, themeKey, ...deps]);
 
   return <div ref={ref} className="chart" style={{ height, width: "100%", ...style }} />;
 }
@@ -260,13 +284,6 @@ export function buildAnomalyTimeline(): ChartBuilder {
   };
 }
 
-const ANOMALY_SEVERITY_RANK: Record<AnomalySeverity, number> = {
-  Low: 0,
-  Medium: 1,
-  High: 2,
-  Critical: 3,
-};
-
 function anomalyColor(severity: AnomalySeverity, theme: ChartTheme) {
   if (severity === "Critical") return theme.red;
   if (severity === "High") return theme.orange;
@@ -274,46 +291,103 @@ function anomalyColor(severity: AnomalySeverity, theme: ChartTheme) {
   return theme.accent;
 }
 
-export function buildUnifiedAnomalyTimeline(events: AnomalyEvent[]): ChartBuilder {
+function anomalyDotSize(severity: AnomalySeverity) {
+  if (severity === "Critical") return 13;
+  if (severity === "High") return 10;
+  if (severity === "Medium") return 8;
+  return 7;
+}
+
+export function buildUnifiedAnomalyTimeline(
+  timeline: AnomalyTimelineResponse,
+  options: { cursorTime?: number; axisMin?: number; axisMax?: number; futurePoints?: AnomalyTimelineResponse["points"] } = {},
+): ChartBuilder {
   return (theme) => {
-    const sorted = [...events].sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-    const data = sorted.map((event) => {
-      const start = new Date(event.start_time).getTime();
-      const duration = event.duration_hours ?? 1;
-      return {
-        value: [start, ANOMALY_SEVERITY_RANK[event.severity], duration],
-        event,
-        symbolSize: Math.max(7, Math.min(20, 7 + Math.log2(duration + 1) * 3)),
-        itemStyle: {
-          color: anomalyColor(event.severity, theme),
-          borderColor: theme.surface,
-          borderWidth: 2,
-        },
-      };
-    });
+    const points = [...timeline.points].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const events = timeline.items;
+    const markerEvents = [...events]
+      .filter((e) => e.actual_value != null)
+      .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+
+    const actualData = points.map((point) => [
+      new Date(point.timestamp).getTime(),
+      point.actual_value == null ? null : point.actual_value,
+    ]);
+    const baselinePastData = points.map((p) => [new Date(p.timestamp).getTime(), p.expected_value ?? null]);
+    const rawFuture = (options.futurePoints ?? []).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const baselineFutureData = rawFuture.map((p) => [new Date(p.timestamp).getTime(), p.expected_value ?? null]);
+
+    const markerData = markerEvents.map((e) => ({
+      value: [new Date(e.start_time).getTime(), e.actual_value!],
+      event: e,
+      symbolSize: anomalyDotSize(e.severity),
+      itemStyle: { color: anomalyColor(e.severity, theme), borderColor: theme.surface, borderWidth: 2 },
+    }));
+    const eventsByTs = new Map(markerEvents.map((e) => [new Date(e.start_time).getTime(), e]));
+    const gapAreas = timeline.gaps.map((gap) => [
+      { xAxis: new Date(gap.start_time).getTime() },
+      { xAxis: new Date(gap.end_time).getTime() },
+    ]);
+    const cursorMark = options.cursorTime == null
+      ? undefined
+      : {
+          silent: true,
+          symbol: "none",
+          lineStyle: { color: theme.border2, type: "solid", width: 1.4 },
+          label: {
+            show: true,
+            formatter: "Sim time",
+            position: "insideStartTop",
+            color: theme.muted,
+            fontSize: 10,
+            padding: [2, 4],
+          },
+          data: [{ xAxis: options.cursorTime }],
+        };
 
     return {
       grid: { left: 8, right: 16, top: 18, bottom: 54, containLabel: true },
       tooltip: {
-        trigger: "item",
+        trigger: "axis",
+        axisPointer: { type: "line", lineStyle: { color: theme.border2, type: "dashed", width: 1.2 } },
         ...tooltipStyle(theme),
-        formatter: (param: { data: { event: AnomalyEvent } }) => {
-          const event = param.data.event;
-          const actual = event.actual_value == null ? "-" : `${numFmt(event.actual_value)} kWh`;
-          const expected = event.expected_value == null ? "-" : `${numFmt(event.expected_value)} kWh`;
-          const duration = event.duration_hours == null ? "-" : `${Number(event.duration_hours.toFixed(1))}h`;
-          return `<div style="font-weight:650;margin-bottom:4px">${event.type}</div>
-            <div style="font-size:11px;color:${theme.muted};margin-bottom:7px">${event.site_id} / ${event.building_id}<br/>${clock(new Date(event.start_time).getTime())}</div>
+        formatter: (params: Array<{ seriesName: string; data: unknown; value: unknown }>) => {
+          if (!Array.isArray(params) || params.length === 0) return "";
+          const actualParam = params.find((p) => p.seriesName === "Actual Consumption");
+          const expectedParam = params.find((p) => p.seriesName === "Expected Baseline");
+          const pv = Array.isArray(actualParam?.value) ? (actualParam.value as [number, number | null]) : null;
+          const ts = pv?.[0] ?? null;
+          const actualVal = pv?.[1] ?? null;
+          const expectedVal = Array.isArray(expectedParam?.value) ? (expectedParam.value as [number, number | null])[1] : null;
+          if (ts == null) return "";
+          const event = eventsByTs.get(ts);
+          if (event) {
+            const actual = event.actual_value == null ? "-" : `${numFmt(event.actual_value)} kWh`;
+            const expected = event.expected_value == null ? "-" : `${numFmt(event.expected_value)} kWh`;
+            const duration = event.duration_hours == null ? "-" : `${Number(event.duration_hours.toFixed(1))}h`;
+            return `<div style="font-weight:650;margin-bottom:4px">${event.type}</div>
+              <div style="font-size:11px;color:${theme.muted};margin-bottom:7px">${event.site_id} / ${event.building_id}<br/>${clock(new Date(event.start_time).getTime())}</div>
+              <div style="display:grid;grid-template-columns:auto auto;gap:3px 12px">
+                <span style="color:${theme.muted}">Severity</span><b>${event.severity}</b>
+                <span style="color:${theme.muted}">Actual</span><b style="font-family:${MONO}">${actual}</b>
+                <span style="color:${theme.muted}">Expected</span><b style="font-family:${MONO}">${expected}</b>
+                <span style="color:${theme.muted}">Duration</span><b style="font-family:${MONO}">${duration}</b>
+              </div>`;
+          }
+          if (actualVal == null && expectedVal == null) return "";
+          const actualStr = actualVal == null ? "-" : `${numFmt(actualVal)} kWh`;
+          const expectedStr = expectedVal == null ? "-" : `${numFmt(expectedVal)} kWh`;
+          return `<div style="font-size:11px;color:${theme.muted};margin-bottom:6px">${clock(ts)}</div>
             <div style="display:grid;grid-template-columns:auto auto;gap:3px 12px">
-              <span style="color:${theme.muted}">Severity</span><b>${event.severity}</b>
-              <span style="color:${theme.muted}">Actual</span><b style="font-family:${MONO}">${actual}</b>
-              <span style="color:${theme.muted}">Expected</span><b style="font-family:${MONO}">${expected}</b>
-              <span style="color:${theme.muted}">Duration</span><b style="font-family:${MONO}">${duration}</b>
+              <span style="color:${theme.muted}">Actual</span><b style="font-family:${MONO}">${actualStr}</b>
+              <span style="color:${theme.muted}">Expected</span><b style="font-family:${MONO}">${expectedStr}</b>
             </div>`;
         },
       },
       xAxis: {
         type: "time",
+        min: options.axisMin,
+        max: options.axisMax,
         boundaryGap: false,
         axisLine: { lineStyle: { color: theme.grid } },
         axisTick: { show: false },
@@ -321,23 +395,80 @@ export function buildUnifiedAnomalyTimeline(events: AnomalyEvent[]): ChartBuilde
         splitLine: { show: false },
       },
       yAxis: {
-        type: "category",
-        data: ["Low", "Medium", "High", "Critical"],
-        axisLabel: { color: theme.muted, fontSize: 11, fontWeight: 600 },
+        type: "value",
+        min: (v: { min: number; max: number }) => {
+          if (!Number.isFinite(v.min) || !Number.isFinite(v.max)) return 0;
+          const pad = Math.max((v.max - v.min) * 0.25, Math.abs(v.max) * 0.04);
+          return Math.max(0, v.min - pad);
+        },
+        max: (v: { min: number; max: number }) => {
+          if (!Number.isFinite(v.min) || !Number.isFinite(v.max)) return 1;
+          const pad = Math.max((v.max - v.min) * 0.25, Math.abs(v.max) * 0.04);
+          return v.max + pad;
+        },
+        axisLabel: {
+          color: theme.muted,
+          fontSize: 11,
+          fontFamily: MONO,
+          formatter: (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(2)}k` : value.toFixed(2)),
+        },
+        splitLine: { lineStyle: { color: theme.grid, type: "dashed" } },
         axisLine: { show: false },
         axisTick: { show: false },
-        splitLine: { lineStyle: { color: theme.grid, type: "dashed" } },
       },
       dataZoom: [
-        { type: "inside", start: 0, end: 100 },
-        { type: "slider", start: 0, end: 100, height: 18, bottom: 14, borderColor: theme.grid, fillerColor: theme.dark ? "rgba(37,99,235,.18)" : "rgba(37,99,235,.10)", textStyle: { color: theme.muted, fontSize: 10 } },
+        { type: "inside", start: 0, end: 100, filterMode: "weakFilter" },
+        { type: "slider", start: 0, end: 100, height: 18, bottom: 14, filterMode: "weakFilter", borderColor: theme.grid, fillerColor: theme.dark ? "rgba(37,99,235,.18)" : "rgba(37,99,235,.10)", textStyle: { color: theme.muted, fontSize: 10 } },
       ],
       series: [
         {
-          name: "Anomaly events",
-          type: "scatter",
-          data,
+          name: "Expected Baseline",
+          type: "line",
+          smooth: 0.35,
+          connectNulls: false,
+          showSymbol: false,
+          data: baselinePastData,
+          lineStyle: { width: 1.5, color: theme.muted, type: [5, 4] },
+          itemStyle: { color: theme.muted },
+          z: 2,
+        },
+        ...(baselineFutureData.length > 0 ? [{
+          name: "Forecast",
+          type: "line",
+          smooth: 0.35,
+          connectNulls: false,
+          showSymbol: false,
+          data: baselineFutureData,
+          lineStyle: { width: 1.2, color: theme.muted, type: [3, 6], opacity: 0.4 },
+          itemStyle: { color: theme.muted },
+          z: 2,
+          tooltip: { show: false },
+        }] : []),
+        {
+          name: "Actual Consumption",
+          type: "line",
+          smooth: 0.35,
+          connectNulls: false,
+          showSymbol: false,
+          data: actualData,
+          lineStyle: { width: 2.5, color: theme.accent },
+          itemStyle: { color: theme.accent },
+          markArea: gapAreas.length
+            ? {
+                silent: true,
+                itemStyle: { color: theme.dark ? "rgba(148,163,184,.16)" : "rgba(100,116,139,.14)" },
+                data: gapAreas,
+              }
+            : undefined,
           z: 3,
+          markLine: cursorMark,
+        },
+        {
+          name: "Anomaly",
+          type: "scatter",
+          data: markerData,
+          z: 4,
+          tooltip: { show: false },
         },
       ],
     };

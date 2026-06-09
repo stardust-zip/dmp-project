@@ -215,7 +215,22 @@ class AnomalyFacetsResponse(BaseSchema):
     buildings: list[str]
     severities: list[str]
     types: list[str]
+    primary_usage_types: list[str]
+
+
+class AnomalyTimelinePointResponse(BaseSchema):
+    timestamp: datetime
+    actual_value: float | None = None
+    expected_value: float | None = None
+
+
+class AnomalyTimelineGapResponse(BaseSchema):
+    start_time: datetime
+    end_time: datetime
+    reason: str = "Missing actual data"
 
 
 class AnomalyTimelineResponse(BaseSchema):
     items: list[AnomalyEventResponse]
+    points: list[AnomalyTimelinePointResponse] = Field(default_factory=list)
+    gaps: list[AnomalyTimelineGapResponse] = Field(default_factory=list)
