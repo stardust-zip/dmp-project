@@ -264,6 +264,10 @@ export function rollbackModel(payload: RollbackModelPayload, signal?: AbortSigna
   return apiPost<RollbackModelResponse>("/api/v1/models/rollback", payload, signal);
 }
 
+export function demoteModel(payload: RollbackModelPayload, signal?: AbortSignal) {
+  return apiPost<RollbackModelResponse>("/api/v1/models/demote", payload, signal);
+}
+
 export interface LocationQuery {
   q?: string;
   locationType?: string;
