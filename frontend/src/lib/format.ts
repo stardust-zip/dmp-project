@@ -2,6 +2,13 @@ export function fmt(n: number) {
   return Math.round(n).toLocaleString("en-US");
 }
 
+export function fmtKwh(n: number) {
+  if (Math.abs(n) < 1) {
+    return n.toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+  }
+  return Math.round(n).toLocaleString("en-US");
+}
+
 export function fmt1(n: number) {
   return Number(n).toLocaleString("en-US", {
     minimumFractionDigits: 1,
