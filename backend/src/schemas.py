@@ -52,6 +52,25 @@ class TokenPayload(BaseSchema):
     role: Optional[str] = None
 
 
+class UserRole(str, Enum):
+    Admin = "Admin"
+    AIEngineer = "AI_Engineer"
+    Operator = "Operator"
+    PO = "PO"
+    Developer = "Developer"
+
+
+class UserCreate(BaseSchema):
+    email: EmailStr
+    full_name: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    role: UserRole
+
+
+class UserRoleUpdate(BaseSchema):
+    role: UserRole
+
+
 class UserResponse(BaseSchema):
     id: str
     email: EmailStr
