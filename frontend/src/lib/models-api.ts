@@ -33,12 +33,76 @@ export interface LocationOption {
   name: string;
   location_type?: string | null;
   metadata?: Record<string, unknown> | null;
+  archived?: boolean;
 }
 
 export interface MetricOption {
   id: string;
   unit?: string | null;
   description?: string | null;
+}
+
+export interface DeviceOption {
+  id: string;
+  building_id: string;
+  device_type_id: string;
+  status: string;
+  metric_type_ids: string[];
+}
+
+export interface CreateSitePayload {
+  id: string;
+  name: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface CreateBuildingPayload {
+  id: string;
+  site_id: string;
+  name: string;
+  location_type_id?: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface UpdateLocationPayload {
+  name?: string;
+  parent_id?: string;
+  location_type_id?: string;
+  metadata?: Record<string, unknown> | null;
+  archived?: boolean;
+}
+
+export interface CreateMetricPayload {
+  id: string;
+  unit?: string | null;
+  description?: string | null;
+}
+
+export interface UpdateMetricPayload {
+  unit?: string | null;
+  description?: string | null;
+}
+
+export interface RegisterDevicePayload {
+  id: string;
+  building_id: string;
+  device_type_id?: string;
+  status?: string;
+  metric_type_ids?: string[];
+}
+
+export interface UpdateDevicePayload {
+  building_id?: string;
+  device_type_id?: string;
+  status?: string;
+  metric_type_ids?: string[];
+}
+
+export interface DeviceQuery {
+  buildingId?: string;
+  metricTypeId?: string;
+  status?: string;
+  limit?: number;
 }
 
 export interface PipelineLog {
@@ -149,6 +213,27 @@ async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Pr
   return response.json() as Promise<T>;
 }
 
+async function apiPatch<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "PATCH",
+    signal,
+    headers: {
+      ...authHeaders(),
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const data = (await response.json().catch(() => null)) as { detail?: string | string[] } | null;
+    const detail = Array.isArray(data?.detail) ? data.detail.join(" ") : data?.detail;
+    throw new Error(detail ?? `API request failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 export function getRegisteredModels(signal?: AbortSignal) {
   return apiGet<{ models: RegisteredModel[] }>("/api/v1/models/", signal);
 }
@@ -177,6 +262,7 @@ export interface LocationQuery {
   q?: string;
   locationType?: string;
   parentId?: string;
+  includeArchived?: boolean;
   limit?: number;
 }
 
@@ -185,6 +271,7 @@ export function getLocationOptions(query?: LocationQuery, signal?: AbortSignal) 
   if (query?.q) search.set("q", query.q);
   if (query?.locationType) search.set("location_type", query.locationType);
   if (query?.parentId) search.set("parent_id", query.parentId);
+  if (query?.includeArchived) search.set("include_archived", "true");
   if (query?.limit) search.set("limit", String(query.limit));
   const suffix = search.toString() ? `?${search.toString()}` : "";
   return apiGet<{ locations: LocationOption[] }>(`/api/v1/metadata/locations${suffix}`, signal);
@@ -192,4 +279,46 @@ export function getLocationOptions(query?: LocationQuery, signal?: AbortSignal) 
 
 export function getMetricOptions(signal?: AbortSignal) {
   return apiGet<{ metrics: MetricOption[] }>("/api/v1/metadata/metrics", signal);
+}
+
+export function createSite(payload: CreateSitePayload, signal?: AbortSignal) {
+  return apiPost<LocationOption>("/api/v1/metadata/sites", payload, signal);
+}
+
+export function createBuilding(payload: CreateBuildingPayload, signal?: AbortSignal) {
+  return apiPost<LocationOption>("/api/v1/metadata/buildings", payload, signal);
+}
+
+export function updateLocation(locationId: string, payload: UpdateLocationPayload, signal?: AbortSignal) {
+  return apiPatch<LocationOption>(`/api/v1/metadata/locations/${encodeURIComponent(locationId)}`, payload, signal);
+}
+
+export function createMetric(payload: CreateMetricPayload, signal?: AbortSignal) {
+  return apiPost<MetricOption>("/api/v1/metadata/metrics", payload, signal);
+}
+
+export function updateMetric(metricId: string, payload: UpdateMetricPayload, signal?: AbortSignal) {
+  return apiPatch<MetricOption>(`/api/v1/metadata/metrics/${encodeURIComponent(metricId)}`, payload, signal);
+}
+
+export function registerDevice(payload: RegisterDevicePayload, signal?: AbortSignal) {
+  return apiPost<DeviceOption>("/api/v1/metadata/devices", payload, signal);
+}
+
+export function getDevices(query?: DeviceQuery, signal?: AbortSignal) {
+  const search = new URLSearchParams();
+  if (query?.buildingId) search.set("building_id", query.buildingId);
+  if (query?.metricTypeId) search.set("metric_type_id", query.metricTypeId);
+  if (query?.status) search.set("status", query.status);
+  if (query?.limit) search.set("limit", String(query.limit));
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return apiGet<{ devices: DeviceOption[] }>(`/api/v1/metadata/devices${suffix}`, signal);
+}
+
+export function updateDevice(deviceId: string, payload: UpdateDevicePayload, signal?: AbortSignal) {
+  return apiPatch<DeviceOption>(`/api/v1/metadata/devices/${encodeURIComponent(deviceId)}`, payload, signal);
+}
+
+export function deactivateDevice(deviceId: string, signal?: AbortSignal) {
+  return apiPost<DeviceOption>(`/api/v1/metadata/devices/${encodeURIComponent(deviceId)}/deactivate`, {}, signal);
 }
