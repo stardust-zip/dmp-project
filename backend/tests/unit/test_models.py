@@ -515,6 +515,7 @@ def test_get_pipeline_logs_returns_paginated_logs():
         datasource_used="db",
         execution_time_ms=2400,
         created_at=created_at,
+        terminal_log="[2026-06-08T12:00:00+00:00] Pipeline finished successfully.",
     )
 
     query = Mock()
@@ -550,6 +551,7 @@ def test_get_pipeline_logs_returns_paginated_logs():
                 "datasource_used": "db",
                 "execution_time_ms": 2400,
                 "timestamp": data["logs"][0]["timestamp"],
+                "terminal_log": "[2026-06-08T12:00:00+00:00] Pipeline finished successfully.",
             }
         ],
     }

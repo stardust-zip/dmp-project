@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     PrimaryKeyConstraint,
     String,
+    Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import declarative_base, relationship
@@ -231,6 +232,7 @@ class AIPipelineLog(UUIDMixin, TimestampMixin, Base):
     datasource_used = Column(String, nullable=True)
     execution_time_ms = Column(Integer, nullable=False)
     status = Column(job_status_enum, nullable=False)
+    terminal_log = Column(Text, nullable=True)
 
 
 class SystemLog(UUIDMixin, TimestampMixin, Base):

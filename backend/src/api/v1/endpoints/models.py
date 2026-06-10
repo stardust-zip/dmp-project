@@ -44,6 +44,46 @@ def _mlflow_client() -> MlflowClient:
     return MlflowClient()
 
 
+def _terminal_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _pipeline_datasource_label(request: ModelTrainingRequest) -> str:
+    if TrainingDataSource(request.data_source) == TrainingDataSource.CSV:
+        if request.csv_path:
+            return request.csv_path
+        return ",".join(
+            f"{Path(metric).name.strip().lower()}_cleaned.csv"
+            for metric in request.metrics
+        )
+    return "database"
+
+
+def _create_queued_pipeline_log(
+    db: Session,
+    request: ModelTrainingRequest,
+) -> AIPipelineLog:
+    model_task_value = ModelTask(request.model_task).value
+    log = AIPipelineLog(
+        type="Training",
+        model_task=model_task_value,
+        datasource_used=_pipeline_datasource_label(request),
+        status="Running",
+        execution_time_ms=0,
+        mlflow_run_id="pending",
+        terminal_log=(
+            f"[{_terminal_timestamp()}] Queued training pipeline "
+            f"task={model_task_value} site={request.site_id} "
+            f"building={request.building_id or '-'} metrics={','.join(request.metrics)} "
+            f"source={TrainingDataSource(request.data_source).value}"
+        ),
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return log
+
+
 def _model_version_response(
     client: MlflowClient, model_version
 ) -> ModelVersionResponse:
@@ -306,8 +346,10 @@ async def trigger_training(
             detail="Prediction training requires exactly one metric per model.",
         )
 
+    pipeline_log = _create_queued_pipeline_log(db, request)
     task = train_model_task.delay(
-        training_request=request.model_dump(mode="json", exclude_none=True)
+        training_request=request.model_dump(mode="json", exclude_none=True),
+        pipeline_log_id=str(pipeline_log.id),
     )
 
     return ModelTrainingResponse(
@@ -798,6 +840,7 @@ async def get_pipeline_logs(
             "datasource_used": log.datasource_used,
             "execution_time_ms": log.execution_time_ms,
             "timestamp": log.created_at,
+            "terminal_log": log.terminal_log,
         }
         for log in results
     ]

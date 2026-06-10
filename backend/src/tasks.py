@@ -2,6 +2,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
+from uuid import UUID
 
 import numpy as np
 import pandas as pd
@@ -41,6 +42,18 @@ PREDICTION_FEATURE_COLUMNS = [
 ]
 
 
+def _terminal_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _append_terminal_log(db, pipeline_log: AIPipelineLog, message: str) -> None:
+    line = f"[{_terminal_timestamp()}] {message}"
+    pipeline_log.terminal_log = (
+        f"{pipeline_log.terminal_log}\n{line}" if pipeline_log.terminal_log else line
+    )
+    db.commit()
+
+
 def _cleaned_meter_csv_path(metric_type: str) -> Path:
     metric_name = Path(metric_type).name.strip().lower()
     if not metric_name:
@@ -57,6 +70,7 @@ def train_model_task(
     metric_type: str | None = None,
     data_source: str = TrainingDataSource.CSV.value,
     model_task: str = ModelTask.Prediction.value,
+    pipeline_log_id: str | None = None,
 ):
     """
     Orchestrates the ML pipeline: Data Loading -> Training -> DB Logging.
@@ -75,20 +89,46 @@ def train_model_task(
     mlflow.set_experiment(f"dmp_energy_{model_task_value}")
 
     db = SessionLocal()
-    pipeline_log = AIPipelineLog(
-        type="Training",
-        model_task=model_task_value,
-        datasource_used=_datasource_label(request),
-        status="Running",
-        execution_time_ms=0,
-        mlflow_run_id="pending",
-    )
-    db.add(pipeline_log)
-    db.commit()
+    pipeline_log = None
+    if pipeline_log_id:
+        try:
+            pipeline_log = db.get(AIPipelineLog, UUID(pipeline_log_id))
+        except ValueError:
+            pipeline_log = None
+
+    if pipeline_log is None:
+        pipeline_log = AIPipelineLog(
+            type="Training",
+            model_task=model_task_value,
+            datasource_used=_datasource_label(request),
+            status="Running",
+            execution_time_ms=0,
+            mlflow_run_id="pending",
+            terminal_log="",
+        )
+        db.add(pipeline_log)
+        db.commit()
+        _append_terminal_log(
+            db,
+            pipeline_log,
+            (
+                "Queued training pipeline "
+                f"task={model_task_value} site={request.site_id} "
+                f"building={request.building_id or '-'} metrics={','.join(request.metrics)} "
+                f"source={TrainingDataSource(request.data_source).value}"
+            ),
+        )
+    else:
+        _append_terminal_log(db, pipeline_log, "Worker picked up queued training pipeline.")
 
     try:
         start = perf_counter()
         if ModelTask(request.model_task) != ModelTask.Prediction:
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                f"Stopped: {model_task_value} training pipeline is not implemented yet.",
+            )
             response = _not_implemented_training_response(request, selected_algorithm)
             pipeline_log.status = "Failed"  # type: ignore
             pipeline_log.mlflow_run_id = "not_implemented"
@@ -97,6 +137,11 @@ def train_model_task(
             return response
 
         with mlflow.start_run() as run:
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                f"Started MLflow run {run.info.run_id}.",
+            )
             mlflow.set_tags(
                 {
                     "model_task": model_task_value,
@@ -114,22 +159,43 @@ def train_model_task(
                 }
             )
             registered_model_name = _registered_model_name(request)
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                f"Loading training data for registered model {registered_model_name}.",
+            )
             metrics = _train_prediction_model(
                 request=request,
                 db=db,
                 model_name=registered_model_name,
             )
 
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                "Training completed. Logging metrics to MLflow: "
+                + ", ".join(f"{key}={value:.4f}" for key, value in metrics.items()),
+            )
             mlflow.log_metrics(metrics)
             _tag_registered_model_versions(
                 request=request,
                 model_name=registered_model_name,
                 run_id=run.info.run_id,
             )
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                f"Tagged registered model versions for run {run.info.run_id}.",
+            )
 
             pipeline_log.mlflow_run_id = run.info.run_id
             pipeline_log.execution_time_ms = int((perf_counter() - start) * 1000)
             pipeline_log.status = "Success"  # type: ignore
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                f"Pipeline finished successfully in {pipeline_log.execution_time_ms} ms.",
+            )
             db.commit()
 
             return {
@@ -146,6 +212,12 @@ def train_model_task(
 
     except Exception as e:
         pipeline_log.status = "Failed"  # type: ignore
+        pipeline_log.execution_time_ms = int((perf_counter() - start) * 1000)
+        _append_terminal_log(
+            db,
+            pipeline_log,
+            f"Pipeline failed: {type(e).__name__}: {e}",
+        )
         db.commit()
         raise self.retry(exc=e, countdown=60, max_retries=3)
 
