@@ -16,6 +16,7 @@ export const MAIN_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: "grid" },
   { href: "/anomaly", label: "Anomaly Detection", icon: "pulse", badge: 15 },
   { href: "/forecast", label: "Forecasting", icon: "trend" },
+  { href: "/prediction", label: "Prediction", icon: "target" },
   { href: "/models", label: "AI Engineering", icon: "cpu", roles: AI_ENGINEERING_ROLES },
   { href: "/assets", label: "Sites & Meters", icon: "map", roles: ASSET_MANAGEMENT_ROLES },
 ];

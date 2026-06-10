@@ -26,6 +26,7 @@ const DATE_RANGES = ["Last 24 hours", "Last 7 days", "Last 30 days", "This month
 function routeLabel(pathname: string) {
   if (pathname.startsWith("/anomaly")) return "Anomaly Detection";
   if (pathname.startsWith("/forecast")) return "Forecasting";
+  if (pathname.startsWith("/prediction")) return "Prediction";
   if (pathname.startsWith("/models")) return "AI Engineering";
   if (pathname.startsWith("/assets")) return "Sites & Meters";
   return "Dashboard";
