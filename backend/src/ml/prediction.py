@@ -9,7 +9,7 @@ from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 from sqlalchemy.orm import Session
 from src.core.config import settings
-from src.models import Device, Location, TelemetryData
+from src.models import Device, Location, MetricType, TelemetryData
 from src.schemas import (
     ExpectedActualPoint,
     ExpectedActualReportRequest,
@@ -30,6 +30,17 @@ PREDICTION_FEATURE_COLUMNS = [
     "primaryspaceusage",
     "metric_type",
 ]
+
+DEFAULT_METRIC_UNITS = {
+    "electricity": "kWh",
+    "solar": "kWh",
+    "steam": "kg",
+    "hotwater": "m3",
+    "chilledwater": "m3",
+    "gas": "m3",
+    "water": "m3",
+    "irrigation": "m3",
+}
 
 
 @dataclass(frozen=True)
@@ -218,6 +229,7 @@ class PredictionService:
         loaded = self.model_repository.load_first_available(model_names)
         features = self.feature_builder.scenario_features(request, profile)
         predictions = _predict(loaded.model, features)
+        unit = _metric_unit(db, request.metric_type)
 
         points = [
             PredictionHourlyPoint(timestamp=row.timestamp, expected_value=float(value))
@@ -225,8 +237,8 @@ class PredictionService:
         ]
         estimated_value = float(sum(point.expected_value for point in points))
         estimated_cost = (
-            estimated_value * request.energy_rate_per_kwh
-            if request.energy_rate_per_kwh is not None
+            estimated_value * request.unit_rate
+            if request.unit_rate is not None
             else None
         )
         return PredictionScenarioResponse(
@@ -237,6 +249,7 @@ class PredictionService:
             model_version=loaded.version,
             estimated_value=estimated_value,
             estimated_cost=estimated_cost,
+            unit=unit,
             points=points,
         )
 
@@ -261,6 +274,7 @@ class PredictionService:
         loaded = self.model_repository.load_first_available(model_names)
         features = self.feature_builder.report_features(actual_df, request, profile)
         predictions = _predict(loaded.model, features)
+        unit = _metric_unit(db, request.metric_type)
 
         points: list[ExpectedActualPoint] = []
         for row, expected in zip(actual_df.itertuples(index=False), predictions):
@@ -296,6 +310,7 @@ class PredictionService:
             actual_total=actual_total,
             variance_total=variance_total,
             variance_percent=variance_percent,
+            unit=unit,
             points=points,
         )
 
@@ -330,6 +345,14 @@ def _load_actual_usage(
             for row in rows
         ]
     )
+
+
+def _metric_unit(db: Session, metric_type: str) -> str:
+    metric_id = metric_type.strip().lower()
+    metric = db.query(MetricType).filter(MetricType.id == metric_id).one_or_none()
+    if metric is not None and metric.unit:
+        return str(metric.unit)
+    return DEFAULT_METRIC_UNITS.get(metric_id, "units")
 
 
 def _registered_prediction_model_name(site_id: str, metric_type: str) -> str:

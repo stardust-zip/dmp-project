@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any, List, Optional
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     EmailStr,
@@ -361,7 +362,12 @@ class PredictionScenarioRequest(BaseSchema):
     scenario_date: datetime
     opening_time: str = Field(default="06:00", pattern=r"^\d{2}:\d{2}$")
     closing_time: str = Field(default="18:00", pattern=r"^\d{2}:\d{2}$")
-    energy_rate_per_kwh: float | None = Field(default=None, ge=0.0)
+    unit_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        validation_alias=AliasChoices("unit_rate", "energy_rate_per_kwh"),
+        description="Optional cost per response unit, e.g. dollars per kWh or per m3.",
+    )
     model_name: str | None = Field(default=None, min_length=1)
 
 
@@ -378,7 +384,7 @@ class PredictionScenarioResponse(BaseSchema):
     model_version: str
     estimated_value: float
     estimated_cost: float | None = None
-    unit: str = "kWh"
+    unit: str
     points: list[PredictionHourlyPoint]
 
 
@@ -417,7 +423,7 @@ class ExpectedActualReportResponse(BaseSchema):
     actual_total: float | None = None
     variance_total: float | None = None
     variance_percent: float | None = None
-    unit: str = "kWh"
+    unit: str
     points: list[ExpectedActualPoint]
 
 

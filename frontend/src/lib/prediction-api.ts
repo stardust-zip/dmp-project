@@ -14,7 +14,7 @@ export interface PredictionScenarioPayload {
   scenario_date: string;
   opening_time: string;
   closing_time: string;
-  energy_rate_per_kwh?: number | null;
+  unit_rate?: number | null;
   model_name?: string | null;
 }
 

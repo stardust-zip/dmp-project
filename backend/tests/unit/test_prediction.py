@@ -10,6 +10,7 @@ from src.ml.prediction import (
     PredictionModelRepository,
     PredictionService,
 )
+from src.models import Location, MetricType
 from src.schemas import ExpectedActualReportRequest, PredictionScenarioRequest
 
 
@@ -58,18 +59,24 @@ class FakeQuery:
         return self._rows
 
 
-def _fake_db(actual_rows=None):
+def _fake_db(actual_rows=None, metric_unit="kWh"):
     location = SimpleNamespace(
         id="BuildingA",
         parent_id="SiteA",
         location_type_id="Education",
         metadata_={"sqm": 1200.0},
     )
+    metric = SimpleNamespace(id="electricity", unit=metric_unit)
     db = Mock()
-    db.query.side_effect = [
-        FakeQuery(one=location),
-        FakeQuery(rows=actual_rows or []),
-    ]
+
+    def query(*entities):
+        if entities and entities[0] is Location:
+            return FakeQuery(one=location)
+        if entities and entities[0] is MetricType:
+            return FakeQuery(one=metric)
+        return FakeQuery(rows=actual_rows or [])
+
+    db.query.side_effect = query
     return db
 
 
@@ -82,7 +89,7 @@ def test_prediction_scenario_uses_closing_time_to_build_operating_window():
         scenario_date="2026-06-10T00:00:00Z",
         opening_time="18:00",
         closing_time="22:00",
-        energy_rate_per_kwh=0.2,
+        unit_rate=0.2,
     )
 
     response = service.predict_scenario(_fake_db(), request)
@@ -94,6 +101,7 @@ def test_prediction_scenario_uses_closing_time_to_build_operating_window():
     assert response.points[-1].timestamp.hour == 21
     assert response.estimated_value == sum(point.expected_value for point in response.points)
     assert response.estimated_cost == response.estimated_value * 0.2
+    assert response.unit == "kWh"
 
 
 def test_expected_vs_actual_returns_variance_points_and_totals():
@@ -127,6 +135,26 @@ def test_expected_vs_actual_returns_variance_points_and_totals():
     assert response.expected_total == 247.0
     assert response.actual_total == 290.0
     assert response.variance_total == 43.0
+    assert response.unit == "kWh"
+
+
+def test_prediction_uses_metric_unit_from_metadata():
+    service = PredictionService(model_repository=FakeModelRepository())
+    request = PredictionScenarioRequest(
+        site_id="SiteA",
+        building_id="BuildingA",
+        metric_type="water",
+        scenario_date="2026-06-10T00:00:00Z",
+        opening_time="08:00",
+        closing_time="10:00",
+        unit_rate=1.5,
+    )
+
+    response = service.predict_scenario(_fake_db(metric_unit="m3"), request)
+
+    assert response.model_name == "dmp_energy_prediction_SiteA_water"
+    assert response.unit == "m3"
+    assert response.estimated_cost == response.estimated_value * 1.5
 
 
 def test_model_repository_skips_broken_artifact_versions(monkeypatch):

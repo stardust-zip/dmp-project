@@ -61,7 +61,7 @@ function buildExpectedActualChart(report: ExpectedActualResponse | null) {
       },
       yAxis: {
         type: "value",
-        name: report?.unit ?? "kWh",
+        name: report?.unit ?? "units",
         nameTextStyle: { color: theme.muted },
         splitLine: { lineStyle: { color: theme.grid } },
         axisLabel: { color: theme.muted },
@@ -165,6 +165,10 @@ export function PredictionPage() {
     ],
     [metrics],
   );
+  const selectedMetricUnit = useMemo(
+    () => metrics.find((metric) => metric.id === metricType)?.unit || "units",
+    [metricType, metrics],
+  );
 
   async function runScenario() {
     setLoading(true);
@@ -178,7 +182,7 @@ export function PredictionPage() {
           scenario_date: isoDate(scenarioDate),
           opening_time: wholeHour(openingTime),
           closing_time: wholeHour(closingTime),
-          energy_rate_per_kwh: rate ? Number(rate) : null,
+          unit_rate: rate ? Number(rate) : null,
         }),
       );
     } catch (err) {
@@ -250,18 +254,18 @@ export function PredictionPage() {
               <Field label="Opening Time">
                 <input className="input" type="time" step="3600" value={openingTime} onChange={(event) => setOpeningTime(event.target.value)} />
               </Field>
-              <Field label="Energy Rate">
+              <Field label={`Unit Rate ($/${selectedMetricUnit})`}>
                 <input className="input" type="number" min="0" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} />
               </Field>
               <button className="btn btn-primary" onClick={runScenario} disabled={loading}>
-                {loading ? <Spinner size={14} /> : <Icon name="play" />} Predict Energy Cost
+                {loading ? <Spinner size={14} /> : <Icon name="play" />} Predict Cost
               </button>
             </div>
           </Card>
 
           <div className="grid" style={{ gap: "var(--gap)" }}>
             <div className="grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
-              <ResultMetric label="Estimated Usage" value={scenario ? fmt(scenario.estimated_value) : "-"} unit={scenario?.unit ?? "kWh"} />
+              <ResultMetric label="Estimated Usage" value={scenario ? fmt(scenario.estimated_value) : "-"} unit={scenario?.unit ?? selectedMetricUnit} />
               <ResultMetric label="Estimated Cost" value={money(scenario?.estimated_cost)} />
               <ResultMetric label="Model Version" value={scenario ? `v${scenario.model_version}` : "-"} />
             </div>
@@ -271,7 +275,7 @@ export function PredictionPage() {
                   <thead>
                     <tr>
                       <th>Hour</th>
-                      <th style={{ textAlign: "right" }}>Expected ({scenario?.unit ?? "kWh"})</th>
+                      <th style={{ textAlign: "right" }}>Expected ({scenario?.unit ?? selectedMetricUnit})</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -313,9 +317,9 @@ export function PredictionPage() {
 
           <div className="grid" style={{ gap: "var(--gap)" }}>
             <div className="grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
-              <ResultMetric label="Expected" value={report ? fmt(report.expected_total) : "-"} unit={report?.unit ?? "kWh"} />
-              <ResultMetric label="Actual" value={report?.actual_total != null ? fmt(report.actual_total) : "-"} unit={report?.unit ?? "kWh"} />
-              <ResultMetric label="Variance" value={report?.variance_total != null ? fmt(report.variance_total) : "-"} unit={report?.unit ?? "kWh"} />
+              <ResultMetric label="Expected" value={report ? fmt(report.expected_total) : "-"} unit={report?.unit ?? selectedMetricUnit} />
+              <ResultMetric label="Actual" value={report?.actual_total != null ? fmt(report.actual_total) : "-"} unit={report?.unit ?? selectedMetricUnit} />
+              <ResultMetric label="Variance" value={report?.variance_total != null ? fmt(report.variance_total) : "-"} unit={report?.unit ?? selectedMetricUnit} />
             </div>
             <Card title="Expected vs. Actual" icon="trend" sub={report ? `${report.points.length} interval(s)` : "No report result"}>
               <EChart build={buildExpectedActualChart(report)} deps={[report]} themeKey={report?.model_version ?? "prediction"} height={340} />
