@@ -55,7 +55,7 @@ const HUMAN_TOKEN_OVERRIDES: Record<string, string> = {
 
 const ENERGY_MODEL_PREFIX = "dmp_energy_prediction";
 const DEVICE_PREFIXES = ["meter"];
-const LOCATION_PREFIXES = ["building"];
+const LOCATION_PREFIXES = ["building", "site"];
 
 function titleToken(token: string) {
   const lower = token.toLowerCase();
@@ -84,6 +84,14 @@ export function displayLocationName(name?: string | null, id?: string | null) {
   const source = name?.trim() || id?.trim();
   if (!source) return "Unnamed Location";
   return humanizeIdentifier(stripKnownPrefix(source, LOCATION_PREFIXES));
+}
+
+export function isSiteLocation(location: { location_type?: string | null; parent_id?: string | null }) {
+  return location.location_type?.toLowerCase() === "site";
+}
+
+export function isBuildingLocation(location: { location_type?: string | null; parent_id?: string | null }) {
+  return !isSiteLocation(location);
 }
 
 export function locationSearchText(location: { id: string; name?: string | null; location_type?: string | null; parent_id?: string | null }, parent?: { id: string; name?: string | null } | null) {

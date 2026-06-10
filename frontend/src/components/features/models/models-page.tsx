@@ -47,7 +47,7 @@ const DATA_SOURCE_OPTIONS: Array<{ value: TrainingDataSource; label: string }> =
   { value: "db", label: "Database" },
 ];
 
-const DEFAULT_SITE = "Panther_parking_Lorriane";
+const DEFAULT_LOCATION = "Panther_parking_Lorriane";
 const DEFAULT_METRICS = ["electricity"];
 const LOCATION_INDEX_LIMIT = 1000;
 
@@ -130,6 +130,37 @@ function modelSearchText(model: RegisteredModel) {
     model.production_version?.current_stage ?? "",
     ...Object.entries(model.tags ?? {}).flatMap(([key, value]) => [key, value]),
   ].join(" ").toLowerCase();
+}
+
+function isSuccessfulPipelineLog(log: PipelineLog) {
+  return log.status.toLowerCase() === "success" && Boolean(log.mlflow_run_id && log.mlflow_run_id !== "pending");
+}
+
+function pipelineDisplayStatus(log: PipelineLog) {
+  if (log.status.toLowerCase() === "running" && (!log.mlflow_run_id || log.mlflow_run_id === "pending")) {
+    return "Queued";
+  }
+  return log.status;
+}
+
+function pipelineStatusTone(log: PipelineLog) {
+  const normalized = pipelineDisplayStatus(log).toLowerCase();
+  if (normalized === "success") return "s-green";
+  if (normalized === "failed") return "s-red";
+  return "s-yellow";
+}
+
+function pipelineStatusLabel(log: PipelineLog) {
+  return pipelineDisplayStatus(log);
+}
+
+function pipelineStatusDescription(log: PipelineLog) {
+  const normalized = pipelineDisplayStatus(log).toLowerCase();
+  if (normalized === "queued") return "Waiting for a worker to pick up this training job.";
+  if (normalized === "running") return "Worker is actively executing this training job.";
+  if (normalized === "success") return "Pipeline completed successfully.";
+  if (normalized === "failed") return "Pipeline failed. Open details for the terminal log.";
+  return log.datasource_used || "Unknown pipeline state.";
 }
 
 function pipelineTerminalLog(log: PipelineLog) {
@@ -236,6 +267,7 @@ function TrainingValidationPanel({
 
 export function ModelsPage() {
   const locationPickerRef = useRef<HTMLDivElement | null>(null);
+  const registryRefreshRunIdsRef = useRef<Set<string>>(new Set());
   const [models, setModels] = useState<RegisteredModel[]>([]);
   const [logs, setLogs] = useState<PipelineLog[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
@@ -245,9 +277,9 @@ export function ModelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [modelTask, setModelTask] = useState<ModelTask>("prediction");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
-  const [locationId, setLocationId] = useState(DEFAULT_SITE);
+  const [locationId, setLocationId] = useState(DEFAULT_LOCATION);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(DEFAULT_METRICS);
-  const [locationQuery, setLocationQuery] = useState(DEFAULT_SITE);
+  const [locationQuery, setLocationQuery] = useState(DEFAULT_LOCATION);
   const [metricQuery, setMetricQuery] = useState("");
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(defaultEndDate);
@@ -264,6 +296,7 @@ export function ModelsPage() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [trainMessage, setTrainMessage] = useState<string | null>(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [locationSearchLoading, setLocationSearchLoading] = useState(false);
   const [detailModelName, setDetailModelName] = useState<string | null>(null);
   const [trainModalOpen, setTrainModalOpen] = useState(false);
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
@@ -291,6 +324,9 @@ export function ModelsPage() {
         ]);
         setModels(modelData.models);
         setLogs(logData.logs);
+        registryRefreshRunIdsRef.current = new Set(
+          logData.logs.filter(isSuccessfulPipelineLog).map((log) => log.mlflow_run_id as string),
+        );
         setSelectedModelName((current) => current || modelData.models[0]?.name || "");
         setLocationOptions(locationData.locations);
         setMetricOptions(metricData.metrics);
@@ -334,22 +370,55 @@ export function ModelsPage() {
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [detailModelName]);
 
-  const refreshLogs = useCallback(async (signal?: AbortSignal) => {
-    const logData = await getPipelineLogs(signal);
-    setLogs(logData.logs);
-    setDetailLog((current) => (current ? logData.logs.find((log) => log.id === current.id) ?? current : current));
-    return logData.logs;
-  }, []);
+  const refreshRegistry = useCallback(
+    async (signal?: AbortSignal) => {
+      const modelData = await getRegisteredModels(signal);
+      setModels(modelData.models);
+      setSelectedModelName((current) => current || modelData.models[0]?.name || "");
+
+      if (selectedModelName && modelData.models.some((model) => model.name === selectedModelName)) {
+        const versionData = await getModelVersions(selectedModelName, signal);
+        setVersions(versionData.versions);
+        setSelectedRunId((current) =>
+          versionData.versions.some((version) => version.run_id === current) ? current : versionData.versions[0]?.run_id || "",
+        );
+      }
+
+      return modelData.models;
+    },
+    [selectedModelName],
+  );
+
+  const refreshLogs = useCallback(
+    async (signal?: AbortSignal) => {
+      const logData = await getPipelineLogs(signal);
+      setLogs(logData.logs);
+      setDetailLog((current) => (current ? logData.logs.find((log) => log.id === current.id) ?? current : current));
+
+      const successfulRunIds = logData.logs
+        .filter(isSuccessfulPipelineLog)
+        .map((log) => log.mlflow_run_id as string);
+      const hasNewSuccessfulRun = successfulRunIds.some((runId) => !registryRefreshRunIdsRef.current.has(runId));
+      successfulRunIds.forEach((runId) => registryRefreshRunIdsRef.current.add(runId));
+
+      if (hasNewSuccessfulRun) {
+        await refreshRegistry(signal);
+      }
+
+      return logData.logs;
+    },
+    [refreshRegistry],
+  );
 
   useEffect(() => {
     if (!pipelineModalOpen && !detailLog && !submitting) return;
 
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
-      void refreshLogs(controller.signal).catch(() => {});
+      void refreshLogs(controller.signal).catch(() => { });
     }, 0);
     const interval = window.setInterval(() => {
-      void refreshLogs(controller.signal).catch(() => {});
+      void refreshLogs(controller.signal).catch(() => { });
     }, 2000);
 
     return () => {
@@ -399,10 +468,9 @@ export function ModelsPage() {
   const locationById = useMemo(() => new Map(locationOptions.map((location) => [location.id, location])), [locationOptions]);
   const filteredLocationOptions = useMemo(() => {
     const query = locationQuery.trim().toLowerCase();
-    if (!query) return locationOptions.slice(0, 8);
     return locationOptions
-      .filter((location) => locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : null).includes(query))
-      .slice(0, 8);
+      .filter((location) => !query || locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : null).includes(query))
+      .slice(0, 12);
   }, [locationById, locationOptions, locationQuery]);
   const detailModel = models.find((model) => model.name === detailModelName) ?? null;
   const modelMetricOptions = useMemo(() => {
@@ -429,6 +497,19 @@ export function ModelsPage() {
   );
   const detailVersionMetricEntries = Object.entries(detailVersion?.metrics ?? {}).sort(([left], [right]) => left.localeCompare(right));
   const detailVersionTagEntries = Object.entries(detailVersion?.tags ?? {}).sort(([left], [right]) => left.localeCompare(right));
+  const pipelineLogsByRunId = useMemo(() => {
+    const byRunId = new Map<string, PipelineLog[]>();
+    logs.forEach((log) => {
+      if (!log.mlflow_run_id || log.mlflow_run_id === "pending") return;
+      const runLogs = byRunId.get(log.mlflow_run_id) ?? [];
+      runLogs.push(log);
+      byRunId.set(log.mlflow_run_id, runLogs);
+    });
+    return byRunId;
+  }, [logs]);
+  const detailVersionPipelineLogs = detailVersions.flatMap((version) =>
+    (pipelineLogsByRunId.get(version.run_id) ?? []).map((log) => ({ version, log })),
+  );
   const selectedMetricsKey = selectedMetrics.join(",");
   const selectedTaskLabel = MODEL_TASK_OPTIONS.find((option) => option.value === modelTask)?.label ?? modelTask;
   const trainingTaskImplemented = modelTask === "prediction";
@@ -446,6 +527,29 @@ export function ModelsPage() {
     [dataSource, endDate, locationId, modelTask, selectedMetrics, startDate],
   );
   const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && !submitting && !validationLoading && trainingValidation?.valid !== false;
+
+  useEffect(() => {
+    if (!trainModalOpen) return;
+
+    const query = locationQuery.trim();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      setLocationSearchLoading(true);
+      try {
+        const data = await getLocationOptions({ q: query || undefined, limit: LOCATION_INDEX_LIMIT }, controller.signal);
+        setLocationOptions(data.locations);
+      } catch {
+        if (!controller.signal.aborted) setLocationOptions([]);
+      } finally {
+        if (!controller.signal.aborted) setLocationSearchLoading(false);
+      }
+    }, query ? 180 : 0);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [locationQuery, trainModalOpen]);
 
   useEffect(() => {
     if (!trainModalOpen || !trainingTaskImplemented || !metricSelectionValid || !validationInputReady) {
@@ -514,6 +618,9 @@ export function ModelsPage() {
       ]);
       setModels(modelData.models);
       setLogs(logData.logs);
+      registryRefreshRunIdsRef.current = new Set(
+        logData.logs.filter(isSuccessfulPipelineLog).map((log) => log.mlflow_run_id as string),
+      );
       setSelectedModelName((current) => current || modelData.models[0]?.name || "");
       setLocationOptions(locationData.locations);
       setMetricOptions(metricData.metrics);
@@ -531,7 +638,7 @@ export function ModelsPage() {
     const invalidMetrics = selectedMetrics.filter((metric) => !knownMetricIds.has(metric));
 
     if (!resolvedLocationId) {
-      setError("Select a site/building from the list before training.");
+      setError("Select a location from the search results before training.");
       return;
     }
 
@@ -734,19 +841,6 @@ export function ModelsPage() {
                       <span className={`model-stage-chip ${model.production_version ? "is-production" : "is-non-production"}`}>
                         {model.production_version ? "Production" : "Non-production"}
                       </span>
-                      {model.latest_versions.length ? (
-                        model.latest_versions.slice(0, 4).map((version) => (
-                          <span
-                            className={`model-version-chip ${version.current_stage === "Production" ? "is-production" : "is-version"}`}
-                            key={`${model.name}-${version.version}`}
-                          >
-                            v{version.version}
-                            {version.current_stage ? ` . ${version.current_stage}` : ""}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="badge badge-neutral">No versions</span>
-                      )}
                     </div>
                   </button>
                 );
@@ -779,7 +873,7 @@ export function ModelsPage() {
                 <Field label="Data source">
                   <Select value={dataSource} onChange={setDataSource} options={DATA_SOURCE_OPTIONS} />
                 </Field>
-                <Field label="Site / building">
+                <Field label="Location">
                   <div className="model-combobox" ref={locationPickerRef}>
                     <input
                       className="input"
@@ -790,19 +884,25 @@ export function ModelsPage() {
                         setLocationId("");
                         setLocationPickerOpen(true);
                       }}
+                      placeholder="Search site or building by name or ID"
                     />
-                    {locationPickerOpen && locationQuery && filteredLocationOptions.length > 0 && (
+                    {locationPickerOpen && (
                       <div className="model-picker-list">
-                        {filteredLocationOptions.map((location) => (
-                          <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
-                            <b title={location.id}>{displayLocationName(location.name, location.id)}</b>
-                            <span title={location.id}>{location.id}</span>
-                          </button>
-                        ))}
+                        {locationSearchLoading ? (
+                          <div className="model-picker-empty">Searching locations...</div>
+                        ) : filteredLocationOptions.length ? (
+                          filteredLocationOptions.map((location) => (
+                            <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
+                              <b title={location.id}>{displayLocationName(location.name, location.id)}</b>
+                              <span title={location.id}>
+                                {location.parent_id ? `Site ${location.parent_id} · ` : ""}{location.id}
+                              </span>
+                            </button>
+                          ))
+                        ) : (
+                          <div className="model-picker-empty">No locations found.</div>
+                        )}
                       </div>
-                    )}
-                    {locationPickerOpen && locationQuery && filteredLocationOptions.length === 0 && (
-                      <div className="model-picker-empty">No matches found.</div>
                     )}
                   </div>
                 </Field>
@@ -891,14 +991,14 @@ export function ModelsPage() {
                       type="button"
                       onClick={() => { setPipelineModalOpen(false); setDetailLog(log); }}
                     >
-                      <span className={`status-dot ${log.status === "Success" ? "s-green" : log.status === "Failed" ? "s-red" : "s-yellow"}`} />
+                      <span className={`status-dot ${pipelineStatusTone(log)}`} />
                       <div>
                         <b>{log.model_task || log.type}</b>
                         <span className="model-log-source" title={log.datasource_used || "Unknown datasource"}>
-                          {log.datasource_used || "Unknown datasource"}
+                          {pipelineStatusDescription(log)}
                         </span>
                       </div>
-                      <span className="badge badge-neutral">{log.status}</span>
+                      <span className="badge badge-neutral">{pipelineStatusLabel(log)}</span>
                     </button>
                   ))}
                 </div>
@@ -925,12 +1025,13 @@ export function ModelsPage() {
             </div>
             <div className="model-modal-body">
               <div className="pipeline-log-summary">
-                <span className={`status-dot ${detailLog.status === "Success" ? "s-green" : detailLog.status === "Failed" ? "s-red" : "s-yellow"}`} />
+                <span className={`status-dot ${pipelineStatusTone(detailLog)}`} />
                 <div>
                   <b>{detailLog.model_task || detailLog.type}</b>
                   <span style={{ color: detailLog.status === "Success" ? "var(--green)" : detailLog.status === "Failed" ? "var(--red)" : "var(--amber)", fontWeight: 600 }}>
-                    {detailLog.status}
+                    {pipelineStatusLabel(detailLog)}
                   </span>
+                  <span>{pipelineStatusDescription(detailLog)}</span>
                 </div>
               </div>
 
@@ -950,7 +1051,7 @@ export function ModelsPage() {
                 </div>
                 <div>
                   <span>Status</span>
-                  <b style={{ color: detailLog.status === "Success" ? "var(--green)" : detailLog.status === "Failed" ? "var(--red)" : "var(--amber)" }}>{detailLog.status}</b>
+                  <b style={{ color: detailLog.status === "Success" ? "var(--green)" : detailLog.status === "Failed" ? "var(--red)" : "var(--amber)" }}>{pipelineStatusLabel(detailLog)}</b>
                 </div>
                 <div>
                   <span>Execution Time</span>
@@ -1115,6 +1216,40 @@ export function ModelsPage() {
                     </div>
                   ) : (
                     <div className="empty compact">No tags recorded for this version.</div>
+                  )}
+
+                  <div className="model-section-title">Training pipelines</div>
+                  {detailVersionPipelineLogs.length ? (
+                    <div className="model-pipeline-list">
+                      {detailVersionPipelineLogs.map(({ version, log }) => (
+                        <button
+                          className="model-pipeline-row"
+                          key={`${version.version}-${log.id}`}
+                          type="button"
+                          onClick={() => {
+                            setDetailModelName(null);
+                            setDetailLog(log);
+                          }}
+                        >
+                          <span className={`status-dot ${pipelineStatusTone(log)}`} />
+                          <div>
+                            <b>v{version.version} - {log.model_task || log.type}</b>
+                            <span>
+                              {log.datasource_used || "Unknown datasource"}
+                              {log.mlflow_run_id ? ` · ${log.mlflow_run_id.slice(0, 8)}` : ""}
+                            </span>
+                          </div>
+                          <span className={`model-pipeline-status ${log.status === "Success" ? "is-success" : log.status === "Failed" ? "is-failed" : "is-running"}`}>
+                            {pipelineStatusLabel(log)}
+                          </span>
+                          <small>{log.timestamp ? new Date(log.timestamp).toLocaleString() : "Unknown time"}</small>
+                        </button>
+                      ))}
+                    </div>
+                  ) : logsLoading ? (
+                    <div className="empty compact">Loading pipeline history...</div>
+                  ) : (
+                    <div className="empty compact">No pipeline history found for this model's versions.</div>
                   )}
                 </>
               ) : versionsLoading || detailModelName !== selectedModelName ? (

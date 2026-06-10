@@ -150,7 +150,9 @@ class PredictionFeatureBuilder:
         if closing <= opening:
             raise ValueError("closing_time must be after opening_time")
 
-        scenario_day = _to_utc(request.scenario_date)
+        scenario_day = request.scenario_date
+        if scenario_day.tzinfo is None:
+            scenario_day = scenario_day.replace(tzinfo=timezone.utc)
         timestamps = [
             scenario_day.replace(hour=hour, minute=0, second=0, microsecond=0)
             for hour in range(opening, closing)

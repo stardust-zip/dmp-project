@@ -196,6 +196,43 @@ export interface UpdateModelDescriptionResponse {
   updated_by: string;
 }
 
+type ApiErrorPayload = {
+  detail?: unknown;
+  error?: unknown;
+  message?: unknown;
+};
+
+function formatApiDetail(detail: unknown): string | null {
+  if (!detail) return null;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object" && "msg" in item) {
+          const loc = "loc" in item && Array.isArray(item.loc) ? item.loc.join(".") : null;
+          return loc ? `${loc}: ${String(item.msg)}` : String(item.msg);
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+  return null;
+}
+
+async function apiErrorMessage(response: Response): Promise<string> {
+  if (response.status === 502) {
+    return "Backend is unavailable. Confirm the dmp_backend container is running and healthy, then refresh this page.";
+  }
+
+  const data = (await response.json().catch(() => null)) as ApiErrorPayload | null;
+  const detail = formatApiDetail(data?.detail);
+  const error = typeof data?.error === "string" ? data.error : null;
+  const message = typeof data?.message === "string" ? data.message : null;
+  return detail ?? error ?? message ?? `API request failed: ${response.status}`;
+}
+
 async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     signal,
@@ -203,7 +240,7 @@ async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status}`);
+    throw new Error(await apiErrorMessage(response));
   }
 
   return response.json() as Promise<T>;
@@ -222,9 +259,7 @@ async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Pr
   });
 
   if (!response.ok) {
-    const data = (await response.json().catch(() => null)) as { detail?: string | string[] } | null;
-    const detail = Array.isArray(data?.detail) ? data.detail.join(" ") : data?.detail;
-    throw new Error(detail ?? `API request failed: ${response.status}`);
+    throw new Error(await apiErrorMessage(response));
   }
 
   return response.json() as Promise<T>;
@@ -243,9 +278,7 @@ async function apiPatch<T>(path: string, body: unknown, signal?: AbortSignal): P
   });
 
   if (!response.ok) {
-    const data = (await response.json().catch(() => null)) as { detail?: string | string[] } | null;
-    const detail = Array.isArray(data?.detail) ? data.detail.join(" ") : data?.detail;
-    throw new Error(detail ?? `API request failed: ${response.status}`);
+    throw new Error(await apiErrorMessage(response));
   }
 
   return response.json() as Promise<T>;

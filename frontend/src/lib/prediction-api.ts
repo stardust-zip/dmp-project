@@ -63,6 +63,37 @@ export interface ExpectedActualResponse {
   points: ExpectedActualPoint[];
 }
 
+type ApiValidationDetail = {
+  loc?: Array<string | number>;
+  msg?: string;
+  type?: string;
+};
+
+function formatApiDetail(detail: unknown) {
+  if (typeof detail === "string") return detail;
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const validation = item as ApiValidationDetail;
+          const field = validation.loc?.filter((part) => part !== "body").join(".");
+          return [field, validation.msg].filter(Boolean).join(": ");
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (detail && typeof detail === "object" && "msg" in detail) {
+    return (detail as ApiValidationDetail).msg;
+  }
+
+  return null;
+}
+
 async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
@@ -77,11 +108,12 @@ async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Pr
 
   if (!response.ok) {
     const data = (await response.json().catch(() => null)) as {
-      detail?: string | string[];
-      error?: string;
+      detail?: unknown;
+      error?: string | { message?: string };
     } | null;
-    const detail = Array.isArray(data?.detail) ? data.detail.join(" ") : data?.detail;
-    throw new Error(detail ?? data?.error ?? `API request failed: ${response.status}`);
+    const detail = formatApiDetail(data?.detail);
+    const error = typeof data?.error === "string" ? data.error : data?.error?.message;
+    throw new Error(detail ?? error ?? `Prediction request failed (${response.status}).`);
   }
 
   return response.json() as Promise<T>;

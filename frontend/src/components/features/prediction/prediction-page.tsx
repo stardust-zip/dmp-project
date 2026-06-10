@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select, Spinner } from "@/components/common/primitives";
-import { fmt } from "@/lib/format";
+import { displayLocationName, fmt, humanizeIdentifier, isSiteLocation } from "@/lib/format";
 import { getLocationOptions, getMetricOptions, type LocationOption, type MetricOption } from "@/lib/models-api";
 import {
   getExpectedVsActual,
@@ -15,9 +15,9 @@ import {
 
 type PredictionTab = "scenario" | "report";
 
-const DEFAULT_SITE = "Panther";
 const DEFAULT_BUILDING = "Panther_parking_Lorriane";
 const DEFAULT_METRIC = "electricity";
+const LOCATION_SEARCH_LIMIT = 40;
 
 function tomorrowDate() {
   const date = new Date();
@@ -35,8 +35,19 @@ function todayDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function isoDate(value: string, endOfDay = false) {
-  return `${value}T${endOfDay ? "23:59:59" : "00:00:00"}Z`;
+function localDateTimeWithOffset(dateValue: string, timeValue: string) {
+  const [hours, minutes] = wholeHour(timeValue).split(":").map(Number);
+  const date = new Date(`${dateValue}T00:00:00`);
+  date.setHours(hours, minutes, 0, 0);
+
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offsetHours = String(Math.floor(absOffset / 60)).padStart(2, "0");
+  const offsetRemainder = String(absOffset % 60).padStart(2, "0");
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  return `${dateValue}T${pad(hours)}:${pad(minutes)}:00${sign}${offsetHours}:${offsetRemainder}`;
 }
 
 function money(value?: number | null) {
@@ -46,6 +57,15 @@ function money(value?: number | null) {
 
 function wholeHour(value: string) {
   return value.length === 5 ? value : `${value}:00`;
+}
+
+function locationSubtitle(location: LocationOption, parent?: LocationOption | null) {
+  const parts = [
+    location.location_type ? humanizeIdentifier(location.location_type) : null,
+    parent ? `Site: ${displayLocationName(parent.name, parent.id)}` : location.parent_id ? `Site: ${location.parent_id}` : null,
+    location.id,
+  ].filter(Boolean);
+  return parts.join(" · ");
 }
 
 function buildExpectedActualChart(report: ExpectedActualResponse | null) {
@@ -107,11 +127,15 @@ function ResultMetric({ label, value, unit }: { label: string; value: string; un
 }
 
 export function PredictionPage() {
+  const locationPickerRef = useRef<HTMLDivElement | null>(null);
   const [tab, setTab] = useState<PredictionTab>("scenario");
-  const [locations, setLocations] = useState<LocationOption[]>([]);
+  const [locationResults, setLocationResults] = useState<LocationOption[]>([]);
   const [metrics, setMetrics] = useState<MetricOption[]>([]);
-  const [siteId, setSiteId] = useState(DEFAULT_SITE);
-  const [buildingId, setBuildingId] = useState(DEFAULT_BUILDING);
+  const [locationId, setLocationId] = useState(DEFAULT_BUILDING);
+  const [selectedLocation, setSelectedLocation] = useState<LocationOption | null>(null);
+  const [locationQuery, setLocationQuery] = useState(DEFAULT_BUILDING);
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [locationSearchLoading, setLocationSearchLoading] = useState(false);
   const [metricType, setMetricType] = useState(DEFAULT_METRIC);
   const [scenarioDate, setScenarioDate] = useState(tomorrowDate);
   const [openingTime, setOpeningTime] = useState("06:00");
@@ -128,35 +152,54 @@ export function PredictionPage() {
     const controller = new AbortController();
     async function loadOptions() {
       const [locationData, metricData] = await Promise.all([
-        getLocationOptions({ limit: 100 }, controller.signal),
+        getLocationOptions({ limit: 1000 }, controller.signal),
         getMetricOptions(controller.signal),
       ]);
-      setLocations(locationData.locations);
+      setLocationResults(locationData.locations.slice(0, LOCATION_SEARCH_LIMIT));
+      setSelectedLocation(locationData.locations.find((location) => location.id === DEFAULT_BUILDING) ?? null);
       setMetrics(metricData.metrics);
     }
     void loadOptions().catch(() => undefined);
     return () => controller.abort();
   }, []);
 
-  const siteOptions = useMemo(
-    () => [
-      { value: DEFAULT_SITE, label: DEFAULT_SITE },
-      ...locations
-        .filter((location) => location.location_type === "site")
-        .map((location) => ({ value: location.id, label: location.name || location.id })),
-    ],
-    [locations],
-  );
+  useEffect(() => {
+    const closeIfOutside = (event: PointerEvent) => {
+      if (!locationPickerRef.current?.contains(event.target as Node)) {
+        setLocationPickerOpen(false);
+      }
+    };
 
-  const buildingOptions = useMemo(
-    () => [
-      { value: DEFAULT_BUILDING, label: DEFAULT_BUILDING },
-      ...locations
-        .filter((location) => location.location_type !== "site")
-        .map((location) => ({ value: location.id, label: location.name || location.id })),
-    ],
-    [locations],
-  );
+    document.addEventListener("pointerdown", closeIfOutside);
+    return () => document.removeEventListener("pointerdown", closeIfOutside);
+  }, []);
+
+  useEffect(() => {
+    if (!locationPickerOpen) return;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      const query = locationQuery.trim();
+      setLocationSearchLoading(true);
+      try {
+        const data = await getLocationOptions({ q: query || undefined, limit: 1000 }, controller.signal);
+        setLocationResults(data.locations.slice(0, LOCATION_SEARCH_LIMIT));
+      } catch {
+        if (!controller.signal.aborted) setLocationResults([]);
+      } finally {
+        if (!controller.signal.aborted) setLocationSearchLoading(false);
+      }
+    }, locationQuery.trim() ? 180 : 0);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [locationPickerOpen, locationQuery]);
+
+  const locationById = useMemo(() => {
+    return new Map(locationResults.map((location) => [location.id, location]));
+  }, [locationResults]);
 
   const metricOptions = useMemo(
     () => [
@@ -170,45 +213,84 @@ export function PredictionPage() {
     [metricType, metrics],
   );
 
+  function chooseLocation(location: LocationOption) {
+    setLocationId(location.id);
+    setSelectedLocation(location);
+    setLocationQuery(displayLocationName(location.name, location.id));
+    setLocationPickerOpen(false);
+  }
+
+  function predictionLocationPayload() {
+    const selectedId = locationId.trim();
+    if (!selectedId) return null;
+
+    if (selectedLocation?.id === selectedId && selectedLocation.parent_id) {
+      return {
+        site_id: selectedLocation.parent_id,
+        building_id: selectedLocation.id,
+      };
+    }
+
+    if (selectedLocation?.id === selectedId && isSiteLocation(selectedLocation)) return null;
+
+    const inferredSiteId = selectedId.includes("_") ? selectedId.split("_")[0] : selectedId;
+    return {
+      site_id: inferredSiteId,
+      building_id: selectedId,
+    };
+  }
+
   async function runScenario() {
+    const locationPayload = predictionLocationPayload();
+    if (!locationPayload) {
+      setError("Select a building location from the search results before running prediction.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       setScenario(
         await predictScenario({
-          site_id: siteId,
-          building_id: buildingId,
+          site_id: locationPayload.site_id,
+          building_id: locationPayload.building_id,
           metric_type: metricType,
-          scenario_date: isoDate(scenarioDate),
+          scenario_date: localDateTimeWithOffset(scenarioDate, openingTime),
           opening_time: wholeHour(openingTime),
           closing_time: wholeHour(closingTime),
           unit_rate: rate ? Number(rate) : null,
         }),
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Scenario prediction failed.");
+      setError(err instanceof Error ? `Prediction failed: ${err.message}` : "Scenario prediction failed.");
     } finally {
       setLoading(false);
     }
   }
 
   async function runReport() {
+    const locationPayload = predictionLocationPayload();
+    if (!locationPayload) {
+      setError("Select a building location from the search results before generating the report.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       setReport(
         await getExpectedVsActual({
-          site_id: siteId,
-          building_id: buildingId,
+          site_id: locationPayload.site_id,
+          building_id: locationPayload.building_id,
           metric_type: metricType,
-          start_time: isoDate(reportStart),
-          end_time: isoDate(reportEnd, true),
+          start_time: localDateTimeWithOffset(reportStart, openingTime),
+          end_time: localDateTimeWithOffset(reportEnd, closingTime),
           opening_time: wholeHour(openingTime),
           closing_time: wholeHour(closingTime),
         }),
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Report generation failed.");
+      setError(err instanceof Error ? `Report generation failed: ${err.message}` : "Report generation failed.");
     } finally {
       setLoading(false);
     }
@@ -227,19 +309,43 @@ export function PredictionPage() {
         </div>
       </div>
 
-      <Card title="Prediction Inputs" icon="target" sub="Building, operating hours, and metric selection" style={{ marginBottom: "var(--gap)" }}>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-          <Field label="Site">
-            <Select value={siteId} onChange={setSiteId} options={siteOptions} searchable />
-          </Field>
-          <Field label="Building">
-            <Select value={buildingId} onChange={setBuildingId} options={buildingOptions} searchable />
+      <Card title="Prediction Inputs" icon="target" sub="Location and metric selection" style={{ marginBottom: "var(--gap)" }}>
+        <div className="prediction-query-grid">
+          <Field label="Location">
+            <div className="prediction-combobox" ref={locationPickerRef}>
+              <Icon name="search" />
+              <input
+                className="input"
+                value={locationQuery}
+                onFocus={() => setLocationPickerOpen(true)}
+                onChange={(event) => {
+                  setLocationQuery(event.target.value);
+                  setLocationId("");
+                  setSelectedLocation(null);
+                  setLocationPickerOpen(true);
+                }}
+                placeholder="Search site or building by name or ID"
+              />
+              {locationPickerOpen && (
+                <div className="prediction-picker-list">
+                  {locationSearchLoading ? (
+                    <div className="prediction-picker-empty">Searching locations...</div>
+                  ) : locationResults.length ? (
+                    locationResults.map((location) => (
+                      <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
+                        <b>{displayLocationName(location.name, location.id)}</b>
+                        <span>{locationSubtitle(location, location.parent_id ? locationById.get(location.parent_id) : null)}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="prediction-picker-empty">No locations found.</div>
+                  )}
+                </div>
+              )}
+            </div>
           </Field>
           <Field label="Metric">
             <Select value={metricType} onChange={setMetricType} options={metricOptions} searchable />
-          </Field>
-          <Field label="Closing Time">
-            <input className="input" type="time" step="3600" value={closingTime} onChange={(event) => setClosingTime(event.target.value)} />
           </Field>
         </div>
       </Card>
@@ -254,12 +360,21 @@ export function PredictionPage() {
               <Field label="Opening Time">
                 <input className="input" type="time" step="3600" value={openingTime} onChange={(event) => setOpeningTime(event.target.value)} />
               </Field>
+              <Field label="Closing Time">
+                <input className="input" type="time" step="3600" value={closingTime} onChange={(event) => setClosingTime(event.target.value)} />
+              </Field>
               <Field label={`Unit Rate ($/${selectedMetricUnit})`}>
                 <input className="input" type="number" min="0" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} />
               </Field>
               <button className="btn btn-primary" onClick={runScenario} disabled={loading}>
                 {loading ? <Spinner size={14} /> : <Icon name="play" />} Predict Cost
               </button>
+              {error && (
+                <div className="training-validation is-invalid" style={{ padding: "12px 14px" }}>
+                  <Icon name="alert" />
+                  <span>{error}</span>
+                </div>
+              )}
             </div>
           </Card>
 
@@ -306,12 +421,15 @@ export function PredictionPage() {
               <Field label="End Date">
                 <input className="input" type="date" value={reportEnd} onChange={(event) => setReportEnd(event.target.value)} />
               </Field>
-              <Field label="Opening Time">
-                <input className="input" type="time" step="3600" value={openingTime} onChange={(event) => setOpeningTime(event.target.value)} />
-              </Field>
               <button className="btn btn-primary" onClick={runReport} disabled={loading}>
                 {loading ? <Spinner size={14} /> : <Icon name="play" />} Generate Report
               </button>
+              {error && (
+                <div className="training-validation is-invalid" style={{ padding: "12px 14px" }}>
+                  <Icon name="alert" />
+                  <span>{error}</span>
+                </div>
+              )}
             </div>
           </Card>
 
@@ -328,12 +446,6 @@ export function PredictionPage() {
         </div>
       )}
 
-      {error && (
-        <div className="training-validation is-invalid" style={{ marginTop: "var(--gap)" }}>
-          <Icon name="alert" />
-          <span>{error}</span>
-        </div>
-      )}
     </div>
   );
 }

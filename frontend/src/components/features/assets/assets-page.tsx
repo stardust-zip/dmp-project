@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/common/icons";
 import { Card, Field } from "@/components/common/primitives";
-import { displayLocationName, displayModelName, humanizeIdentifier, locationSearchText } from "@/lib/format";
+import { displayLocationName, displayModelName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
 import {
   createBuilding,
   createMetric,
@@ -88,7 +88,7 @@ export function AssetsPage() {
   const [locationStatusFilter, setLocationStatusFilter] = useState<LocationFilter>("all");
   const [locationPage, setLocationPage] = useState(1);
 
-  const siteOptions = useMemo(() => locations.filter((location) => !location.parent_id && !location.archived), [locations]);
+  const siteOptions = useMemo(() => locations.filter((location) => isSiteLocation(location) && !location.archived), [locations]);
   const locationById = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
 
   const activeLocationCount = useMemo(() => locations.filter((location) => !location.archived).length, [locations]);
@@ -328,14 +328,20 @@ export function AssetsPage() {
             {pagedLocations.map((location) => (
               <button className="asset-tile" type="button" key={location.id} onClick={() => setDetailTarget({ kind: "location", item: location })}>
                 <div className="asset-tile-head">
-                  <span className="asset-tile-icon"><Icon name={location.parent_id ? "building" : "map"} /></span>
+                  <span className="asset-tile-icon"><Icon name={isSiteLocation(location) ? "map" : "building"} /></span>
                   <span className={`badge ${location.archived ? "badge-neutral" : "badge-resolved"}`}>{location.archived ? "Archived" : "Active"}</span>
                 </div>
                 <b title={location.name || location.id}>{displayLocationName(location.name, location.id)}</b>
                 <span>{location.id}</span>
                 <div className="asset-tile-meta">
                   <small>{titleCase(location.location_type)}</small>
-                  <small>{location.parent_id ? `Parent ${displayLocationName(locationById.get(location.parent_id)?.name, location.parent_id)}` : "Top-level site"}</small>
+                  <small>
+                    {isSiteLocation(location)
+                      ? "Site"
+                      : location.parent_id
+                        ? `Site ${location.parent_id}`
+                        : "No site assigned"}
+                  </small>
                 </div>
                 <div className="asset-tile-stats">
                   <span>{modelsForLocation(location).length} models</span>
@@ -455,10 +461,10 @@ export function AssetsPage() {
               {activeModal === "site" && (
                 <div className="asset-form">
                   <Field label="Site ID">
-                    <input className="input" value={siteId} onChange={(event) => setSiteId(event.target.value)} placeholder="Panther_campus" />
+                    <input className="input" value={siteId} onChange={(event) => setSiteId(event.target.value)} placeholder="Panther" />
                   </Field>
                   <Field label="Name">
-                    <input className="input" value={siteName} onChange={(event) => setSiteName(event.target.value)} placeholder="Panther Campus" />
+                    <input className="input" value={siteName} onChange={(event) => setSiteName(event.target.value)} placeholder="Panther" />
                   </Field>
                   <Field label="Metadata JSON">
                     <textarea className="textarea" value={siteMetadata} onChange={(event) => setSiteMetadata(event.target.value)} placeholder='{"timezone":"UTC"}' />
@@ -489,7 +495,7 @@ export function AssetsPage() {
                     <select className="input" value={buildingSiteId} onChange={(event) => setBuildingSiteId(event.target.value)}>
                       <option value="">Select site</option>
                       {siteOptions.map((site) => (
-                        <option value={site.id} key={site.id}>{displayLocationName(site.name, site.id)}</option>
+                        <option value={site.id} key={site.id}>{site.id}</option>
                       ))}
                     </select>
                   </Field>
@@ -542,7 +548,7 @@ export function AssetsPage() {
                     <dt>ID</dt><dd>{selectedLocation.id}</dd>
                     <dt>Name</dt><dd>{displayLocationName(selectedLocation.name, selectedLocation.id)}</dd>
                     <dt>Type</dt><dd>{titleCase(selectedLocation.location_type)}</dd>
-                    <dt>Parent</dt><dd>{selectedLocation.parent_id ? displayLocationName(locationById.get(selectedLocation.parent_id)?.name, selectedLocation.parent_id) : "Top-level site"}</dd>
+                    <dt>Site</dt><dd>{isSiteLocation(selectedLocation) ? selectedLocation.id : selectedLocation.parent_id ?? "No site assigned"}</dd>
                     <dt>Status</dt><dd>{selectedLocation.archived ? "Archived" : "Active"}</dd>
                   </dl>
                   <pre className="asset-json">{shortJson(selectedLocation.metadata)}</pre>
