@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
 import {
@@ -67,6 +67,19 @@ function formatMetric(value: number) {
 
 function formatRows(value: number) {
   return new Intl.NumberFormat().format(value);
+}
+
+function pipelineTerminalLog(log: PipelineLog) {
+  if (log.terminal_log?.trim()) return log.terminal_log.trim();
+
+  return [
+    `[${log.timestamp ? new Date(log.timestamp).toLocaleString() : "unknown time"}] ${log.type} pipeline ${log.status.toLowerCase()}.`,
+    `model_task=${log.model_task || "unknown"}`,
+    `datasource=${log.datasource_used || "unknown"}`,
+    `mlflow_run_id=${log.mlflow_run_id || "-"}`,
+    log.execution_time_ms != null ? `execution_time_ms=${log.execution_time_ms}` : "execution_time_ms=-",
+    "Detailed terminal output was not captured for this older run.",
+  ].join("\n");
 }
 
 function TrainingValidationPanel({
@@ -165,6 +178,7 @@ export function ModelsPage() {
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
   const [metricOptions, setMetricOptions] = useState<MetricOption[]>([]);
   const [loading, setLoading] = useState(true);
+  const [logsLoading, setLogsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modelTask, setModelTask] = useState<ModelTask>("prediction");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
@@ -190,6 +204,7 @@ export function ModelsPage() {
   const [detailModelName, setDetailModelName] = useState<string | null>(null);
   const [trainModalOpen, setTrainModalOpen] = useState(false);
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
+  const [detailLog, setDetailLog] = useState<PipelineLog | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -199,18 +214,15 @@ export function ModelsPage() {
       setError(null);
 
       try {
-        const [modelData, logData] = await Promise.all([
+        const [modelData, logData, locationData, metricData] = await Promise.all([
           getRegisteredModels(controller.signal),
           getPipelineLogs(controller.signal),
+          getLocationOptions({ limit: 8 }, controller.signal),
+          getMetricOptions(controller.signal),
         ]);
         setModels(modelData.models);
         setLogs(logData.logs);
         setSelectedModelName((current) => current || modelData.models[0]?.name || "");
-
-        const [locationData, metricData] = await Promise.all([
-          getLocationOptions({ limit: 8 }, controller.signal),
-          getMetricOptions(controller.signal),
-        ]);
         setLocationOptions(locationData.locations);
         setMetricOptions(metricData.metrics);
       } catch (err) {
@@ -220,6 +232,7 @@ export function ModelsPage() {
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
+          setLogsLoading(false);
         }
       }
     }
@@ -268,10 +281,27 @@ export function ModelsPage() {
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [detailModelName]);
 
-  async function refreshLogs() {
-    const logData = await getPipelineLogs();
+  const refreshLogs = useCallback(async (signal?: AbortSignal) => {
+    const logData = await getPipelineLogs(signal);
     setLogs(logData.logs);
-  }
+    setDetailLog((current) => (current ? logData.logs.find((log) => log.id === current.id) ?? current : current));
+    return logData.logs;
+  }, []);
+
+  useEffect(() => {
+    if (!pipelineModalOpen && !detailLog && !submitting) return;
+
+    const controller = new AbortController();
+    void refreshLogs(controller.signal).catch(() => {});
+    const interval = window.setInterval(() => {
+      void refreshLogs(controller.signal).catch(() => {});
+    }, 2000);
+
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [detailLog?.id, pipelineModalOpen, refreshLogs, submitting]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -338,7 +368,7 @@ export function ModelsPage() {
   const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && !submitting && !validationLoading && trainingValidation?.valid !== false;
 
   useEffect(() => {
-    if (!trainingTaskImplemented || !metricSelectionValid || !validationInputReady) {
+    if (!trainModalOpen || !trainingTaskImplemented || !metricSelectionValid || !validationInputReady) {
       setTrainingValidation(null);
       setValidationError(null);
       setValidationLoading(false);
@@ -369,7 +399,7 @@ export function ModelsPage() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [metricSelectionValid, selectedMetricsKey, trainingPayload, trainingTaskImplemented, validationInputReady]);
+  }, [metricSelectionValid, selectedMetricsKey, trainModalOpen, trainingPayload, trainingTaskImplemented, validationInputReady]);
 
   function chooseLocation(location: LocationOption) {
     setLocationId(location.id);
@@ -388,6 +418,7 @@ export function ModelsPage() {
 
   async function refreshWorkspace() {
     setLoading(true);
+    setLogsLoading(true);
     setError(null);
 
     try {
@@ -406,6 +437,7 @@ export function ModelsPage() {
       setError(err instanceof Error ? err.message : "Unable to load AI engineering data.");
     } finally {
       setLoading(false);
+      setLogsLoading(false);
     }
   }
 
@@ -455,6 +487,7 @@ export function ModelsPage() {
       const response = await trainModel(trainingPayload);
       setTrainMessage(`${response.message} Task ${response.task_id} queued.`);
       setTrainModalOpen(false);
+      setPipelineModalOpen(true);
       await refreshLogs();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start training.");
@@ -717,19 +750,24 @@ export function ModelsPage() {
             <div className="model-modal-head">
               <div>
                 <h2>Pipeline Activity</h2>
-                <span>{loading ? "Loading runs..." : `${logs.length} recent runs`}</span>
+                <span>{logsLoading ? "Loading runs..." : `${logs.length} recent runs`}</span>
               </div>
               <button className="icon-btn" type="button" aria-label="Close pipeline activity" onClick={() => setPipelineModalOpen(false)}>
                 <Icon name="x" />
               </button>
             </div>
             <div className="model-modal-body">
-              {loading ? (
+              {logsLoading ? (
                 <div className="empty">Loading pipeline logs...</div>
               ) : logs.length ? (
                 <div className="model-log-list">
                   {logs.map((log) => (
-                    <div className="model-log-row" key={log.id}>
+                    <button
+                      className="model-log-row"
+                      key={log.id}
+                      type="button"
+                      onClick={() => { setPipelineModalOpen(false); setDetailLog(log); }}
+                    >
                       <span className={`status-dot ${log.status === "Success" ? "s-green" : log.status === "Failed" ? "s-red" : "s-yellow"}`} />
                       <div>
                         <b>{log.model_task || log.type}</b>
@@ -738,12 +776,78 @@ export function ModelsPage() {
                         </span>
                       </div>
                       <span className="badge badge-neutral">{log.status}</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               ) : (
                 <div className="empty">No pipeline logs found.</div>
               )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {detailLog && (
+        <>
+          <button className="overlay" type="button" aria-label="Close pipeline log details" onClick={() => setDetailLog(null)} />
+          <div className="model-modal pipeline-log-modal" role="dialog" aria-modal="true" aria-label="Pipeline log details">
+            <div className="model-modal-head">
+              <div>
+                <h2>Pipeline Log Details</h2>
+                <span>Run {detailLog.id.slice(0, 8)} &mdash; {detailLog.model_task || detailLog.type}</span>
+              </div>
+              <button className="icon-btn" type="button" aria-label="Close pipeline log details" onClick={() => setDetailLog(null)}>
+                <Icon name="x" />
+              </button>
+            </div>
+            <div className="model-modal-body">
+              <div className="pipeline-log-summary">
+                <span className={`status-dot ${detailLog.status === "Success" ? "s-green" : detailLog.status === "Failed" ? "s-red" : "s-yellow"}`} />
+                <div>
+                  <b>{detailLog.model_task || detailLog.type}</b>
+                  <span style={{ color: detailLog.status === "Success" ? "var(--green)" : detailLog.status === "Failed" ? "var(--red)" : "var(--amber)", fontWeight: 600 }}>
+                    {detailLog.status}
+                  </span>
+                </div>
+              </div>
+
+              <div className="model-section-title">Run Details</div>
+              <div className="model-detail-grid">
+                <div>
+                  <span>Run ID</span>
+                  <b className="mono" title={detailLog.id}>{detailLog.id}</b>
+                </div>
+                <div>
+                  <span>Type</span>
+                  <b>{detailLog.type}</b>
+                </div>
+                <div>
+                  <span>Model Task</span>
+                  <b>{detailLog.model_task || "Unknown"}</b>
+                </div>
+                <div>
+                  <span>Status</span>
+                  <b style={{ color: detailLog.status === "Success" ? "var(--green)" : detailLog.status === "Failed" ? "var(--red)" : "var(--amber)" }}>{detailLog.status}</b>
+                </div>
+                <div>
+                  <span>Execution Time</span>
+                  <b>{detailLog.execution_time_ms != null ? `${(detailLog.execution_time_ms / 1000).toFixed(1)}s` : "-"}</b>
+                </div>
+                <div>
+                  <span>Data Source</span>
+                  <b>{detailLog.datasource_used || "Unknown"}</b>
+                </div>
+                <div>
+                  <span>MLflow Run ID</span>
+                  <b className="mono" title={detailLog.mlflow_run_id || ""}>{detailLog.mlflow_run_id || "-"}</b>
+                </div>
+                <div>
+                  <span>Timestamp</span>
+                  <b>{detailLog.timestamp ? new Date(detailLog.timestamp).toLocaleString() : "-"}</b>
+                </div>
+              </div>
+              <div className="model-section-title">Terminal Log</div>
+              <pre className="pipeline-terminal-log">{pipelineTerminalLog(detailLog)}</pre>
             </div>
           </div>
         </>

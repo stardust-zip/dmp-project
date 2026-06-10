@@ -120,6 +120,7 @@ export interface PipelineLog {
   datasource_used?: string | null;
   execution_time_ms?: number | null;
   timestamp?: string | null;
+  terminal_log?: string | null;
 }
 
 export type ModelTask = "forecasting" | "anomaly_detection" | "prediction";
