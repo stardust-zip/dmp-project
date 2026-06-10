@@ -300,6 +300,11 @@ async def trigger_training(
                 "implemented yet."
             ),
         )
+    if len(request.metrics) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Prediction training requires exactly one metric per model.",
+        )
 
     task = train_model_task.delay(
         training_request=request.model_dump(mode="json", exclude_none=True)

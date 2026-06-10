@@ -125,7 +125,7 @@ def test_trigger_training_accepts_popup_payload(mock_delay):
     payload = {
         "site_id": "SiteA",
         "building_id": "BuildingA",
-        "metrics": [" electricity ", "Water"],
+        "metrics": [" electricity "],
         "time_range_start": "2026-06-01T00:00:00Z",
         "time_range_end": "2026-06-07T00:00:00Z",
         "model_task": "prediction",
@@ -139,11 +139,32 @@ def test_trigger_training_accepts_popup_payload(mock_delay):
     assert response.json()["model_task"] == "prediction"
     assert response.json()["site_id"] == "SiteA"
     assert response.json()["building_id"] == "BuildingA"
-    assert response.json()["metrics"] == ["electricity", "water"]
+    assert response.json()["metrics"] == ["electricity"]
     assert response.json()["algorithm"] == "random_forest"
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["csv_path"] == "/tmp/site-a.csv"
     assert "algorithm" not in training_request
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_multi_metric_prediction(mock_delay):
+    payload = {
+        "site_id": "SiteA",
+        "building_id": "BuildingA",
+        "metrics": ["electricity", "water"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "prediction",
+        "data_source": "csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Prediction training requires exactly one metric per model."
+    )
+    mock_delay.assert_not_called()
 
 
 def test_trigger_training_rejects_client_selected_algorithm():

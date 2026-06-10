@@ -246,6 +246,9 @@ def _train_prediction_model(
     db,
     model_name: str,
 ) -> dict[str, float]:
+    if len(request.metrics) != 1:
+        raise ValueError("Prediction training requires exactly one metric per model")
+
     training_df = _load_prediction_training_frame(request, db)
     if len(training_df) < 24:
         raise ValueError("Prediction training requires at least 24 usable rows")

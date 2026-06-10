@@ -320,6 +320,9 @@ export function ModelsPage() {
   const detailVersionMetricEntries = Object.entries(detailVersion?.metrics ?? {}).sort(([left], [right]) => left.localeCompare(right));
   const detailVersionTagEntries = Object.entries(detailVersion?.tags ?? {}).sort(([left], [right]) => left.localeCompare(right));
   const selectedMetricsKey = selectedMetrics.join(",");
+  const selectedTaskLabel = MODEL_TASK_OPTIONS.find((option) => option.value === modelTask)?.label ?? modelTask;
+  const trainingTaskImplemented = modelTask === "prediction";
+  const metricSelectionValid = !trainingTaskImplemented || selectedMetrics.length === 1;
   const validationInputReady = Boolean(locationId.trim() && selectedMetrics.length && startDate && endDate);
   const trainingPayload = useMemo<TrainModelPayload>(
     () => ({
@@ -332,10 +335,15 @@ export function ModelsPage() {
     }),
     [dataSource, endDate, locationId, modelTask, selectedMetrics, startDate],
   );
-  const canTrain = validationInputReady && !submitting && !validationLoading && trainingValidation?.valid !== false;
+  const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && !submitting && !validationLoading && trainingValidation?.valid !== false;
 
   useEffect(() => {
-    if (!validationInputReady) return;
+    if (!trainingTaskImplemented || !metricSelectionValid || !validationInputReady) {
+      setTrainingValidation(null);
+      setValidationError(null);
+      setValidationLoading(false);
+      return;
+    }
 
     const controller = new AbortController();
     const timeout = window.setTimeout(async () => {
@@ -361,7 +369,7 @@ export function ModelsPage() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [selectedMetricsKey, trainingPayload, validationInputReady]);
+  }, [metricSelectionValid, selectedMetricsKey, trainingPayload, trainingTaskImplemented, validationInputReady]);
 
   function chooseLocation(location: LocationOption) {
     setLocationId(location.id);
@@ -413,6 +421,16 @@ export function ModelsPage() {
 
     if (!selectedMetrics.length) {
       setError("At least one metric is required.");
+      return;
+    }
+
+    if (!metricSelectionValid) {
+      setError("Prediction training requires exactly one metric per model.");
+      return;
+    }
+
+    if (!trainingTaskImplemented) {
+      setError(`${selectedTaskLabel} training pipeline is not implemented yet.`);
       return;
     }
 
@@ -633,7 +651,7 @@ export function ModelsPage() {
                   </div>
                 </Field>
                 <Field label="Metrics">
-                  <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder="Please do not choose more than one emtric!" />
+                  <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder="Choose one metric for prediction training" />
                   <div className="metric-choice-list">
                     {filteredMetrics.map((metric) => (
                       <button key={metric.id} type="button" className={selectedMetrics.includes(metric.id) ? "is-selected" : ""} onClick={() => toggleMetric(metric.id)}>
@@ -657,12 +675,26 @@ export function ModelsPage() {
                   <input className="input" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
                 </Field>
               </div>
-              <TrainingValidationPanel
-                dataSource={dataSource}
-                validation={validationInputReady ? trainingValidation : null}
-                loading={validationInputReady && validationLoading}
-                error={validationInputReady ? validationError : null}
-              />
+              {trainingTaskImplemented ? (
+                metricSelectionValid ? (
+                  <TrainingValidationPanel
+                    dataSource={dataSource}
+                    validation={validationInputReady ? trainingValidation : null}
+                    loading={validationInputReady && validationLoading}
+                    error={validationInputReady ? validationError : null}
+                  />
+                ) : (
+                  <div className="training-validation is-invalid">
+                    <Icon name="alert" />
+                    <span>Prediction training requires exactly one metric per model.</span>
+                  </div>
+                )
+              ) : (
+                <div className="training-validation is-invalid">
+                  <Icon name="alert" />
+                  <span>{selectedTaskLabel} training pipeline is not implemented yet.</span>
+                </div>
+              )}
             </div>
             <div className="model-modal-foot">
               <button className="btn" type="button" onClick={() => setTrainModalOpen(false)}>
@@ -671,7 +703,7 @@ export function ModelsPage() {
               </button>
               <button className="btn btn-primary" type="button" onClick={onTrainModel} disabled={!canTrain}>
                 <Icon name={submitting ? "refresh" : "plus"} className={submitting ? "spin" : undefined} />
-                <span>{submitting ? "Queueing..." : "Train Model"}</span>
+                <span>{!trainingTaskImplemented ? "Not Implemented" : submitting ? "Queueing..." : "Train Model"}</span>
               </button>
             </div>
           </div>
