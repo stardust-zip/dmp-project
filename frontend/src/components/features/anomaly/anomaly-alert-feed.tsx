@@ -1,5 +1,5 @@
 import { AnomalySeverityBadge } from "@/components/common/primitives";
-import { clock } from "@/lib/format";
+import { clock, displayLocationName } from "@/lib/format";
 import type { AlertStatus, AnomalyEvent } from "@/types";
 
 const ALERT_SEVERITIES = new Set<string>(["Critical", "High"]);
@@ -7,8 +7,7 @@ const STATUS_ORDER: Record<AlertStatus, number> = { Open: 0, Acknowledged: 1, Re
 const SEVERITY_ORDER: Record<string, number> = { Critical: 0, High: 1 };
 
 function buildingLabel(buildingId: string) {
-  const parts = buildingId.split("_");
-  return parts.length >= 3 ? parts.slice(2).join("_") : buildingId;
+  return displayLocationName(null, buildingId);
 }
 
 export function AlertFeed({
