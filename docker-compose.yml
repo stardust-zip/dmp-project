@@ -83,6 +83,7 @@ services:
       - ./backend/src:/app/src
       - ./pyproject.toml:/app/pyproject.toml
       - ./data:/app/data
+      - mlflow_artifacts:/mlflow/artifacts
     ports:
       - "8000:8000"
     environment:
@@ -118,6 +119,7 @@ services:
       - ./backend/src:/app/src
       - ./pyproject.toml:/app/pyproject.toml
       - ./data:/app/data
+      - mlflow_artifacts:/mlflow/artifacts
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379/0
