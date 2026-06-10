@@ -422,6 +422,33 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
 
 
 @patch("src.api.v1.endpoints.models._mlflow_client")
+def test_update_model_description_updates_registered_model(mock_mlflow_client):
+    updated_model = SimpleNamespace(
+        name="forecasting_v1",
+        description="Business-facing description",
+    )
+    client_mock = Mock()
+    client_mock.update_registered_model.return_value = updated_model
+    mock_mlflow_client.return_value = client_mock
+
+    response = client.patch(
+        "/api/v1/models/forecasting_v1/description",
+        json={"description": "  Business-facing description  "},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "forecasting_v1",
+        "description": "Business-facing description",
+        "updated_by": "admin@vinsmart.com",
+    }
+    client_mock.update_registered_model.assert_called_once_with(
+        name="forecasting_v1",
+        description="Business-facing description",
+    )
+
+
+@patch("src.api.v1.endpoints.models._mlflow_client")
 def test_rollback_returns_409_when_run_id_matches_multiple_versions(
     mock_mlflow_client,
 ):

@@ -6,6 +6,7 @@ from celery.result import AsyncResult
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
@@ -37,6 +38,10 @@ STAGE_TAG = "stage"
 MODEL_TASK_TAG = "model_task"
 MIN_TRAINING_ROWS_PER_METRIC = 24
 METER_DATA_DIR = Path("/app/data/raw/data/meters/cleaned")
+
+
+class ModelDescriptionUpdate(BaseModel):
+    description: str = Field(default="", max_length=2000)
 
 
 def _mlflow_client() -> MlflowClient:
@@ -263,6 +268,35 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
         )
 
     return {"models": models_data}
+
+
+@router.patch("/{model_name}/description")
+async def update_model_description(
+    model_name: str,
+    payload: ModelDescriptionUpdate,
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Update a registered model description in MLflow.
+    """
+    client = _mlflow_client()
+    description = payload.description.strip()
+    try:
+        updated = client.update_registered_model(
+            name=model_name,
+            description=description,
+        )
+    except MlflowException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"MLflow registry update failed: {exc}",
+        ) from exc
+
+    return {
+        "name": getattr(updated, "name", model_name),
+        "description": getattr(updated, "description", description),
+        "updated_by": current_user.email,
+    }
 
 
 @router.get("/{model_name}/versions", response_model=ModelVersionsResponse)
