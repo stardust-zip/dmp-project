@@ -1149,7 +1149,6 @@ export function ModelsPage() {
                       versions.map((version) => (
                         <option value={version.run_id} key={version.run_id}>
                           v{version.version} - {version.run_id.slice(0, 8)}
-                          {version.current_stage ? ` - ${version.current_stage}` : ""}
                         </option>
                       ))
                     ) : (

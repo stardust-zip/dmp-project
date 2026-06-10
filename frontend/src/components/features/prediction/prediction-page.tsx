@@ -367,7 +367,7 @@ export function PredictionPage() {
                 <input className="input" type="number" min="0" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} />
               </Field>
               <button className="btn btn-primary" onClick={runScenario} disabled={loading}>
-                {loading ? <Spinner size={14} /> : <Icon name="play" />} Predict Cost
+                {loading ? <Spinner size={14} /> : <Icon name="play" />} Predict
               </button>
               {error && (
                 <div className="training-validation is-invalid" style={{ padding: "12px 14px" }}>
