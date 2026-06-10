@@ -186,6 +186,16 @@ export interface RollbackModelResponse {
   promoted_by: string;
 }
 
+export interface UpdateModelDescriptionPayload {
+  description: string;
+}
+
+export interface UpdateModelDescriptionResponse {
+  name: string;
+  description: string;
+  updated_by: string;
+}
+
 async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     signal,
@@ -247,6 +257,10 @@ export function getRegisteredModels(signal?: AbortSignal) {
 
 export function getModelVersions(modelName: string, signal?: AbortSignal) {
   return apiGet<{ model_name: string; versions: ModelVersion[] }>(`/api/v1/models/${encodeURIComponent(modelName)}/versions`, signal);
+}
+
+export function updateModelDescription(modelName: string, payload: UpdateModelDescriptionPayload, signal?: AbortSignal) {
+  return apiPatch<UpdateModelDescriptionResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/description`, payload, signal);
 }
 
 export function getPipelineLogs(signal?: AbortSignal) {

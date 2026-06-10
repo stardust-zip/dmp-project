@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
+import { displayLocationName, displayModelName, humanizeIdentifier, locationSearchText } from "@/lib/format";
 import {
   demoteModel,
   getLocationOptions,
@@ -12,6 +13,7 @@ import {
   getRegisteredModels,
   rollbackModel,
   trainModel,
+  updateModelDescription,
   validateTrainingRequest,
   type LocationOption,
   type MetricOption,
@@ -29,6 +31,16 @@ const MODEL_TASK_OPTIONS: Array<{ value: ModelTask; label: string }> = [
   { value: "anomaly_detection", label: "Anomaly Detection" },
   { value: "prediction", label: "Prediction" },
 ];
+const MODEL_FILTER_TASK_OPTIONS: Array<{ value: "all" | ModelTask | "unknown"; label: string }> = [
+  { value: "all", label: "All Tasks" },
+  ...MODEL_TASK_OPTIONS,
+  { value: "unknown", label: "Unknown" },
+];
+const MODEL_STAGE_OPTIONS: Array<{ value: "all" | "production" | "non_production"; label: string }> = [
+  { value: "all", label: "All Stages" },
+  { value: "production", label: "Production" },
+  { value: "non_production", label: "Non-production" },
+];
 
 const DATA_SOURCE_OPTIONS: Array<{ value: TrainingDataSource; label: string }> = [
   { value: "csv", label: "Cleaned CSV" },
@@ -37,6 +49,7 @@ const DATA_SOURCE_OPTIONS: Array<{ value: TrainingDataSource; label: string }> =
 
 const DEFAULT_SITE = "Panther_parking_Lorriane";
 const DEFAULT_METRICS = ["electricity"];
+const LOCATION_INDEX_LIMIT = 1000;
 
 function defaultStartDate() {
   const date = new Date();
@@ -67,6 +80,56 @@ function formatMetric(value: number) {
 
 function formatRows(value: number) {
   return new Intl.NumberFormat().format(value);
+}
+
+function modelTaskLabel(task: ModelTask | "unknown") {
+  if (task === "anomaly_detection") return "Anomaly";
+  if (task === "forecasting") return "Forecasting";
+  if (task === "prediction") return "Prediction";
+  return "Unknown";
+}
+
+function inferModelTask(model: RegisteredModel): ModelTask | "unknown" {
+  const tags = model.tags ?? {};
+  const taggedTask = tags.model_task || tags.task || tags.type;
+  if (taggedTask === "prediction" || taggedTask === "forecasting" || taggedTask === "anomaly_detection") return taggedTask;
+
+  const text = `${model.name} ${model.description ?? ""}`.toLowerCase();
+  if (text.includes("anomaly")) return "anomaly_detection";
+  if (text.includes("forecast")) return "forecasting";
+  if (text.includes("prediction") || text.includes("energy_prediction")) return "prediction";
+  return "unknown";
+}
+
+function inferModelMetric(model: RegisteredModel) {
+  const tags = model.tags ?? {};
+  const taggedMetric = tags.metric || tags.metric_type || tags.metric_type_id;
+  if (taggedMetric) return taggedMetric;
+
+  const energyPrefix = "dmp_energy_prediction_";
+  if (model.name.toLowerCase().startsWith(energyPrefix)) {
+    const parts = model.name.slice(energyPrefix.length).split("_").filter(Boolean);
+    return parts[parts.length - 1] ?? "unknown";
+  }
+  return "unknown";
+}
+
+function modelSearchText(model: RegisteredModel) {
+  const task = inferModelTask(model);
+  const metric = inferModelMetric(model);
+  return [
+    model.name,
+    displayModelName(model.name),
+    model.description ?? "",
+    modelTaskLabel(task),
+    task,
+    metric,
+    humanizeIdentifier(metric),
+    model.production_version ? "production active live" : "registered non production inactive",
+    model.production_version?.version ?? "",
+    model.production_version?.current_stage ?? "",
+    ...Object.entries(model.tags ?? {}).flatMap(([key, value]) => [key, value]),
+  ].join(" ").toLowerCase();
 }
 
 function pipelineTerminalLog(log: PipelineLog) {
@@ -205,6 +268,12 @@ export function ModelsPage() {
   const [trainModalOpen, setTrainModalOpen] = useState(false);
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
   const [detailLog, setDetailLog] = useState<PipelineLog | null>(null);
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [descriptionSubmitting, setDescriptionSubmitting] = useState(false);
+  const [modelQuery, setModelQuery] = useState("");
+  const [modelTaskFilter, setModelTaskFilter] = useState<"all" | ModelTask | "unknown">("all");
+  const [modelStageFilter, setModelStageFilter] = useState<"all" | "production" | "non_production">("all");
+  const [modelMetricFilter, setModelMetricFilter] = useState("all");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -217,7 +286,7 @@ export function ModelsPage() {
         const [modelData, logData, locationData, metricData] = await Promise.all([
           getRegisteredModels(controller.signal),
           getPipelineLogs(controller.signal),
-          getLocationOptions({ limit: 8 }, controller.signal),
+          getLocationOptions({ limit: LOCATION_INDEX_LIMIT }, controller.signal),
           getMetricOptions(controller.signal),
         ]);
         setModels(modelData.models);
@@ -240,22 +309,6 @@ export function ModelsPage() {
     void load();
     return () => controller.abort();
   }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function queryLocations() {
-      try {
-        const data = await getLocationOptions({ q: locationQuery, limit: 8 }, controller.signal);
-        setLocationOptions(data.locations);
-      } catch {
-        if (!controller.signal.aborted) setLocationOptions([]);
-      }
-    }
-
-    void queryLocations();
-    return () => controller.abort();
-  }, [locationQuery]);
 
   useEffect(() => {
     if (!locationPickerOpen) return;
@@ -292,16 +345,19 @@ export function ModelsPage() {
     if (!pipelineModalOpen && !detailLog && !submitting) return;
 
     const controller = new AbortController();
-    void refreshLogs(controller.signal).catch(() => {});
+    const timeout = window.setTimeout(() => {
+      void refreshLogs(controller.signal).catch(() => {});
+    }, 0);
     const interval = window.setInterval(() => {
       void refreshLogs(controller.signal).catch(() => {});
     }, 2000);
 
     return () => {
       controller.abort();
+      window.clearTimeout(timeout);
       window.clearInterval(interval);
     };
-  }, [detailLog?.id, pipelineModalOpen, refreshLogs, submitting]);
+  }, [detailLog, pipelineModalOpen, refreshLogs, submitting]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -340,7 +396,31 @@ export function ModelsPage() {
   const filteredMetrics = metricOptions
     .filter((metric) => `${metric.id} ${metric.description ?? ""}`.toLowerCase().includes(metricQuery.toLowerCase()))
     .slice(0, 8);
+  const locationById = useMemo(() => new Map(locationOptions.map((location) => [location.id, location])), [locationOptions]);
+  const filteredLocationOptions = useMemo(() => {
+    const query = locationQuery.trim().toLowerCase();
+    if (!query) return locationOptions.slice(0, 8);
+    return locationOptions
+      .filter((location) => locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : null).includes(query))
+      .slice(0, 8);
+  }, [locationById, locationOptions, locationQuery]);
   const detailModel = models.find((model) => model.name === detailModelName) ?? null;
+  const modelMetricOptions = useMemo(() => {
+    const metrics = [...new Set(models.map(inferModelMetric).filter((metric) => metric && metric !== "unknown"))].sort((left, right) => left.localeCompare(right));
+    return [{ value: "all", label: "All Metrics" }, ...metrics.map((metric) => ({ value: metric, label: humanizeIdentifier(metric) }))];
+  }, [models]);
+  const filteredModels = useMemo(() => {
+    const query = modelQuery.trim().toLowerCase();
+    return models.filter((model) => {
+      const task = inferModelTask(model);
+      const metric = inferModelMetric(model);
+      if (modelTaskFilter !== "all" && task !== modelTaskFilter) return false;
+      if (modelStageFilter === "production" && !model.production_version) return false;
+      if (modelStageFilter === "non_production" && model.production_version) return false;
+      if (modelMetricFilter !== "all" && metric !== modelMetricFilter) return false;
+      return !query || modelSearchText(model).includes(query);
+    });
+  }, [modelMetricFilter, modelQuery, modelStageFilter, modelTaskFilter, models]);
   const selectedVersion = versions.find((version) => version.run_id === selectedRunId) ?? null;
   const detailVersion = detailModelName === selectedModelName ? selectedVersion : null;
   const detailVersions = detailModelName === selectedModelName ? versions : [];
@@ -369,10 +449,12 @@ export function ModelsPage() {
 
   useEffect(() => {
     if (!trainModalOpen || !trainingTaskImplemented || !metricSelectionValid || !validationInputReady) {
-      setTrainingValidation(null);
-      setValidationError(null);
-      setValidationLoading(false);
-      return;
+      const timeout = window.setTimeout(() => {
+        setTrainingValidation(null);
+        setValidationError(null);
+        setValidationLoading(false);
+      }, 0);
+      return () => window.clearTimeout(timeout);
     }
 
     const controller = new AbortController();
@@ -403,7 +485,7 @@ export function ModelsPage() {
 
   function chooseLocation(location: LocationOption) {
     setLocationId(location.id);
-    setLocationQuery(location.id);
+    setLocationQuery(displayLocationName(location.name, location.id));
     setLocationPickerOpen(false);
   }
 
@@ -412,8 +494,10 @@ export function ModelsPage() {
   }
 
   function openModelDetails(modelName: string) {
+    const model = models.find((item) => item.name === modelName);
     setSelectedModelName(modelName);
     setDetailModelName(modelName);
+    setDescriptionDraft(model?.description ?? "");
   }
 
   async function refreshWorkspace() {
@@ -425,7 +509,7 @@ export function ModelsPage() {
       const [modelData, logData, locationData, metricData] = await Promise.all([
         getRegisteredModels(),
         getPipelineLogs(),
-        getLocationOptions({ limit: 8 }),
+        getLocationOptions({ limit: LOCATION_INDEX_LIMIT }),
         getMetricOptions(),
       ]);
       setModels(modelData.models);
@@ -550,6 +634,24 @@ export function ModelsPage() {
     }
   }
 
+  async function onSaveModelDescription() {
+    if (!detailModel) return;
+
+    setDescriptionSubmitting(true);
+    setError(null);
+    setTrainMessage(null);
+    try {
+      const response = await updateModelDescription(detailModel.name, { description: descriptionDraft });
+      setModels((current) => current.map((model) => (model.name === response.name ? { ...model, description: response.description } : model)));
+      setDescriptionDraft(response.description);
+      setTrainMessage(`${displayModelName(detailModel.name)} description updated.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update model description.");
+    } finally {
+      setDescriptionSubmitting(false);
+    }
+  }
+
   return (
     <main className="page models-page">
       <div className="page-head models-head">
@@ -577,60 +679,81 @@ export function ModelsPage() {
       {trainMessage && <div className="models-success">{trainMessage}</div>}
 
       <div className="models-single-layout">
-        <Card title="All Models" sub={loading ? "Loading registry..." : `${models.length} registered models`} icon="cpu">
+        <Card title="All Models" sub={loading ? "Loading registry..." : `${filteredModels.length} of ${models.length} registered models`} icon="cpu">
+          <div className="model-registry-toolbar">
+            <div className="model-registry-search">
+              <Icon name="search" />
+              <input
+                value={modelQuery}
+                onChange={(event) => setModelQuery(event.target.value)}
+                placeholder="Search model, task, metric, description, tag, or raw ID"
+              />
+            </div>
+            <Select value={modelTaskFilter} onChange={setModelTaskFilter} options={MODEL_FILTER_TASK_OPTIONS} />
+            <Select value={modelStageFilter} onChange={setModelStageFilter} options={MODEL_STAGE_OPTIONS} />
+            <Select value={modelMetricFilter} onChange={setModelMetricFilter} options={modelMetricOptions} searchable />
+          </div>
           {loading ? (
             <div className="empty">Loading models...</div>
-          ) : models.length ? (
+          ) : filteredModels.length ? (
             <div className="model-list model-gallery">
-              {models.map((model) => (
-                <button
-                  className={`model-row ${selectedModelName === model.name ? "is-selected" : ""}`}
-                  key={model.name}
-                  type="button"
-                  onClick={() => openModelDetails(model.name)}
-                >
-                  <div>
-                    <b>{model.name}</b>
-                    <span>{model.description || "No description"}</span>
-                  </div>
-                  <div className="model-card-detail-grid">
-                    <span>
-                      <small>Production</small>
-                      {model.production_version ? `v${model.production_version.version}` : "None"}
-                    </span>
-                    <span>
-                      <small>Versions</small>
-                      {model.latest_versions.length}
-                    </span>
-                    <span>
-                      <small>Updated</small>
-                      {formatRegistryTime(model.last_updated_timestamp)}
-                    </span>
-                    <span>
-                      <small>Stage</small>
-                      {model.production_version?.current_stage || "Unassigned"}
-                    </span>
-                  </div>
-                  <div className="model-version-stack">
-                    <span className={`badge ${model.production_version ? "badge-resolved" : "badge-neutral"}`}>
-                      {model.production_version ? "Production" : "Registered"}
-                    </span>
-                    {model.latest_versions.length ? (
-                      model.latest_versions.map((version) => (
-                        <span className="badge badge-neutral" key={`${model.name}-${version.version}`}>
-                          v{version.version}
-                          {version.current_stage ? ` . ${version.current_stage}` : ""}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="badge badge-neutral">No versions</span>
-                    )}
-                  </div>
-                </button>
-              ))}
+              {filteredModels.map((model) => {
+                const task = inferModelTask(model);
+                const metric = inferModelMetric(model);
+                return (
+                  <button
+                    className={`model-row model-row-${task.replace("_", "-")} ${model.production_version ? "is-production" : "is-non-production"} ${selectedModelName === model.name ? "is-selected" : ""}`}
+                    key={model.name}
+                    type="button"
+                    onClick={() => openModelDetails(model.name)}
+                  >
+                    <div className="model-card-top">
+                      <b title={model.name}>{displayModelName(model.name)}</b>
+                    </div>
+                    <span className="model-card-description">{model.description || "No description"}</span>
+                    <div className="model-card-detail-grid">
+                      <span className="model-detail-metric">
+                        <small>Metric</small>
+                        {humanizeIdentifier(metric)}
+                      </span>
+                      <span className={`model-detail-production ${model.production_version ? "has-production" : "no-production"}`}>
+                        <small>Production</small>
+                        {model.production_version ? `v${model.production_version.version}` : "None"}
+                      </span>
+                      <span className="model-detail-versions">
+                        <small>Versions</small>
+                        {model.latest_versions.length}
+                      </span>
+                      <span className="model-detail-updated">
+                        <small>Updated</small>
+                        {formatRegistryTime(model.last_updated_timestamp)}
+                      </span>
+                    </div>
+                    <div className="model-version-stack">
+                      <span className={`model-task-chip task-${task.replace("_", "-")}`}>{modelTaskLabel(task)}</span>
+                      <span className={`model-stage-chip ${model.production_version ? "is-production" : "is-non-production"}`}>
+                        {model.production_version ? "Production" : "Non-production"}
+                      </span>
+                      {model.latest_versions.length ? (
+                        model.latest_versions.slice(0, 4).map((version) => (
+                          <span
+                            className={`model-version-chip ${version.current_stage === "Production" ? "is-production" : "is-version"}`}
+                            key={`${model.name}-${version.version}`}
+                          >
+                            v{version.version}
+                            {version.current_stage ? ` . ${version.current_stage}` : ""}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="badge badge-neutral">No versions</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           ) : (
-            <div className="empty">No registered models found.</div>
+            <div className="empty">No models match the selected search and filters.</div>
           )}
         </Card>
       </div>
@@ -668,17 +791,17 @@ export function ModelsPage() {
                         setLocationPickerOpen(true);
                       }}
                     />
-                    {locationPickerOpen && locationQuery && locationOptions.length > 0 && (
+                    {locationPickerOpen && locationQuery && filteredLocationOptions.length > 0 && (
                       <div className="model-picker-list">
-                        {locationOptions.map((location) => (
+                        {filteredLocationOptions.map((location) => (
                           <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
-                            <b title={location.id}>{location.id}</b>
-                            <span title={location.name}>{location.name}</span>
+                            <b title={location.id}>{displayLocationName(location.name, location.id)}</b>
+                            <span title={location.id}>{location.id}</span>
                           </button>
                         ))}
                       </div>
                     )}
-                    {locationPickerOpen && locationQuery && locationOptions.length === 0 && (
+                    {locationPickerOpen && locationQuery && filteredLocationOptions.length === 0 && (
                       <div className="model-picker-empty">No matches found.</div>
                     )}
                   </div>
@@ -688,14 +811,14 @@ export function ModelsPage() {
                   <div className="metric-choice-list">
                     {filteredMetrics.map((metric) => (
                       <button key={metric.id} type="button" className={selectedMetrics.includes(metric.id) ? "is-selected" : ""} onClick={() => toggleMetric(metric.id)}>
-                        {metric.id}
+                        {humanizeIdentifier(metric.id)}
                       </button>
                     ))}
                   </div>
                   <div className="metric-chip-list">
                     {selectedMetrics.map((metric) => (
                       <button key={metric} type="button" onClick={() => toggleMetric(metric)}>
-                        {metric}
+                        {humanizeIdentifier(metric)}
                         <Icon name="x" />
                       </button>
                     ))}
@@ -859,8 +982,8 @@ export function ModelsPage() {
           <div className="model-modal" role="dialog" aria-label={`${detailModel.name} details`}>
             <div className="model-modal-head">
               <div>
-                <h2>{detailModel.name}</h2>
-                <span>{detailModel.description || "No description"}</span>
+                <h2 title={detailModel.name}>{displayModelName(detailModel.name)}</h2>
+                <span>{detailModel.description || detailModel.name}</span>
               </div>
               <button className="icon-btn" type="button" aria-label="Close model details" onClick={() => setDetailModelName(null)}>
                 <Icon name="x" />
@@ -884,6 +1007,29 @@ export function ModelsPage() {
                 <div>
                   <span>Created</span>
                   <b>{formatRegistryTime(detailModel.creation_timestamp)}</b>
+                </div>
+              </div>
+
+              <div className="model-section-title">Description</div>
+              <div className="model-description-editor">
+                <textarea
+                  className="textarea"
+                  value={descriptionDraft}
+                  onChange={(event) => setDescriptionDraft(event.target.value)}
+                  placeholder="Add a short business-facing description for this model."
+                  maxLength={2000}
+                />
+                <div className="model-description-actions">
+                  <span>{descriptionDraft.length}/2000</span>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={onSaveModelDescription}
+                    disabled={descriptionSubmitting || descriptionDraft.trim() === (detailModel.description ?? "").trim()}
+                  >
+                    <Icon name={descriptionSubmitting ? "refresh" : "check"} className={descriptionSubmitting ? "spin" : undefined} />
+                    <span>{descriptionSubmitting ? "Saving..." : "Save Description"}</span>
+                  </button>
                 </div>
               </div>
 
