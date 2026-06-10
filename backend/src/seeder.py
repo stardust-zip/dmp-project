@@ -31,24 +31,29 @@ def seed_lookups(db: Session):
     for dt in device_types:
         get_or_create(db, models.DeviceType, **dt)
 
-    metrics = [
-        "electricity",
-        "chilledwater",
-        "steam",
-        "hotwater",
-        "gas",
-        "water",
-        "solar",
-        "irrigation",
-    ]
-    for m in metrics:
-        get_or_create(
-            db,
-            models.MetricType,
-            id=m,
-            unit="kWh/kBTU",
-            description=f"{m} consumption",
-        )
+    metric_units = {
+        "electricity": "kWh",
+        "solar": "kWh",
+        "steam": "kg",
+        "hotwater": "m3",
+        "chilledwater": "m3",
+        "gas": "m3",
+        "water": "m3",
+        "irrigation": "m3",
+    }
+    for m, unit in metric_units.items():
+        metric = db.query(models.MetricType).filter_by(id=m).first()
+        if metric:
+            metric.unit = unit
+            metric.description = metric.description or f"{m} consumption"
+        else:
+            db.add(
+                models.MetricType(
+                    id=m,
+                    unit=unit,
+                    description=f"{m} consumption",
+                )
+            )
 
     db.commit()
 
