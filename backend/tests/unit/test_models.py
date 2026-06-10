@@ -150,7 +150,7 @@ def test_trigger_training_accepts_popup_payload(mock_delay):
     assert response.json()["site_id"] == "SiteA"
     assert response.json()["building_id"] == "BuildingA"
     assert response.json()["metrics"] == ["electricity", "water"]
-    assert response.json()["algorithm"] == "linear_regression"
+    assert response.json()["algorithm"] == "random_forest"
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["csv_path"] == "/tmp/site-a.csv"
     assert "algorithm" not in training_request
