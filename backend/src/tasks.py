@@ -16,6 +16,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from src.core.config import settings
 from src.database import SessionLocal
+from src.ml.training import algorithm_for_task, cleaned_meter_csv_path
 from src.models import AIPipelineLog, Device, Location, TelemetryData
 from src.schemas import (
     MLAlgorithm,
@@ -29,7 +30,6 @@ import mlflow
 redis_url = settings.REDIS_URL
 celery_app = Celery("dmp_tasks", broker=redis_url, backend=redis_url)
 RAW_DATA_DIR = Path("/app/data/raw/data")
-METER_DATA_DIR = RAW_DATA_DIR / "meters" / "cleaned"
 METADATA_CSV_PATH = RAW_DATA_DIR / "metadata" / "metadata.csv"
 PREDICTION_FEATURE_COLUMNS = [
     "sqm",
@@ -67,14 +67,6 @@ def _append_terminal_log(db, pipeline_log: AIPipelineLog, message: str) -> None:
     db.commit()
 
 
-def _cleaned_meter_csv_path(metric_type: str) -> Path:
-    metric_name = Path(metric_type).name.strip().lower()
-    if not metric_name:
-        raise ValueError("metric_type is required")
-
-    return METER_DATA_DIR / f"{metric_name}_cleaned.csv"
-
-
 @celery_app.task(bind=True, name="train_model_task")
 def train_model_task(
     self,
@@ -97,7 +89,7 @@ def train_model_task(
     )
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
-    selected_algorithm = _algorithm_for_task(ModelTask(request.model_task))
+    selected_algorithm = algorithm_for_task(ModelTask(request.model_task))
     model_task_value = ModelTask(request.model_task).value
     mlflow.set_experiment(f"dmp_energy_{model_task_value}")
 
@@ -283,7 +275,7 @@ def _datasource_label(request: ModelTrainingRequest) -> str:
         if request.csv_path:
             return request.csv_path
         return ",".join(
-            _cleaned_meter_csv_path(metric).name for metric in request.metrics
+            cleaned_meter_csv_path(metric).name for metric in request.metrics
         )
     return "database"
 
@@ -434,7 +426,7 @@ def _load_prediction_training_frame_from_csv(
         csv_path = (
             Path(request.csv_path)
             if request.csv_path
-            else _cleaned_meter_csv_path(metric)
+            else cleaned_meter_csv_path(metric)
         )
         if not csv_path.exists():
             raise FileNotFoundError(f"Meter data file not found: {csv_path}")
@@ -633,7 +625,7 @@ def _not_implemented_training_response(
 
 def _mock_training_metrics(request: ModelTrainingRequest) -> dict[str, float]:
     model_task = ModelTask(request.model_task)
-    algorithm = _algorithm_for_task(model_task)
+    algorithm = algorithm_for_task(model_task)
     task_scores = {
         ModelTask.Forecasting: {"mae": 4.2, "rmse": 6.8},
         ModelTask.AnomalyDetection: {"precision": 0.91, "recall": 0.87},
@@ -649,11 +641,3 @@ def _mock_training_metrics(request: ModelTrainingRequest) -> dict[str, float]:
     if "mae" in scores:
         return {key: max(value - algorithm_boost, 0.0) for key, value in scores.items()}
     return {key: min(value + algorithm_boost, 0.99) for key, value in scores.items()}
-
-
-def _algorithm_for_task(model_task: ModelTask) -> MLAlgorithm:
-    return {
-        ModelTask.Forecasting: MLAlgorithm.RandomForest,
-        ModelTask.AnomalyDetection: MLAlgorithm.LightGBM,
-        ModelTask.Prediction: MLAlgorithm.RandomForest,
-    }[model_task]

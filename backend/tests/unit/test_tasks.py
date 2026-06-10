@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 
 import pandas as pd
+from src.ml.training import algorithm_for_task
 from src.schemas import MLAlgorithm, ModelTask, ModelTrainingRequest
 from src.tasks import (
-    _algorithm_for_task,
     _finalize_prediction_training_frame,
     _not_implemented_training_response,
     _prediction_building_ids,
@@ -45,9 +45,9 @@ def test_registered_model_name_separates_sites_and_metrics():
 
 
 def test_prediction_uses_random_forest_without_changing_other_tasks():
-    assert _algorithm_for_task(ModelTask.Prediction) == MLAlgorithm.RandomForest
-    assert _algorithm_for_task(ModelTask.Forecasting) == MLAlgorithm.RandomForest
-    assert _algorithm_for_task(ModelTask.AnomalyDetection) == MLAlgorithm.LightGBM
+    assert algorithm_for_task(ModelTask.Prediction) == MLAlgorithm.RandomForest
+    assert algorithm_for_task(ModelTask.Forecasting) == MLAlgorithm.RandomForest
+    assert algorithm_for_task(ModelTask.AnomalyDetection) == MLAlgorithm.LightGBM
 
 
 def test_non_prediction_training_response_is_explicitly_not_implemented():
