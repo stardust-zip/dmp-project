@@ -353,6 +353,74 @@ class ForecastResponse(BaseModel):
     forecast: List[ForecastDataPoint]
 
 
+# Prediction
+class PredictionScenarioRequest(BaseSchema):
+    site_id: str = Field(..., min_length=1)
+    building_id: str = Field(..., min_length=1)
+    metric_type: str = Field(default="electricity", min_length=1)
+    scenario_date: datetime
+    opening_time: str = Field(default="06:00", pattern=r"^\d{2}:\d{2}$")
+    closing_time: str = Field(default="18:00", pattern=r"^\d{2}:\d{2}$")
+    energy_rate_per_kwh: float | None = Field(default=None, ge=0.0)
+    model_name: str | None = Field(default=None, min_length=1)
+
+
+class PredictionHourlyPoint(BaseSchema):
+    timestamp: datetime
+    expected_value: float
+
+
+class PredictionScenarioResponse(BaseSchema):
+    site_id: str
+    building_id: str
+    metric_type: str
+    model_name: str
+    model_version: str
+    estimated_value: float
+    estimated_cost: float | None = None
+    unit: str = "kWh"
+    points: list[PredictionHourlyPoint]
+
+
+class ExpectedActualReportRequest(BaseSchema):
+    site_id: str = Field(..., min_length=1)
+    building_id: str = Field(..., min_length=1)
+    metric_type: str = Field(default="electricity", min_length=1)
+    start_time: datetime
+    end_time: datetime
+    opening_time: str = Field(default="06:00", pattern=r"^\d{2}:\d{2}$")
+    closing_time: str = Field(default="18:00", pattern=r"^\d{2}:\d{2}$")
+    model_name: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_report_range(self) -> "ExpectedActualReportRequest":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
+
+
+class ExpectedActualPoint(BaseSchema):
+    timestamp: datetime
+    expected_value: float
+    actual_value: float | None = None
+    variance: float | None = None
+    variance_percent: float | None = None
+
+
+class ExpectedActualReportResponse(BaseSchema):
+    site_id: str
+    building_id: str
+    metric_type: str
+    model_name: str
+    model_version: str
+    expected_total: float
+    actual_total: float | None = None
+    variance_total: float | None = None
+    variance_percent: float | None = None
+    unit: str = "kWh"
+    points: list[ExpectedActualPoint]
+
+
 # Anomaly
 class AlertResponse(BaseModel):
     id: int

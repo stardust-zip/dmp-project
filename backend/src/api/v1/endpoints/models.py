@@ -655,7 +655,7 @@ def _algorithm_for_task(model_task: ModelTask) -> MLAlgorithm:
     return {
         ModelTask.Forecasting: MLAlgorithm.RandomForest,
         ModelTask.AnomalyDetection: MLAlgorithm.LightGBM,
-        ModelTask.Prediction: MLAlgorithm.LinearRegression,
+        ModelTask.Prediction: MLAlgorithm.RandomForest,
     }[model_task]
 
 

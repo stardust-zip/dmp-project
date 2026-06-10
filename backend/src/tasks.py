@@ -1,13 +1,21 @@
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 
 import mlflow.pyfunc
+import numpy as np
+import pandas as pd
 from celery import Celery
 from mlflow.tracking import MlflowClient
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 from src.core.config import settings
 from src.database import SessionLocal
-from src.models import AIPipelineLog
+from src.models import AIPipelineLog, Device, Location, TelemetryData
 from src.schemas import (
     MLAlgorithm,
     ModelTask,
@@ -19,7 +27,19 @@ import mlflow
 
 redis_url = settings.REDIS_URL
 celery_app = Celery("dmp_tasks", broker=redis_url, backend=redis_url)
-METER_DATA_DIR = Path("/app/data/raw/data/meters/cleaned")
+RAW_DATA_DIR = Path("/app/data/raw/data")
+METER_DATA_DIR = RAW_DATA_DIR / "meters" / "cleaned"
+METADATA_CSV_PATH = RAW_DATA_DIR / "metadata" / "metadata.csv"
+PREDICTION_FEATURE_COLUMNS = [
+    "sqm",
+    "hour",
+    "day_of_week",
+    "month",
+    "closing_hour",
+    "is_open",
+    "primaryspaceusage",
+    "metric_type",
+]
 
 
 class MockEnergyModel(mlflow.pyfunc.PythonModel):
@@ -98,14 +118,29 @@ def train_model_task(
                     "time_range_end": request.time_range_end.isoformat(),
                 }
             )
-            metrics = _mock_training_metrics(request)
-            mlflow.log_metrics(metrics)
             registered_model_name = _registered_model_name(request)
-            _log_registered_model(
+            if ModelTask(request.model_task) == ModelTask.Prediction:
+                metrics = _train_prediction_model(
+                    request=request,
+                    db=db,
+                    model_name=registered_model_name,
+                )
+                message_prefix = "Prediction"
+            else:
+                metrics = _mock_training_metrics(request)
+                _log_mock_registered_model(
+                    request=request,
+                    model_name=registered_model_name,
+                    run_id=run.info.run_id,
+                    default_score=next(iter(metrics.values())),
+                )
+                message_prefix = f"Mock {model_task_value}"
+
+            mlflow.log_metrics(metrics)
+            _tag_registered_model_versions(
                 request=request,
                 model_name=registered_model_name,
                 run_id=run.info.run_id,
-                default_score=next(iter(metrics.values())),
             )
 
             pipeline_log.mlflow_run_id = run.info.run_id
@@ -114,7 +149,7 @@ def train_model_task(
             db.commit()
 
             return {
-                "message": f"Mock {model_task_value} training completed.",
+                "message": f"{message_prefix} training completed.",
                 "mlflow_run_id": run.info.run_id,
                 "site_id": request.site_id,
                 "building_id": request.building_id,
@@ -188,7 +223,7 @@ def _safe_model_name(value: str) -> str:
     return normalized.strip("._-") or "dmp_energy_model"
 
 
-def _log_registered_model(
+def _log_mock_registered_model(
     *,
     request: ModelTrainingRequest,
     model_name: str,
@@ -201,6 +236,13 @@ def _log_registered_model(
         registered_model_name=model_name,
     )
 
+
+def _tag_registered_model_versions(
+    *,
+    request: ModelTrainingRequest,
+    model_name: str,
+    run_id: str,
+) -> None:
     client = MlflowClient()
     versions = client.search_model_versions(
         f"name = '{model_name}' and run_id = '{run_id}'"
@@ -227,6 +269,270 @@ def _log_registered_model(
         )
 
 
+def _train_prediction_model(
+    *,
+    request: ModelTrainingRequest,
+    db,
+    model_name: str,
+) -> dict[str, float]:
+    training_df = _load_prediction_training_frame(request, db)
+    if len(training_df) < 24:
+        raise ValueError("Prediction training requires at least 24 usable rows")
+
+    training_df = training_df.sort_values("timestamp").reset_index(drop=True)
+    X = training_df[PREDICTION_FEATURE_COLUMNS]
+    y = training_df["meter_reading"]
+
+    split_index = max(1, int(len(training_df) * 0.8))
+    if split_index >= len(training_df):
+        split_index = len(training_df) - 1
+
+    X_train, X_test = X.iloc[:split_index], X.iloc[split_index:]
+    y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
+
+    model = _prediction_pipeline()
+    model.fit(X_train, y_train)
+    predictions = model.predict(X_test)
+
+    metrics = {
+        "mae": float(mean_absolute_error(y_test, predictions)),
+        "rmse": float(root_mean_squared_error(y_test, predictions)),
+        "training_rows": float(len(training_df)),
+    }
+
+    mlflow.sklearn.log_model(
+        model,
+        artifact_path="model",
+        registered_model_name=model_name,
+    )
+    mlflow.log_param("n_estimators", 50)
+    return metrics
+
+
+def _prediction_pipeline() -> Pipeline:
+    preprocessor = ColumnTransformer(
+        transformers=[
+            (
+                "categorical",
+                OneHotEncoder(handle_unknown="ignore"),
+                ["primaryspaceusage", "metric_type"],
+            ),
+            (
+                "numeric",
+                "passthrough",
+                ["sqm", "hour", "day_of_week", "month", "closing_hour", "is_open"],
+            ),
+        ]
+    )
+    return Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            (
+                "model",
+                RandomForestRegressor(n_estimators=50, random_state=42),
+            ),
+        ]
+    )
+
+
+def _load_prediction_training_frame(request: ModelTrainingRequest, db) -> pd.DataFrame:
+    source = TrainingDataSource(request.data_source)
+    if source == TrainingDataSource.DB:
+        return _load_prediction_training_frame_from_db(request, db)
+    return _load_prediction_training_frame_from_csv(request)
+
+
+def _load_prediction_training_frame_from_csv(
+    request: ModelTrainingRequest,
+) -> pd.DataFrame:
+    metadata_df = _load_prediction_metadata()
+    building_ids = _prediction_building_ids(request, metadata_df)
+    if not building_ids:
+        raise ValueError("No buildings matched the prediction training request")
+
+    frames = []
+    for metric in request.metrics:
+        csv_path = (
+            Path(request.csv_path)
+            if request.csv_path and len(request.metrics) == 1
+            else _cleaned_meter_csv_path(metric)
+        )
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Meter data file not found: {csv_path}")
+
+        meter_df = pd.read_csv(
+            csv_path,
+            usecols=lambda column: column == "timestamp" or column in building_ids,
+        )
+        if "timestamp" not in meter_df.columns:
+            raise ValueError(f"Meter data file is missing timestamp column: {csv_path}")
+
+        available_buildings = [
+            building_id for building_id in building_ids if building_id in meter_df.columns
+        ]
+        if not available_buildings:
+            continue
+
+        meter_df["timestamp"] = pd.to_datetime(
+            meter_df["timestamp"], errors="coerce", utc=True
+        )
+        meter_df = _filter_time_range(meter_df, request)
+        if meter_df.empty:
+            continue
+
+        melted_df = meter_df.melt(
+            id_vars=["timestamp"],
+            value_vars=available_buildings,
+            var_name="building_id",
+            value_name="meter_reading",
+        )
+        melted_df["metric_type"] = metric
+        frames.append(melted_df)
+
+    if not frames:
+        raise ValueError("No prediction training rows found in CSV data")
+
+    return _finalize_prediction_training_frame(pd.concat(frames), metadata_df)
+
+
+def _load_prediction_training_frame_from_db(
+    request: ModelTrainingRequest,
+    db,
+) -> pd.DataFrame:
+    metadata_df = _load_prediction_metadata(required=False)
+    building_ids = _prediction_building_ids(request, metadata_df)
+    if not building_ids:
+        building_ids = [request.building_id or request.site_id]
+
+    start = _to_utc(request.time_range_start)
+    end = _to_utc(request.time_range_end)
+    rows = (
+        db.query(
+            TelemetryData.timestamp,
+            Device.location_id.label("building_id"),
+            TelemetryData.metric_type_id.label("metric_type"),
+            TelemetryData.value.label("meter_reading"),
+            Location.location_type_id.label("primaryspaceusage"),
+            Location.metadata_.label("metadata"),
+        )
+        .join(Device, Device.id == TelemetryData.device_id)
+        .join(Location, Location.id == Device.location_id)
+        .filter(Device.location_id.in_(building_ids))
+        .filter(TelemetryData.metric_type_id.in_(request.metrics))
+        .filter(TelemetryData.timestamp >= start)
+        .filter(TelemetryData.timestamp <= end)
+        .all()
+    )
+    if not rows:
+        raise ValueError("No prediction training rows found in database")
+
+    df = pd.DataFrame(
+        [
+            {
+                "timestamp": row.timestamp,
+                "building_id": row.building_id,
+                "metric_type": row.metric_type,
+                "meter_reading": row.meter_reading,
+                "primaryspaceusage": row.primaryspaceusage,
+                "sqm": (row.metadata or {}).get("sqm"),
+            }
+            for row in rows
+        ]
+    )
+    return _finalize_prediction_training_frame(df, metadata_df)
+
+
+def _load_prediction_metadata(*, required: bool = True) -> pd.DataFrame:
+    if not METADATA_CSV_PATH.exists():
+        if required:
+            raise FileNotFoundError(f"Metadata file not found: {METADATA_CSV_PATH}")
+        return pd.DataFrame(
+            columns=["building_id", "site_id", "primaryspaceusage", "sqm"]
+        )
+
+    metadata_df = pd.read_csv(METADATA_CSV_PATH)
+    required_columns = {"building_id", "primaryspaceusage", "sqm"}
+    missing_columns = required_columns.difference(metadata_df.columns)
+    if missing_columns:
+        raise ValueError(
+            "Metadata file is missing required column(s): "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    metadata_df = metadata_df.copy()
+    metadata_df["building_id"] = metadata_df["building_id"].astype(str)
+    if "site_id" in metadata_df.columns:
+        metadata_df["site_id"] = metadata_df["site_id"].astype(str)
+    return metadata_df
+
+
+def _prediction_building_ids(
+    request: ModelTrainingRequest,
+    metadata_df: pd.DataFrame,
+) -> list[str]:
+    if request.building_id:
+        return [request.building_id]
+
+    if metadata_df.empty:
+        return [request.site_id]
+
+    if "site_id" in metadata_df.columns:
+        site_buildings = metadata_df.loc[
+            metadata_df["site_id"].astype(str) == request.site_id, "building_id"
+        ]
+        if not site_buildings.empty:
+            return site_buildings.astype(str).tolist()
+
+    if request.site_id in set(metadata_df["building_id"].astype(str)):
+        return [request.site_id]
+
+    return []
+
+
+def _filter_time_range(
+    df: pd.DataFrame,
+    request: ModelTrainingRequest,
+) -> pd.DataFrame:
+    start = _to_utc(request.time_range_start)
+    end = _to_utc(request.time_range_end)
+    return df[(df["timestamp"] >= start) & (df["timestamp"] <= end)].copy()
+
+
+def _finalize_prediction_training_frame(
+    readings_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+) -> pd.DataFrame:
+    df = readings_df.copy()
+    if not metadata_df.empty and (
+        "primaryspaceusage" not in df.columns or "sqm" not in df.columns
+    ):
+        metadata_columns = ["building_id", "primaryspaceusage", "sqm"]
+        df = pd.merge(df, metadata_df[metadata_columns], on="building_id", how="left")
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+    df["meter_reading"] = pd.to_numeric(df["meter_reading"], errors="coerce")
+    df["sqm"] = pd.to_numeric(df["sqm"], errors="coerce")
+    df["primaryspaceusage"] = df["primaryspaceusage"].fillna("Unknown").astype(str)
+    df["metric_type"] = df["metric_type"].fillna("unknown").astype(str)
+
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=["timestamp", "meter_reading", "sqm"])
+    df["hour"] = df["timestamp"].dt.hour
+    df["day_of_week"] = df["timestamp"].dt.dayofweek
+    df["month"] = df["timestamp"].dt.month
+    if "closing_hour" not in df.columns:
+        df["closing_hour"] = 18
+    df["closing_hour"] = pd.to_numeric(df["closing_hour"], errors="coerce").fillna(18)
+    df["is_open"] = (df["hour"] < df["closing_hour"]).astype(int)
+    return df.sort_values("timestamp").reset_index(drop=True)
+
+
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _mock_training_metrics(request: ModelTrainingRequest) -> dict[str, float]:
     model_task = ModelTask(request.model_task)
     algorithm = _algorithm_for_task(model_task)
@@ -251,5 +557,5 @@ def _algorithm_for_task(model_task: ModelTask) -> MLAlgorithm:
     return {
         ModelTask.Forecasting: MLAlgorithm.RandomForest,
         ModelTask.AnomalyDetection: MLAlgorithm.LightGBM,
-        ModelTask.Prediction: MLAlgorithm.LinearRegression,
+        ModelTask.Prediction: MLAlgorithm.RandomForest,
     }[model_task]

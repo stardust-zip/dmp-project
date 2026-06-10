@@ -8,6 +8,7 @@ from src.api.v1.endpoints import (
     forecast,
     metadata,
     models,
+    prediction,
     telemetry,
     users,
 )
@@ -22,6 +23,7 @@ api_router.include_router(models.router, prefix="/models", tags=["models"])
 api_router.include_router(alerts.router, prefix="/alerts", tags=["alerts"])
 api_router.include_router(anomalies.router, prefix="/anomalies", tags=["anomalies"])
 api_router.include_router(forecast.router, prefix="/forecast", tags=["forecast"])
+api_router.include_router(prediction.router, prefix="/prediction", tags=["prediction"])
 api_router.include_router(
     consumption.router, prefix="/consumption", tags=["consumption"]
 )
