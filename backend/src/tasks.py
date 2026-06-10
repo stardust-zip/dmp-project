@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 
-import mlflow.pyfunc
 import numpy as np
 import pandas as pd
 from celery import Celery
@@ -42,18 +41,6 @@ PREDICTION_FEATURE_COLUMNS = [
 ]
 
 
-class MockEnergyModel(mlflow.pyfunc.PythonModel):
-    def __init__(self, default_score: float):
-        self.default_score = default_score
-
-    def predict(self, context, model_input):  # type: ignore[no-untyped-def]
-        try:
-            row_count = len(model_input)
-        except TypeError:
-            row_count = 1
-        return [self.default_score] * row_count
-
-
 def _cleaned_meter_csv_path(metric_type: str) -> Path:
     metric_name = Path(metric_type).name.strip().lower()
     if not metric_name:
@@ -69,7 +56,7 @@ def train_model_task(
     target_building_id: str | None = None,
     metric_type: str | None = None,
     data_source: str = TrainingDataSource.CSV.value,
-    model_task: str = ModelTask.Forecasting.value,
+    model_task: str = ModelTask.Prediction.value,
 ):
     """
     Orchestrates the ML pipeline: Data Loading -> Training -> DB Logging.
@@ -101,6 +88,14 @@ def train_model_task(
 
     try:
         start = perf_counter()
+        if ModelTask(request.model_task) != ModelTask.Prediction:
+            response = _not_implemented_training_response(request, selected_algorithm)
+            pipeline_log.status = "Failed"  # type: ignore
+            pipeline_log.mlflow_run_id = "not_implemented"
+            pipeline_log.execution_time_ms = int((perf_counter() - start) * 1000)
+            db.commit()
+            return response
+
         with mlflow.start_run() as run:
             mlflow.set_tags(
                 {
@@ -119,22 +114,11 @@ def train_model_task(
                 }
             )
             registered_model_name = _registered_model_name(request)
-            if ModelTask(request.model_task) == ModelTask.Prediction:
-                metrics = _train_prediction_model(
-                    request=request,
-                    db=db,
-                    model_name=registered_model_name,
-                )
-                message_prefix = "Prediction"
-            else:
-                metrics = _mock_training_metrics(request)
-                _log_mock_registered_model(
-                    request=request,
-                    model_name=registered_model_name,
-                    run_id=run.info.run_id,
-                    default_score=next(iter(metrics.values())),
-                )
-                message_prefix = f"Mock {model_task_value}"
+            metrics = _train_prediction_model(
+                request=request,
+                db=db,
+                model_name=registered_model_name,
+            )
 
             mlflow.log_metrics(metrics)
             _tag_registered_model_versions(
@@ -149,7 +133,8 @@ def train_model_task(
             db.commit()
 
             return {
-                "message": f"{message_prefix} training completed.",
+                "message": "Prediction training completed.",
+                "implemented": True,
                 "mlflow_run_id": run.info.run_id,
                 "site_id": request.site_id,
                 "building_id": request.building_id,
@@ -221,20 +206,6 @@ def _registered_model_name(request: ModelTrainingRequest) -> str:
 def _safe_model_name(value: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
     return normalized.strip("._-") or "dmp_energy_model"
-
-
-def _log_mock_registered_model(
-    *,
-    request: ModelTrainingRequest,
-    model_name: str,
-    run_id: str,
-    default_score: float,
-) -> None:
-    mlflow.pyfunc.log_model(
-        artifact_path="model",
-        python_model=MockEnergyModel(default_score=default_score),
-        registered_model_name=model_name,
-    )
 
 
 def _tag_registered_model_versions(
@@ -533,24 +504,21 @@ def _to_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _mock_training_metrics(request: ModelTrainingRequest) -> dict[str, float]:
-    model_task = ModelTask(request.model_task)
-    algorithm = _algorithm_for_task(model_task)
-    task_scores = {
-        ModelTask.Forecasting: {"mae": 4.2, "rmse": 6.8},
-        ModelTask.AnomalyDetection: {"precision": 0.91, "recall": 0.87},
-        ModelTask.Prediction: {"accuracy": 0.89, "f1": 0.86},
+def _not_implemented_training_response(
+    request: ModelTrainingRequest,
+    selected_algorithm: MLAlgorithm,
+) -> dict[str, object]:
+    model_task = ModelTask(request.model_task).value
+    return {
+        "message": f"{model_task} training pipeline is not implemented yet.",
+        "implemented": False,
+        "mlflow_run_id": None,
+        "site_id": request.site_id,
+        "building_id": request.building_id,
+        "metrics": request.metrics,
+        "algorithm": selected_algorithm.value,
+        "scores": {},
     }
-    algorithm_boost = {
-        MLAlgorithm.RandomForest: 0.02,
-        MLAlgorithm.LinearRegression: -0.01,
-        MLAlgorithm.LightGBM: 0.03,
-    }[algorithm]
-
-    scores = task_scores[model_task].copy()
-    if "mae" in scores:
-        return {key: max(value - algorithm_boost, 0.0) for key, value in scores.items()}
-    return {key: min(value + algorithm_boost, 0.99) for key, value in scores.items()}
 
 
 def _algorithm_for_task(model_task: ModelTask) -> MLAlgorithm:

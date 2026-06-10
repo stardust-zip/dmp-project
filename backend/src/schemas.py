@@ -127,7 +127,7 @@ class ModelTrainingRequest(BaseSchema):
     metrics: list[str] = Field(..., min_length=1, description="Metrics to include.")
     time_range_start: datetime
     time_range_end: datetime
-    model_task: ModelTask = ModelTask.Forecasting
+    model_task: ModelTask = ModelTask.Prediction
     data_source: TrainingDataSource = TrainingDataSource.CSV
     csv_path: str | None = Field(
         default=None,

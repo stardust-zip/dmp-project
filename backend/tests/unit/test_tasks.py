@@ -5,6 +5,7 @@ from src.schemas import MLAlgorithm, ModelTask, ModelTrainingRequest
 from src.tasks import (
     _algorithm_for_task,
     _finalize_prediction_training_frame,
+    _not_implemented_training_response,
     _prediction_building_ids,
     _registered_model_name,
 )
@@ -20,7 +21,7 @@ def test_registered_model_name_includes_task_site_and_metric():
 
     assert (
         _registered_model_name(request)
-        == "dmp_energy_forecasting_Site_1_electricity"
+        == "dmp_energy_prediction_Site_1_electricity"
     )
 
 
@@ -47,6 +48,26 @@ def test_prediction_uses_random_forest_without_changing_other_tasks():
     assert _algorithm_for_task(ModelTask.Prediction) == MLAlgorithm.RandomForest
     assert _algorithm_for_task(ModelTask.Forecasting) == MLAlgorithm.RandomForest
     assert _algorithm_for_task(ModelTask.AnomalyDetection) == MLAlgorithm.LightGBM
+
+
+def test_non_prediction_training_response_is_explicitly_not_implemented():
+    request = ModelTrainingRequest(
+        site_id="SiteA",
+        metrics=["electricity"],
+        time_range_start="2026-06-01T00:00:00Z",
+        time_range_end="2026-06-02T00:00:00Z",
+        model_task="forecasting",
+    )
+
+    response = _not_implemented_training_response(
+        request,
+        MLAlgorithm.RandomForest,
+    )
+
+    assert response["implemented"] is False
+    assert response["message"] == "forecasting training pipeline is not implemented yet."
+    assert response["scores"] == {}
+    assert response["mlflow_run_id"] is None
 
 
 def test_prediction_building_ids_selects_site_children():

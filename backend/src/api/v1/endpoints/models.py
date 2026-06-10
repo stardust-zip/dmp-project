@@ -263,7 +263,7 @@ async def trigger_training(
     ),
     metric_type: str = Query("electricity"),
     model_task: ModelTask = Query(
-        ModelTask.Forecasting,
+        ModelTask.Prediction,
         description="ML task to train.",
     ),
     data_source: TrainingDataSource = Query(
@@ -292,6 +292,14 @@ async def trigger_training(
         )
 
     selected_algorithm = _algorithm_for_task(ModelTask(request.model_task))
+    if ModelTask(request.model_task) != ModelTask.Prediction:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                f"{ModelTask(request.model_task).value} training pipeline is not "
+                "implemented yet."
+            ),
+        )
 
     task = train_model_task.delay(
         training_request=request.model_dump(mode="json", exclude_none=True)

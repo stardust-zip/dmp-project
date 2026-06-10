@@ -87,42 +87,32 @@ def test_trigger_training_success(mock_delay):
     assert response.status_code == 200
     assert response.json()["task_id"] == "mock-task-uuid-123"
     assert (
-        response.json()["message"] == "forecasting training job queued using csv data."
+        response.json()["message"] == "prediction training job queued using csv data."
     )
-    assert response.json()["model_task"] == "forecasting"
+    assert response.json()["model_task"] == "prediction"
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["site_id"] == "TestBuilding"
     assert training_request["building_id"] == "TestBuilding"
     assert training_request["metrics"] == ["water"]
     assert training_request["data_source"] == "csv"
-    assert training_request["model_task"] == "forecasting"
+    assert training_request["model_task"] == "prediction"
     assert "algorithm" not in training_request
     assert response.json()["algorithm"] == "random_forest"
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
-def test_trigger_training_accepts_anomaly_training(mock_delay):
-    class MockTask:
-        id = "mock-task-uuid-456"
-
-    mock_delay.return_value = MockTask()
-
+def test_trigger_training_rejects_anomaly_training_until_implemented(mock_delay):
     response = client.post(
         "/api/v1/models/train"
         "?building_id=TestBuilding&metric_type=water"
         "&model_task=anomaly_detection&data_source=db"
     )
 
-    assert response.status_code == 200
-    assert response.json()["message"] == (
-        "anomaly_detection training job queued using db data."
+    assert response.status_code == 501
+    assert response.json()["detail"] == (
+        "anomaly_detection training pipeline is not implemented yet."
     )
-    training_request = mock_delay.call_args.kwargs["training_request"]
-    assert training_request["model_task"] == "anomaly_detection"
-    assert training_request["building_id"] == "TestBuilding"
-    assert training_request["data_source"] == "db"
-    assert "algorithm" not in training_request
-    assert response.json()["algorithm"] == "lightgbm"
+    mock_delay.assert_not_called()
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")

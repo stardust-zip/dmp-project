@@ -71,7 +71,7 @@ def test_model_training_request_normalizes_metrics():
 
     assert payload.metrics == ["electricity", "water"]
     assert payload.building_id is None
-    assert payload.model_task == "forecasting"
+    assert payload.model_task == "prediction"
     assert payload.data_source == "csv"
 
 

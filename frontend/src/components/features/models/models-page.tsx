@@ -166,7 +166,7 @@ export function ModelsPage() {
   const [metricOptions, setMetricOptions] = useState<MetricOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [modelTask, setModelTask] = useState<ModelTask>("forecasting");
+  const [modelTask, setModelTask] = useState<ModelTask>("prediction");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
   const [locationId, setLocationId] = useState(DEFAULT_SITE);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(DEFAULT_METRICS);
