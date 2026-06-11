@@ -42,6 +42,13 @@ export function roleLabel(role?: string) {
 }
 
 function normalizeRole(role?: string): AuthRole {
+  if (!role) return "User";
+  const normalized = role.toLowerCase();
+
+  if (normalized === "admin") return "Admin";
+  if (normalized === "operator") return "Operator";
+  if (normalized === "ai_engineer" || normalized === "ai engineer" || normalized === "ai") return "AI_Engineer";
+
   if (role === "Admin" || role === "Operator" || role === "AI_Engineer") {
     return role;
   }

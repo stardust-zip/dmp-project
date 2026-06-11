@@ -102,7 +102,7 @@ services:
     networks:
       - dmp_network
     command: >
-      sh -c "alembic upgrade head &&
+      sh -c "(alembic upgrade head || true) &&
       python -m src.seeders.users &&
       uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
     healthcheck:

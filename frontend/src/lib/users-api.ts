@@ -109,24 +109,39 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getUsers(signal?: AbortSignal) {
-  return apiJson<ManagedUser[]>("/api/v1/users", { signal });
+function normalizeManagedUser(user: ManagedUser): ManagedUser {
+  let role = user.role as string;
+  const lower = role?.toLowerCase() || "";
+
+  if (lower === "admin") role = "Admin";
+  else if (lower === "operator") role = "Operator";
+  else if (lower === "ai_engineer" || lower === "ai engineer" || lower === "ai") role = "AI_Engineer";
+
+  return { ...user, role: role as ManagedUserRole };
 }
 
-export function createUser(payload: CreateUserPayload, signal?: AbortSignal) {
-  return apiJson<ManagedUser>("/api/v1/users", {
+// Update the API calls below to map through the normalizer
+export async function getUsers(signal?: AbortSignal) {
+  const users = await apiJson<ManagedUser[]>("/api/v1/users", { signal });
+  return users.map(normalizeManagedUser);
+}
+
+export async function createUser(payload: CreateUserPayload, signal?: AbortSignal) {
+  const user = await apiJson<ManagedUser>("/api/v1/users", {
     method: "POST",
     signal,
     body: JSON.stringify(payload),
   });
+  return normalizeManagedUser(user);
 }
 
-export function updateUserRole(userId: string, payload: UpdateUserRolePayload, signal?: AbortSignal) {
-  return apiJson<ManagedUser>(`/api/v1/users/${encodeURIComponent(userId)}`, {
+export async function updateUserRole(userId: string, payload: UpdateUserRolePayload, signal?: AbortSignal) {
+  const user = await apiJson<ManagedUser>(`/api/v1/users/${encodeURIComponent(userId)}`, {
     method: "PATCH",
     signal,
     body: JSON.stringify(payload),
   });
+  return normalizeManagedUser(user);
 }
 
 export function deleteUser(userId: string, signal?: AbortSignal) {

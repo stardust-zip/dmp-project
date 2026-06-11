@@ -4,7 +4,9 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 
-RUN for i in 1 2 3; do uv pip install --system -r pyproject.toml && break || sleep $((i * 5)); done
+ENV UV_HTTP_TIMEOUT=300
+
+RUN uv pip install --system -r pyproject.toml
 
 COPY alembic.ini ./
 COPY backend/alembic ./backend/alembic

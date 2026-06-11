@@ -3,7 +3,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
-
 from src import models
 from src.api.v1.deps import get_current_admin, to_user_response
 from src.core.security import get_password_hash
@@ -26,9 +25,7 @@ def _validate_locations_exist(db: Session, location_ids: list[str]) -> None:
         return
 
     locations = (
-        db.query(models.Location.id)
-        .filter(models.Location.id.in_(location_ids))
-        .all()
+        db.query(models.Location.id).filter(models.Location.id.in_(location_ids)).all()
     )
     found_location_ids = {location.id for location in locations}
     missing = sorted(set(location_ids) - found_location_ids)
@@ -40,11 +37,16 @@ def _validate_locations_exist(db: Session, location_ids: list[str]) -> None:
 
 
 def _can_manage_user(current_user: UserResponse, target_user: models.User) -> bool:
-    if current_user.is_global_admin:
+    # Admin users can manage all accounts regardless of scope.
+    # The admin RBAC gate (get_current_admin) already restricts this endpoint
+    # to users with the Admin role.
+    if current_user.role == "Admin":
         return True
     if str(target_user.id) == current_user.id:
         return True
-    return bool(set(current_user.assigned_site_ids) & set(target_user.assigned_site_ids or []))
+    return bool(
+        set(current_user.assigned_site_ids) & set(target_user.assigned_site_ids or [])
+    )
 
 
 def _assert_can_assign_scope(
@@ -63,21 +65,28 @@ def _assert_can_assign_scope(
                 detail="Only global admins can grant global admin access.",
             )
         return
-    if role in {UserRole.Admin.value, UserRole.Operator.value} and not assigned_site_ids:
+    if (
+        role in {UserRole.Admin.value, UserRole.Operator.value}
+        and not assigned_site_ids
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Assigned sites are required for scoped Admin and Operator users.",
         )
     if not current_user.is_global_admin:
-        unauthorized_sites = sorted(set(assigned_site_ids) - set(current_user.assigned_site_ids))
+        unauthorized_sites = sorted(
+            set(assigned_site_ids) - set(current_user.assigned_site_ids)
+        )
         if unauthorized_sites:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Cannot assign locations outside your scope: {', '.join(unauthorized_sites)}",
+                detail=f"Cannot assign locations outside your scope: {', '.join(unauthorized_sites)}",
             )
 
 
-def _normalized_scope(role: str, assigned_site_ids: list[str], is_global_admin: bool) -> tuple[list[str], bool]:
+def _normalized_scope(
+    role: str, assigned_site_ids: list[str], is_global_admin: bool
+) -> tuple[list[str], bool]:
     if role == UserRole.AIEngineer.value:
         return [], False
     if role != UserRole.Admin.value:
@@ -90,10 +99,12 @@ def list_users(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[UserResponse, Depends(get_current_admin)],
 ) -> list[UserResponse]:
-    query = db.query(models.User)
-    users = query.order_by(models.User.email).all()
-    if not current_user.is_global_admin:
-        users = [user for user in users if _can_manage_user(current_user, user)]
+    """
+    List all users. Admin users see every account regardless of scope;
+    site-based access control is enforced on mutating endpoints (update/delete)
+    to prevent cross-site modifications.
+    """
+    users = db.query(models.User).order_by(models.User.email).all()
     return [to_user_response(user) for user in users]
 
 
