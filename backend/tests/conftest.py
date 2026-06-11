@@ -20,6 +20,7 @@ def mock_admin_user():
         email="admin_test@dmp.com",
         full_name="Test Admin",
         role="Admin",
+        is_global_admin=True,
     )
 
 
@@ -30,6 +31,7 @@ def mock_operator_user():
         email="operator_test@dmp.com",
         full_name="Test Operator",
         role="Operator",
+        assigned_site_ids=["site-a"],
     )
 
 
