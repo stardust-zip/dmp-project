@@ -3,6 +3,7 @@ import type { IconName } from "@/types";
 
 export const AI_ENGINEERING_ROLES: AuthRole[] = ["Admin", "AI_Engineer"];
 export const ASSET_MANAGEMENT_ROLES: AuthRole[] = ["Admin"];
+export const USER_MANAGEMENT_ROLES: AuthRole[] = ["Admin"];
 
 export interface NavItem {
   href: string;
@@ -19,6 +20,7 @@ export const MAIN_NAV: NavItem[] = [
   { href: "/prediction", label: "Prediction", icon: "target" },
   { href: "/models", label: "AI Engineering", icon: "cpu", roles: AI_ENGINEERING_ROLES },
   { href: "/assets", label: "Assets", icon: "map", roles: ASSET_MANAGEMENT_ROLES },
+  { href: "/users", label: "Users", icon: "users", roles: USER_MANAGEMENT_ROLES },
 ];
 
 export function hasAnyRole(user: AuthUser | null | undefined, roles?: AuthRole[]) {
@@ -33,6 +35,9 @@ export function canAccessPath(user: AuthUser | null | undefined, pathname: strin
   }
   if (pathname.startsWith("/assets")) {
     return hasAnyRole(user, ASSET_MANAGEMENT_ROLES);
+  }
+  if (pathname.startsWith("/users")) {
+    return hasAnyRole(user, USER_MANAGEMENT_ROLES);
   }
   return true;
 }

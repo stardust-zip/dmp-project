@@ -10,6 +10,16 @@ const USER_NAMES: Record<string, string> = {
   "ai@dmp.com": "Demo AI Engineer",
 };
 
+interface CurrentUserResponse {
+  id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  contact_number?: string | null;
+  assigned_site_ids?: string[];
+  is_global_admin?: boolean;
+}
+
 function decodeBase64Url(value: string) {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
@@ -32,7 +42,7 @@ export function roleLabel(role?: string) {
 }
 
 function normalizeRole(role?: string): AuthRole {
-  if (role === "Admin" || role === "Operator" || role === "AI_Engineer" || role === "PO" || role === "Developer") {
+  if (role === "Admin" || role === "Operator" || role === "AI_Engineer") {
     return role;
   }
   return "User";
@@ -66,8 +76,49 @@ export function buildSession(token: LoginResponse): AuthSession {
       fullName: USER_NAMES[email] ?? defaultFullName(email),
       role,
       roleLabel: roleLabel(role),
+      contactNumber: null,
+      assignedSiteIds: [],
+      isGlobalAdmin: false,
     },
   };
+}
+
+function applyCurrentUser(session: AuthSession, user: CurrentUserResponse): AuthSession {
+  const role = normalizeRole(user.role);
+  return {
+    ...session,
+    user: {
+      id: user.id,
+      email: user.email,
+      fullName: user.full_name,
+      role,
+      roleLabel: roleLabel(role),
+      contactNumber: user.contact_number ?? null,
+      assignedSiteIds: user.assigned_site_ids ?? [],
+      isGlobalAdmin: Boolean(user.is_global_admin),
+    },
+  };
+}
+
+async function fetchCurrentUser(accessToken: string): Promise<CurrentUserResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/auth/me`, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    const data = (await response.json().catch(() => null)) as { detail?: string; error?: string } | null;
+    throw new Error(data?.detail ?? data?.error ?? "Unable to load the current user.");
+  }
+
+  return response.json() as Promise<CurrentUserResponse>;
+}
+
+export async function refreshSessionUser(session: AuthSession): Promise<AuthSession> {
+  const currentUser = await fetchCurrentUser(session.accessToken);
+  return applyCurrentUser(session, currentUser);
 }
 
 export async function login(credentials: LoginCredentials): Promise<AuthSession> {
@@ -89,7 +140,8 @@ export async function login(credentials: LoginCredentials): Promise<AuthSession>
     throw new Error(data?.detail ?? "Unable to sign in with those credentials.");
   }
 
-  return buildSession((await response.json()) as LoginResponse);
+  const session = buildSession((await response.json()) as LoginResponse);
+  return refreshSessionUser(session);
 }
 
 export function readStoredSession(): AuthSession | null {
@@ -105,6 +157,9 @@ export function readStoredSession(): AuthSession | null {
     }
     session.user.role = normalizeRole(session.user.role);
     session.user.roleLabel = session.user.roleLabel ?? roleLabel(session.user.role);
+    session.user.contactNumber = session.user.contactNumber ?? null;
+    session.user.assignedSiteIds = session.user.assignedSiteIds ?? [];
+    session.user.isGlobalAdmin = Boolean(session.user.isGlobalAdmin);
     return session;
   } catch {
     clearStoredSession();

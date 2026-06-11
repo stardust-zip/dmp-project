@@ -13,6 +13,8 @@ client = TestClient(app)
 class MockUser:
     email = "admin@vinsmart.com"
     role = "Admin"
+    assigned_site_ids = []
+    is_global_admin = True
 
 
 @pytest.fixture(autouse=True)

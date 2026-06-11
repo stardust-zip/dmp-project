@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { clearStoredSession, login as loginRequest, readStoredSession, storeSession } from "@/lib/auth-api";
+import { clearStoredSession, login as loginRequest, readStoredSession, refreshSessionUser, storeSession } from "@/lib/auth-api";
 import type { AuthSession, LoginCredentials } from "@/types/auth";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated";
@@ -20,6 +20,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(() => readStoredSession());
   const status: AuthStatus = session ? "authenticated" : "unauthenticated";
+  const accessToken = session?.accessToken ?? null;
 
   useEffect(() => {
     if (!session) return undefined;
@@ -32,6 +33,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => window.clearTimeout(timeout);
   }, [session]);
+
+  useEffect(() => {
+    if (!accessToken) return undefined;
+
+    const timeout = window.setTimeout(async () => {
+      try {
+        const storedSession = readStoredSession();
+        if (!storedSession || storedSession.accessToken !== accessToken) return;
+
+        const refreshed = await refreshSessionUser(storedSession);
+        storeSession(refreshed);
+        setSession(refreshed);
+      } catch {
+        // Keep the existing token session if the profile refresh is temporarily unavailable.
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [accessToken]);
 
   const signIn = useCallback(async (credentials: LoginCredentials) => {
     const nextSession = await loginRequest(credentials);

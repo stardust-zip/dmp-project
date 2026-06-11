@@ -57,8 +57,16 @@ class UserRole(str, Enum):
     Admin = "Admin"
     AIEngineer = "AI_Engineer"
     Operator = "Operator"
-    PO = "PO"
-    Developer = "Developer"
+
+
+class UserStatus(str, Enum):
+    Available = "Available"
+    InShift = "In_Shift"
+    Busy = "Busy"
+    OnBreak = "On_Break"
+    OffDuty = "Off_Duty"
+    OnLeave = "On_Leave"
+    Suspended = "Suspended"
 
 
 class UserCreate(BaseSchema):
@@ -66,10 +74,43 @@ class UserCreate(BaseSchema):
     full_name: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
     role: UserRole
+    status: UserStatus = UserStatus.OffDuty
+    contact_number: str | None = Field(default=None, min_length=1)
+    assigned_site_ids: list[str] = Field(default_factory=list)
+    is_global_admin: bool = False
+
+    @field_validator("assigned_site_ids")
+    @classmethod
+    def normalize_assigned_site_ids(cls, value: list[str]) -> list[str]:
+        normalized = [site_id.strip() for site_id in value if site_id.strip()]
+        return sorted(set(normalized))
+
+    @model_validator(mode="after")
+    def validate_access_scope(self) -> "UserCreate":
+        if self.role != UserRole.Admin and self.is_global_admin:
+            raise ValueError("Only Admin users can be global admins")
+        if self.role in {UserRole.Admin, UserRole.Operator} and not self.is_global_admin and not self.assigned_site_ids:
+            raise ValueError("Assigned sites are required for scoped Admin and Operator users")
+        if self.role == UserRole.AIEngineer:
+            self.assigned_site_ids = []
+            self.is_global_admin = False
+        return self
 
 
 class UserRoleUpdate(BaseSchema):
-    role: UserRole
+    role: UserRole | None = None
+    status: UserStatus | None = None
+    contact_number: str | None = Field(default=None, min_length=1)
+    assigned_site_ids: list[str] | None = None
+    is_global_admin: bool | None = None
+
+    @field_validator("assigned_site_ids")
+    @classmethod
+    def normalize_assigned_site_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized = [site_id.strip() for site_id in value if site_id.strip()]
+        return sorted(set(normalized))
 
 
 class UserResponse(BaseSchema):
@@ -77,6 +118,10 @@ class UserResponse(BaseSchema):
     email: EmailStr
     full_name: str
     role: str
+    status: str = UserStatus.OffDuty.value
+    contact_number: str | None = None
+    assigned_site_ids: list[str] = Field(default_factory=list)
+    is_global_admin: bool = False
 
 
 class ModelVersionResponse(BaseSchema):

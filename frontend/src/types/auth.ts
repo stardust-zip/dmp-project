@@ -1,10 +1,14 @@
-export type AuthRole = "Admin" | "Operator" | "AI_Engineer" | "PO" | "Developer" | "User";
+export type AuthRole = "Admin" | "Operator" | "AI_Engineer" | "User";
 
 export interface AuthUser {
+  id?: string;
   email: string;
   fullName: string;
   role: AuthRole;
   roleLabel: string;
+  contactNumber?: string | null;
+  assignedSiteIds: string[];
+  isGlobalAdmin: boolean;
 }
 
 export interface AuthSession {

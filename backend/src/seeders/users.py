@@ -13,10 +13,19 @@ class SeedUser:
     email: str
     full_name: str
     role: str
+    status: str = "Off_Duty"
+    contact_number: str | None = None
+    assigned_site_ids: tuple[str, ...] = ()
+    is_global_admin: bool = False
 
 
 DEFAULT_USERS = (
-    SeedUser(email="admin@dmp.com", full_name="Demo Admin", role="Admin"),
+    SeedUser(
+        email="admin@dmp.com",
+        full_name="Demo Admin",
+        role="Admin",
+        is_global_admin=True,
+    ),
     SeedUser(email="operator@dmp.com", full_name="Demo Operator", role="Operator"),
     SeedUser(email="ai@dmp.com", full_name="Demo AI Engineer", role="AI_Engineer"),
 )
@@ -51,6 +60,10 @@ def seed_default_users(
                     email=seed_user.email,
                     full_name=seed_user.full_name,
                     role=seed_user.role,
+                    status=seed_user.status,
+                    contact_number=seed_user.contact_number,
+                    assigned_site_ids=list(seed_user.assigned_site_ids),
+                    is_global_admin=seed_user.is_global_admin,
                     password_hash=password_hash,
                 )
             )
@@ -63,6 +76,19 @@ def seed_default_users(
             changed = True
         if user.role != seed_user.role:
             user.role = seed_user.role
+            changed = True
+        if user.status != seed_user.status:
+            user.status = seed_user.status
+            changed = True
+        if user.contact_number != seed_user.contact_number:
+            user.contact_number = seed_user.contact_number
+            changed = True
+        assigned_site_ids = list(seed_user.assigned_site_ids)
+        if (user.assigned_site_ids or []) != assigned_site_ids:
+            user.assigned_site_ids = assigned_site_ids
+            changed = True
+        if bool(user.is_global_admin) != seed_user.is_global_admin:
+            user.is_global_admin = seed_user.is_global_admin
             changed = True
         if reset_password:
             user.password_hash = password_hash

@@ -74,3 +74,24 @@ def test_current_user_is_loaded_from_database(db_session):
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
+
+
+def test_me_returns_database_user_even_when_token_role_is_stale(db_session):
+    seed_default_users(db_session)
+    token = create_access_token(subject="admin@dmp.com", role="Operator")
+    app.dependency_overrides[get_db] = override_db(db_session)
+    client = TestClient(app)
+
+    try:
+        response = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["email"] == "admin@dmp.com"
+    assert data["full_name"] == "Demo Admin"
+    assert data["role"] == "Admin"
