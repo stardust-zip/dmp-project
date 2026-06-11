@@ -21,6 +21,10 @@ def to_user_response(user: models.User) -> UserResponse:
         email=user.email,
         full_name=user.full_name,
         role=user.role,
+        status=user.status,
+        contact_number=user.contact_number,
+        assigned_site_ids=list(user.assigned_site_ids or []),
+        is_global_admin=bool(user.is_global_admin),
     )
 
 
@@ -69,12 +73,22 @@ def get_current_admin(
     return current_user
 
 
+def user_has_global_read_access(current_user: UserResponse) -> bool:
+    return current_user.role == "AI_Engineer" or (
+        current_user.role == "Admin" and current_user.is_global_admin
+    )
+
+
+def user_can_access_site(current_user: UserResponse, site_id: str) -> bool:
+    if user_has_global_read_access(current_user):
+        return True
+    return site_id in set(current_user.assigned_site_ids)
+
+
 def get_current_operator(
     current_user: Annotated[UserResponse, Depends(get_current_user)],
 ) -> UserResponse:
-    # Merging PO and Operator since they share the same features anyway
-    # TODO: Either delete PO or update new feature for them
-    if current_user.role not in ["Admin", "Operator", "PO"]:
+    if current_user.role not in ["Admin", "Operator"]:
         raise HTTPException(
             status_code=403, detail="Not enough permissions. Operator required."
         )

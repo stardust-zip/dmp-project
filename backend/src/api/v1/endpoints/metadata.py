@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from src.api.v1.deps import get_current_admin, get_current_user
+from src.api.v1.deps import get_current_admin, get_current_user, user_has_global_read_access
 from src.database import get_db
 from src.models import (
     Device,
@@ -61,6 +61,16 @@ async def list_locations(
         query = query.filter(Location.location_type_id == location_type)
     if parent_id:
         query = query.filter(Location.parent_id == parent_id)
+    if not user_has_global_read_access(current_user):
+        assigned_sites = set(current_user.assigned_site_ids)
+        if not assigned_sites:
+            return {"locations": []}
+        query = query.filter(
+            or_(
+                Location.id.in_(assigned_sites),
+                Location.parent_id.in_(assigned_sites),
+            )
+        )
 
     try:
         locations = query.order_by(Location.id).limit(limit).all()

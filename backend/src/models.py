@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Double,
     Enum,
@@ -57,8 +58,17 @@ class UpdateTimestampMixin(TimestampMixin):
 # Enums
 # ------
 
-user_role_enum = Enum(
-    "Admin", "AI_Engineer", "Operator", "PO", "Developer", name="user_role"
+user_role_enum = Enum("Admin", "AI_Engineer", "Operator", name="user_role")
+
+user_status_enum = Enum(
+    "Available",
+    "In_Shift",
+    "Busy",
+    "On_Break",
+    "Off_Duty",
+    "On_Leave",
+    "Suspended",
+    name="user_status",
 )
 
 alert_severity_enum = Enum("Warning", "Critical", "Emergency", name="alert_severity")
@@ -113,6 +123,10 @@ class User(UUIDMixin, TimestampMixin, Base):
     email: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(user_role_enum, nullable=False)
+    status: Mapped[str] = mapped_column(user_status_enum, default="Off_Duty", nullable=False)
+    contact_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    assigned_site_ids: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    is_global_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class Location(StringIDMixin, Base):
