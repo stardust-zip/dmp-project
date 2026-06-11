@@ -81,6 +81,8 @@ services:
     working_dir: /app
     volumes:
       - ./backend/src:/app/src
+      - ./backend/alembic:/app/backend/alembic
+      - ./alembic.ini:/app/alembic.ini
       - ./pyproject.toml:/app/pyproject.toml
       - ./data:/app/data
       - mlflow_artifacts:/mlflow/artifacts
@@ -100,7 +102,8 @@ services:
     networks:
       - dmp_network
     command: >
-      sh -c "python -m src.seeders.users &&
+      sh -c "alembic upgrade head &&
+      python -m src.seeders.users &&
       uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -117,6 +120,8 @@ services:
     working_dir: /app
     volumes:
       - ./backend/src:/app/src
+      - ./backend/alembic:/app/backend/alembic
+      - ./alembic.ini:/app/alembic.ini
       - ./pyproject.toml:/app/pyproject.toml
       - ./data:/app/data
       - mlflow_artifacts:/mlflow/artifacts
