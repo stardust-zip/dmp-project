@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
@@ -11,6 +12,9 @@ engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Locate alembic.ini relative to this file (backend/src/database.py -> backend/../alembic.ini)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ALEMBIC_INI_PATH = _PROJECT_ROOT / "alembic.ini"
 
 def init_db():
     """Initializes the database tables (creates them if they don't exist)."""
