@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
+import { displayLocationName, displayModelName, humanizeIdentifier, locationSearchText } from "@/lib/format";
 import {
   demoteModel,
   getLocationOptions,
@@ -12,6 +13,7 @@ import {
   getRegisteredModels,
   rollbackModel,
   trainModel,
+  updateModelDescription,
   validateTrainingRequest,
   type LocationOption,
   type MetricOption,
@@ -29,14 +31,25 @@ const MODEL_TASK_OPTIONS: Array<{ value: ModelTask; label: string }> = [
   { value: "anomaly_detection", label: "Anomaly Detection" },
   { value: "prediction", label: "Prediction" },
 ];
+const MODEL_FILTER_TASK_OPTIONS: Array<{ value: "all" | ModelTask | "unknown"; label: string }> = [
+  { value: "all", label: "All Tasks" },
+  ...MODEL_TASK_OPTIONS,
+  { value: "unknown", label: "Unknown" },
+];
+const MODEL_STAGE_OPTIONS: Array<{ value: "all" | "production" | "non_production"; label: string }> = [
+  { value: "all", label: "All Stages" },
+  { value: "production", label: "Production" },
+  { value: "non_production", label: "Non-production" },
+];
 
 const DATA_SOURCE_OPTIONS: Array<{ value: TrainingDataSource; label: string }> = [
   { value: "csv", label: "Cleaned CSV" },
   { value: "db", label: "Database" },
 ];
 
-const DEFAULT_SITE = "Panther_parking_Lorriane";
+const DEFAULT_LOCATION = "Panther_parking_Lorriane";
 const DEFAULT_METRICS = ["electricity"];
+const LOCATION_INDEX_LIMIT = 1000;
 
 function defaultStartDate() {
   const date = new Date();
@@ -67,6 +80,100 @@ function formatMetric(value: number) {
 
 function formatRows(value: number) {
   return new Intl.NumberFormat().format(value);
+}
+
+function modelTaskLabel(task: ModelTask | "unknown") {
+  if (task === "anomaly_detection") return "Anomaly";
+  if (task === "forecasting") return "Forecasting";
+  if (task === "prediction") return "Prediction";
+  return "Unknown";
+}
+
+function inferModelTask(model: RegisteredModel): ModelTask | "unknown" {
+  const tags = model.tags ?? {};
+  const taggedTask = tags.model_task || tags.task || tags.type;
+  if (taggedTask === "prediction" || taggedTask === "forecasting" || taggedTask === "anomaly_detection") return taggedTask;
+
+  const text = `${model.name} ${model.description ?? ""}`.toLowerCase();
+  if (text.includes("anomaly")) return "anomaly_detection";
+  if (text.includes("forecast")) return "forecasting";
+  if (text.includes("prediction") || text.includes("energy_prediction")) return "prediction";
+  return "unknown";
+}
+
+function inferModelMetric(model: RegisteredModel) {
+  const tags = model.tags ?? {};
+  const taggedMetric = tags.metric || tags.metric_type || tags.metric_type_id;
+  if (taggedMetric) return taggedMetric;
+
+  const energyPrefix = "dmp_energy_prediction_";
+  if (model.name.toLowerCase().startsWith(energyPrefix)) {
+    const parts = model.name.slice(energyPrefix.length).split("_").filter(Boolean);
+    return parts[parts.length - 1] ?? "unknown";
+  }
+  return "unknown";
+}
+
+function modelSearchText(model: RegisteredModel) {
+  const task = inferModelTask(model);
+  const metric = inferModelMetric(model);
+  return [
+    model.name,
+    displayModelName(model.name),
+    model.description ?? "",
+    modelTaskLabel(task),
+    task,
+    metric,
+    humanizeIdentifier(metric),
+    model.production_version ? "production active live" : "registered non production inactive",
+    model.production_version?.version ?? "",
+    model.production_version?.current_stage ?? "",
+    ...Object.entries(model.tags ?? {}).flatMap(([key, value]) => [key, value]),
+  ].join(" ").toLowerCase();
+}
+
+function isSuccessfulPipelineLog(log: PipelineLog) {
+  return log.status.toLowerCase() === "success" && Boolean(log.mlflow_run_id && log.mlflow_run_id !== "pending");
+}
+
+function pipelineDisplayStatus(log: PipelineLog) {
+  if (log.status.toLowerCase() === "running" && (!log.mlflow_run_id || log.mlflow_run_id === "pending")) {
+    return "Queued";
+  }
+  return log.status;
+}
+
+function pipelineStatusTone(log: PipelineLog) {
+  const normalized = pipelineDisplayStatus(log).toLowerCase();
+  if (normalized === "success") return "s-green";
+  if (normalized === "failed") return "s-red";
+  return "s-yellow";
+}
+
+function pipelineStatusLabel(log: PipelineLog) {
+  return pipelineDisplayStatus(log);
+}
+
+function pipelineStatusDescription(log: PipelineLog) {
+  const normalized = pipelineDisplayStatus(log).toLowerCase();
+  if (normalized === "queued") return "Waiting for a worker to pick up this training job.";
+  if (normalized === "running") return "Worker is actively executing this training job.";
+  if (normalized === "success") return "Pipeline completed successfully.";
+  if (normalized === "failed") return "Pipeline failed. Open details for the terminal log.";
+  return log.datasource_used || "Unknown pipeline state.";
+}
+
+function pipelineTerminalLog(log: PipelineLog) {
+  if (log.terminal_log?.trim()) return log.terminal_log.trim();
+
+  return [
+    `[${log.timestamp ? new Date(log.timestamp).toLocaleString() : "unknown time"}] ${log.type} pipeline ${log.status.toLowerCase()}.`,
+    `model_task=${log.model_task || "unknown"}`,
+    `datasource=${log.datasource_used || "unknown"}`,
+    `mlflow_run_id=${log.mlflow_run_id || "-"}`,
+    log.execution_time_ms != null ? `execution_time_ms=${log.execution_time_ms}` : "execution_time_ms=-",
+    "Detailed terminal output was not captured for this older run.",
+  ].join("\n");
 }
 
 function TrainingValidationPanel({
@@ -160,17 +267,19 @@ function TrainingValidationPanel({
 
 export function ModelsPage() {
   const locationPickerRef = useRef<HTMLDivElement | null>(null);
+  const registryRefreshRunIdsRef = useRef<Set<string>>(new Set());
   const [models, setModels] = useState<RegisteredModel[]>([]);
   const [logs, setLogs] = useState<PipelineLog[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
   const [metricOptions, setMetricOptions] = useState<MetricOption[]>([]);
   const [loading, setLoading] = useState(true);
+  const [logsLoading, setLogsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [modelTask, setModelTask] = useState<ModelTask>("forecasting");
+  const [modelTask, setModelTask] = useState<ModelTask>("prediction");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
-  const [locationId, setLocationId] = useState(DEFAULT_SITE);
+  const [locationId, setLocationId] = useState(DEFAULT_LOCATION);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(DEFAULT_METRICS);
-  const [locationQuery, setLocationQuery] = useState(DEFAULT_SITE);
+  const [locationQuery, setLocationQuery] = useState(DEFAULT_LOCATION);
   const [metricQuery, setMetricQuery] = useState("");
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(defaultEndDate);
@@ -187,9 +296,17 @@ export function ModelsPage() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [trainMessage, setTrainMessage] = useState<string | null>(null);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [locationSearchLoading, setLocationSearchLoading] = useState(false);
   const [detailModelName, setDetailModelName] = useState<string | null>(null);
   const [trainModalOpen, setTrainModalOpen] = useState(false);
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
+  const [detailLog, setDetailLog] = useState<PipelineLog | null>(null);
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [descriptionSubmitting, setDescriptionSubmitting] = useState(false);
+  const [modelQuery, setModelQuery] = useState("");
+  const [modelTaskFilter, setModelTaskFilter] = useState<"all" | ModelTask | "unknown">("all");
+  const [modelStageFilter, setModelStageFilter] = useState<"all" | "production" | "non_production">("all");
+  const [modelMetricFilter, setModelMetricFilter] = useState("all");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -199,18 +316,18 @@ export function ModelsPage() {
       setError(null);
 
       try {
-        const [modelData, logData] = await Promise.all([
+        const [modelData, logData, locationData, metricData] = await Promise.all([
           getRegisteredModels(controller.signal),
           getPipelineLogs(controller.signal),
+          getLocationOptions({ limit: LOCATION_INDEX_LIMIT }, controller.signal),
+          getMetricOptions(controller.signal),
         ]);
         setModels(modelData.models);
         setLogs(logData.logs);
+        registryRefreshRunIdsRef.current = new Set(
+          logData.logs.filter(isSuccessfulPipelineLog).map((log) => log.mlflow_run_id as string),
+        );
         setSelectedModelName((current) => current || modelData.models[0]?.name || "");
-
-        const [locationData, metricData] = await Promise.all([
-          getLocationOptions({ limit: 8 }, controller.signal),
-          getMetricOptions(controller.signal),
-        ]);
         setLocationOptions(locationData.locations);
         setMetricOptions(metricData.metrics);
       } catch (err) {
@@ -220,6 +337,7 @@ export function ModelsPage() {
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
+          setLogsLoading(false);
         }
       }
     }
@@ -227,22 +345,6 @@ export function ModelsPage() {
     void load();
     return () => controller.abort();
   }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function queryLocations() {
-      try {
-        const data = await getLocationOptions({ q: locationQuery, limit: 8 }, controller.signal);
-        setLocationOptions(data.locations);
-      } catch {
-        if (!controller.signal.aborted) setLocationOptions([]);
-      }
-    }
-
-    void queryLocations();
-    return () => controller.abort();
-  }, [locationQuery]);
 
   useEffect(() => {
     if (!locationPickerOpen) return;
@@ -268,10 +370,63 @@ export function ModelsPage() {
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [detailModelName]);
 
-  async function refreshLogs() {
-    const logData = await getPipelineLogs();
-    setLogs(logData.logs);
-  }
+  const refreshRegistry = useCallback(
+    async (signal?: AbortSignal) => {
+      const modelData = await getRegisteredModels(signal);
+      setModels(modelData.models);
+      setSelectedModelName((current) => current || modelData.models[0]?.name || "");
+
+      if (selectedModelName && modelData.models.some((model) => model.name === selectedModelName)) {
+        const versionData = await getModelVersions(selectedModelName, signal);
+        setVersions(versionData.versions);
+        setSelectedRunId((current) =>
+          versionData.versions.some((version) => version.run_id === current) ? current : versionData.versions[0]?.run_id || "",
+        );
+      }
+
+      return modelData.models;
+    },
+    [selectedModelName],
+  );
+
+  const refreshLogs = useCallback(
+    async (signal?: AbortSignal) => {
+      const logData = await getPipelineLogs(signal);
+      setLogs(logData.logs);
+      setDetailLog((current) => (current ? logData.logs.find((log) => log.id === current.id) ?? current : current));
+
+      const successfulRunIds = logData.logs
+        .filter(isSuccessfulPipelineLog)
+        .map((log) => log.mlflow_run_id as string);
+      const hasNewSuccessfulRun = successfulRunIds.some((runId) => !registryRefreshRunIdsRef.current.has(runId));
+      successfulRunIds.forEach((runId) => registryRefreshRunIdsRef.current.add(runId));
+
+      if (hasNewSuccessfulRun) {
+        await refreshRegistry(signal);
+      }
+
+      return logData.logs;
+    },
+    [refreshRegistry],
+  );
+
+  useEffect(() => {
+    if (!pipelineModalOpen && !detailLog && !submitting) return;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      void refreshLogs(controller.signal).catch(() => { });
+    }, 0);
+    const interval = window.setInterval(() => {
+      void refreshLogs(controller.signal).catch(() => { });
+    }, 2000);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+      window.clearInterval(interval);
+    };
+  }, [detailLog, pipelineModalOpen, refreshLogs, submitting]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -310,7 +465,30 @@ export function ModelsPage() {
   const filteredMetrics = metricOptions
     .filter((metric) => `${metric.id} ${metric.description ?? ""}`.toLowerCase().includes(metricQuery.toLowerCase()))
     .slice(0, 8);
+  const locationById = useMemo(() => new Map(locationOptions.map((location) => [location.id, location])), [locationOptions]);
+  const filteredLocationOptions = useMemo(() => {
+    const query = locationQuery.trim().toLowerCase();
+    return locationOptions
+      .filter((location) => !query || locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : null).includes(query))
+      .slice(0, 12);
+  }, [locationById, locationOptions, locationQuery]);
   const detailModel = models.find((model) => model.name === detailModelName) ?? null;
+  const modelMetricOptions = useMemo(() => {
+    const metrics = [...new Set(models.map(inferModelMetric).filter((metric) => metric && metric !== "unknown"))].sort((left, right) => left.localeCompare(right));
+    return [{ value: "all", label: "All Metrics" }, ...metrics.map((metric) => ({ value: metric, label: humanizeIdentifier(metric) }))];
+  }, [models]);
+  const filteredModels = useMemo(() => {
+    const query = modelQuery.trim().toLowerCase();
+    return models.filter((model) => {
+      const task = inferModelTask(model);
+      const metric = inferModelMetric(model);
+      if (modelTaskFilter !== "all" && task !== modelTaskFilter) return false;
+      if (modelStageFilter === "production" && !model.production_version) return false;
+      if (modelStageFilter === "non_production" && model.production_version) return false;
+      if (modelMetricFilter !== "all" && metric !== modelMetricFilter) return false;
+      return !query || modelSearchText(model).includes(query);
+    });
+  }, [modelMetricFilter, modelQuery, modelStageFilter, modelTaskFilter, models]);
   const selectedVersion = versions.find((version) => version.run_id === selectedRunId) ?? null;
   const detailVersion = detailModelName === selectedModelName ? selectedVersion : null;
   const detailVersions = detailModelName === selectedModelName ? versions : [];
@@ -319,7 +497,23 @@ export function ModelsPage() {
   );
   const detailVersionMetricEntries = Object.entries(detailVersion?.metrics ?? {}).sort(([left], [right]) => left.localeCompare(right));
   const detailVersionTagEntries = Object.entries(detailVersion?.tags ?? {}).sort(([left], [right]) => left.localeCompare(right));
+  const pipelineLogsByRunId = useMemo(() => {
+    const byRunId = new Map<string, PipelineLog[]>();
+    logs.forEach((log) => {
+      if (!log.mlflow_run_id || log.mlflow_run_id === "pending") return;
+      const runLogs = byRunId.get(log.mlflow_run_id) ?? [];
+      runLogs.push(log);
+      byRunId.set(log.mlflow_run_id, runLogs);
+    });
+    return byRunId;
+  }, [logs]);
+  const detailVersionPipelineLogs = detailVersions.flatMap((version) =>
+    (pipelineLogsByRunId.get(version.run_id) ?? []).map((log) => ({ version, log })),
+  );
   const selectedMetricsKey = selectedMetrics.join(",");
+  const selectedTaskLabel = MODEL_TASK_OPTIONS.find((option) => option.value === modelTask)?.label ?? modelTask;
+  const trainingTaskImplemented = modelTask === "prediction";
+  const metricSelectionValid = !trainingTaskImplemented || selectedMetrics.length === 1;
   const validationInputReady = Boolean(locationId.trim() && selectedMetrics.length && startDate && endDate);
   const trainingPayload = useMemo<TrainModelPayload>(
     () => ({
@@ -332,10 +526,40 @@ export function ModelsPage() {
     }),
     [dataSource, endDate, locationId, modelTask, selectedMetrics, startDate],
   );
-  const canTrain = validationInputReady && !submitting && !validationLoading && trainingValidation?.valid !== false;
+  const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && !submitting && !validationLoading && trainingValidation?.valid !== false;
 
   useEffect(() => {
-    if (!validationInputReady) return;
+    if (!trainModalOpen) return;
+
+    const query = locationQuery.trim();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      setLocationSearchLoading(true);
+      try {
+        const data = await getLocationOptions({ q: query || undefined, limit: LOCATION_INDEX_LIMIT }, controller.signal);
+        setLocationOptions(data.locations);
+      } catch {
+        if (!controller.signal.aborted) setLocationOptions([]);
+      } finally {
+        if (!controller.signal.aborted) setLocationSearchLoading(false);
+      }
+    }, query ? 180 : 0);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [locationQuery, trainModalOpen]);
+
+  useEffect(() => {
+    if (!trainModalOpen || !trainingTaskImplemented || !metricSelectionValid || !validationInputReady) {
+      const timeout = window.setTimeout(() => {
+        setTrainingValidation(null);
+        setValidationError(null);
+        setValidationLoading(false);
+      }, 0);
+      return () => window.clearTimeout(timeout);
+    }
 
     const controller = new AbortController();
     const timeout = window.setTimeout(async () => {
@@ -361,11 +585,11 @@ export function ModelsPage() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [selectedMetricsKey, trainingPayload, validationInputReady]);
+  }, [metricSelectionValid, selectedMetricsKey, trainModalOpen, trainingPayload, trainingTaskImplemented, validationInputReady]);
 
   function chooseLocation(location: LocationOption) {
     setLocationId(location.id);
-    setLocationQuery(location.id);
+    setLocationQuery(displayLocationName(location.name, location.id));
     setLocationPickerOpen(false);
   }
 
@@ -374,23 +598,29 @@ export function ModelsPage() {
   }
 
   function openModelDetails(modelName: string) {
+    const model = models.find((item) => item.name === modelName);
     setSelectedModelName(modelName);
     setDetailModelName(modelName);
+    setDescriptionDraft(model?.description ?? "");
   }
 
   async function refreshWorkspace() {
     setLoading(true);
+    setLogsLoading(true);
     setError(null);
 
     try {
       const [modelData, logData, locationData, metricData] = await Promise.all([
         getRegisteredModels(),
         getPipelineLogs(),
-        getLocationOptions({ limit: 8 }),
+        getLocationOptions({ limit: LOCATION_INDEX_LIMIT }),
         getMetricOptions(),
       ]);
       setModels(modelData.models);
       setLogs(logData.logs);
+      registryRefreshRunIdsRef.current = new Set(
+        logData.logs.filter(isSuccessfulPipelineLog).map((log) => log.mlflow_run_id as string),
+      );
       setSelectedModelName((current) => current || modelData.models[0]?.name || "");
       setLocationOptions(locationData.locations);
       setMetricOptions(metricData.metrics);
@@ -398,6 +628,7 @@ export function ModelsPage() {
       setError(err instanceof Error ? err.message : "Unable to load AI engineering data.");
     } finally {
       setLoading(false);
+      setLogsLoading(false);
     }
   }
 
@@ -407,12 +638,22 @@ export function ModelsPage() {
     const invalidMetrics = selectedMetrics.filter((metric) => !knownMetricIds.has(metric));
 
     if (!resolvedLocationId) {
-      setError("Select a site/building from the list before training.");
+      setError("Select a location from the search results before training.");
       return;
     }
 
     if (!selectedMetrics.length) {
       setError("At least one metric is required.");
+      return;
+    }
+
+    if (!metricSelectionValid) {
+      setError("Prediction training requires exactly one metric per model.");
+      return;
+    }
+
+    if (!trainingTaskImplemented) {
+      setError(`${selectedTaskLabel} training pipeline is not implemented yet.`);
       return;
     }
 
@@ -437,6 +678,7 @@ export function ModelsPage() {
       const response = await trainModel(trainingPayload);
       setTrainMessage(`${response.message} Task ${response.task_id} queued.`);
       setTrainModalOpen(false);
+      setPipelineModalOpen(true);
       await refreshLogs();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start training.");
@@ -499,6 +741,24 @@ export function ModelsPage() {
     }
   }
 
+  async function onSaveModelDescription() {
+    if (!detailModel) return;
+
+    setDescriptionSubmitting(true);
+    setError(null);
+    setTrainMessage(null);
+    try {
+      const response = await updateModelDescription(detailModel.name, { description: descriptionDraft });
+      setModels((current) => current.map((model) => (model.name === response.name ? { ...model, description: response.description } : model)));
+      setDescriptionDraft(response.description);
+      setTrainMessage(`${displayModelName(detailModel.name)} description updated.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update model description.");
+    } finally {
+      setDescriptionSubmitting(false);
+    }
+  }
+
   return (
     <main className="page models-page">
       <div className="page-head models-head">
@@ -526,60 +786,68 @@ export function ModelsPage() {
       {trainMessage && <div className="models-success">{trainMessage}</div>}
 
       <div className="models-single-layout">
-        <Card title="All Models" sub={loading ? "Loading registry..." : `${models.length} registered models`} icon="cpu">
+        <Card title="All Models" sub={loading ? "Loading registry..." : `${filteredModels.length} of ${models.length} registered models`} icon="cpu">
+          <div className="model-registry-toolbar">
+            <div className="model-registry-search">
+              <Icon name="search" />
+              <input
+                value={modelQuery}
+                onChange={(event) => setModelQuery(event.target.value)}
+                placeholder="Search model, task, metric, description, tag, or raw ID"
+              />
+            </div>
+            <Select value={modelTaskFilter} onChange={setModelTaskFilter} options={MODEL_FILTER_TASK_OPTIONS} />
+            <Select value={modelStageFilter} onChange={setModelStageFilter} options={MODEL_STAGE_OPTIONS} />
+            <Select value={modelMetricFilter} onChange={setModelMetricFilter} options={modelMetricOptions} searchable />
+          </div>
           {loading ? (
             <div className="empty">Loading models...</div>
-          ) : models.length ? (
+          ) : filteredModels.length ? (
             <div className="model-list model-gallery">
-              {models.map((model) => (
-                <button
-                  className={`model-row ${selectedModelName === model.name ? "is-selected" : ""}`}
-                  key={model.name}
-                  type="button"
-                  onClick={() => openModelDetails(model.name)}
-                >
-                  <div>
-                    <b>{model.name}</b>
-                    <span>{model.description || "No description"}</span>
-                  </div>
-                  <div className="model-card-detail-grid">
-                    <span>
-                      <small>Production</small>
-                      {model.production_version ? `v${model.production_version.version}` : "None"}
-                    </span>
-                    <span>
-                      <small>Versions</small>
-                      {model.latest_versions.length}
-                    </span>
-                    <span>
-                      <small>Updated</small>
-                      {formatRegistryTime(model.last_updated_timestamp)}
-                    </span>
-                    <span>
-                      <small>Stage</small>
-                      {model.production_version?.current_stage || "Unassigned"}
-                    </span>
-                  </div>
-                  <div className="model-version-stack">
-                    <span className={`badge ${model.production_version ? "badge-resolved" : "badge-neutral"}`}>
-                      {model.production_version ? "Production" : "Registered"}
-                    </span>
-                    {model.latest_versions.length ? (
-                      model.latest_versions.map((version) => (
-                        <span className="badge badge-neutral" key={`${model.name}-${version.version}`}>
-                          v{version.version}
-                          {version.current_stage ? ` . ${version.current_stage}` : ""}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="badge badge-neutral">No versions</span>
-                    )}
-                  </div>
-                </button>
-              ))}
+              {filteredModels.map((model) => {
+                const task = inferModelTask(model);
+                const metric = inferModelMetric(model);
+                return (
+                  <button
+                    className={`model-row model-row-${task.replace("_", "-")} ${model.production_version ? "is-production" : "is-non-production"} ${selectedModelName === model.name ? "is-selected" : ""}`}
+                    key={model.name}
+                    type="button"
+                    onClick={() => openModelDetails(model.name)}
+                  >
+                    <div className="model-card-top">
+                      <b title={model.name}>{displayModelName(model.name)}</b>
+                    </div>
+                    <span className="model-card-description">{model.description || "No description"}</span>
+                    <div className="model-card-detail-grid">
+                      <span className="model-detail-metric">
+                        <small>Metric</small>
+                        {humanizeIdentifier(metric)}
+                      </span>
+                      <span className={`model-detail-production ${model.production_version ? "has-production" : "no-production"}`}>
+                        <small>Production</small>
+                        {model.production_version ? `v${model.production_version.version}` : "None"}
+                      </span>
+                      <span className="model-detail-versions">
+                        <small>Versions</small>
+                        {model.latest_versions.length}
+                      </span>
+                      <span className="model-detail-updated">
+                        <small>Updated</small>
+                        {formatRegistryTime(model.last_updated_timestamp)}
+                      </span>
+                    </div>
+                    <div className="model-version-stack">
+                      <span className={`model-task-chip task-${task.replace("_", "-")}`}>{modelTaskLabel(task)}</span>
+                      <span className={`model-stage-chip ${model.production_version ? "is-production" : "is-non-production"}`}>
+                        {model.production_version ? "Production" : "Non-production"}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           ) : (
-            <div className="empty">No registered models found.</div>
+            <div className="empty">No models match the selected search and filters.</div>
           )}
         </Card>
       </div>
@@ -605,7 +873,7 @@ export function ModelsPage() {
                 <Field label="Data source">
                   <Select value={dataSource} onChange={setDataSource} options={DATA_SOURCE_OPTIONS} />
                 </Field>
-                <Field label="Site / building">
+                <Field label="Location">
                   <div className="model-combobox" ref={locationPickerRef}>
                     <input
                       className="input"
@@ -616,35 +884,41 @@ export function ModelsPage() {
                         setLocationId("");
                         setLocationPickerOpen(true);
                       }}
+                      placeholder="Search site or building by name or ID"
                     />
-                    {locationPickerOpen && locationQuery && locationOptions.length > 0 && (
+                    {locationPickerOpen && (
                       <div className="model-picker-list">
-                        {locationOptions.map((location) => (
-                          <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
-                            <b title={location.id}>{location.id}</b>
-                            <span title={location.name}>{location.name}</span>
-                          </button>
-                        ))}
+                        {locationSearchLoading ? (
+                          <div className="model-picker-empty">Searching locations...</div>
+                        ) : filteredLocationOptions.length ? (
+                          filteredLocationOptions.map((location) => (
+                            <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
+                              <b title={location.id}>{displayLocationName(location.name, location.id)}</b>
+                              <span title={location.id}>
+                                {location.parent_id ? `Site ${location.parent_id} · ` : ""}{location.id}
+                              </span>
+                            </button>
+                          ))
+                        ) : (
+                          <div className="model-picker-empty">No locations found.</div>
+                        )}
                       </div>
-                    )}
-                    {locationPickerOpen && locationQuery && locationOptions.length === 0 && (
-                      <div className="model-picker-empty">No matches found.</div>
                     )}
                   </div>
                 </Field>
                 <Field label="Metrics">
-                  <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder="Please do not choose more than one emtric!" />
+                  <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder="Choose one metric for prediction training" />
                   <div className="metric-choice-list">
                     {filteredMetrics.map((metric) => (
                       <button key={metric.id} type="button" className={selectedMetrics.includes(metric.id) ? "is-selected" : ""} onClick={() => toggleMetric(metric.id)}>
-                        {metric.id}
+                        {humanizeIdentifier(metric.id)}
                       </button>
                     ))}
                   </div>
                   <div className="metric-chip-list">
                     {selectedMetrics.map((metric) => (
                       <button key={metric} type="button" onClick={() => toggleMetric(metric)}>
-                        {metric}
+                        {humanizeIdentifier(metric)}
                         <Icon name="x" />
                       </button>
                     ))}
@@ -657,12 +931,26 @@ export function ModelsPage() {
                   <input className="input" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
                 </Field>
               </div>
-              <TrainingValidationPanel
-                dataSource={dataSource}
-                validation={validationInputReady ? trainingValidation : null}
-                loading={validationInputReady && validationLoading}
-                error={validationInputReady ? validationError : null}
-              />
+              {trainingTaskImplemented ? (
+                metricSelectionValid ? (
+                  <TrainingValidationPanel
+                    dataSource={dataSource}
+                    validation={validationInputReady ? trainingValidation : null}
+                    loading={validationInputReady && validationLoading}
+                    error={validationInputReady ? validationError : null}
+                  />
+                ) : (
+                  <div className="training-validation is-invalid">
+                    <Icon name="alert" />
+                    <span>Prediction training requires exactly one metric per model.</span>
+                  </div>
+                )
+              ) : (
+                <div className="training-validation is-invalid">
+                  <Icon name="alert" />
+                  <span>{selectedTaskLabel} training pipeline is not implemented yet.</span>
+                </div>
+              )}
             </div>
             <div className="model-modal-foot">
               <button className="btn" type="button" onClick={() => setTrainModalOpen(false)}>
@@ -671,7 +959,7 @@ export function ModelsPage() {
               </button>
               <button className="btn btn-primary" type="button" onClick={onTrainModel} disabled={!canTrain}>
                 <Icon name={submitting ? "refresh" : "plus"} className={submitting ? "spin" : undefined} />
-                <span>{submitting ? "Queueing..." : "Train Model"}</span>
+                <span>{!trainingTaskImplemented ? "Not Implemented" : submitting ? "Queueing..." : "Train Model"}</span>
               </button>
             </div>
           </div>
@@ -685,33 +973,105 @@ export function ModelsPage() {
             <div className="model-modal-head">
               <div>
                 <h2>Pipeline Activity</h2>
-                <span>{loading ? "Loading runs..." : `${logs.length} recent runs`}</span>
+                <span>{logsLoading ? "Loading runs..." : `${logs.length} recent runs`}</span>
               </div>
               <button className="icon-btn" type="button" aria-label="Close pipeline activity" onClick={() => setPipelineModalOpen(false)}>
                 <Icon name="x" />
               </button>
             </div>
             <div className="model-modal-body">
-              {loading ? (
+              {logsLoading ? (
                 <div className="empty">Loading pipeline logs...</div>
               ) : logs.length ? (
                 <div className="model-log-list">
                   {logs.map((log) => (
-                    <div className="model-log-row" key={log.id}>
-                      <span className={`status-dot ${log.status === "Success" ? "s-green" : log.status === "Failed" ? "s-red" : "s-yellow"}`} />
+                    <button
+                      className="model-log-row"
+                      key={log.id}
+                      type="button"
+                      onClick={() => { setPipelineModalOpen(false); setDetailLog(log); }}
+                    >
+                      <span className={`status-dot ${pipelineStatusTone(log)}`} />
                       <div>
                         <b>{log.model_task || log.type}</b>
                         <span className="model-log-source" title={log.datasource_used || "Unknown datasource"}>
-                          {log.datasource_used || "Unknown datasource"}
+                          {pipelineStatusDescription(log)}
                         </span>
                       </div>
-                      <span className="badge badge-neutral">{log.status}</span>
-                    </div>
+                      <span className="badge badge-neutral">{pipelineStatusLabel(log)}</span>
+                    </button>
                   ))}
                 </div>
               ) : (
                 <div className="empty">No pipeline logs found.</div>
               )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {detailLog && (
+        <>
+          <button className="overlay" type="button" aria-label="Close pipeline log details" onClick={() => setDetailLog(null)} />
+          <div className="model-modal pipeline-log-modal" role="dialog" aria-modal="true" aria-label="Pipeline log details">
+            <div className="model-modal-head">
+              <div>
+                <h2>Pipeline Log Details</h2>
+                <span>Run {detailLog.id.slice(0, 8)} &mdash; {detailLog.model_task || detailLog.type}</span>
+              </div>
+              <button className="icon-btn" type="button" aria-label="Close pipeline log details" onClick={() => setDetailLog(null)}>
+                <Icon name="x" />
+              </button>
+            </div>
+            <div className="model-modal-body">
+              <div className="pipeline-log-summary">
+                <span className={`status-dot ${pipelineStatusTone(detailLog)}`} />
+                <div>
+                  <b>{detailLog.model_task || detailLog.type}</b>
+                  <span style={{ color: detailLog.status === "Success" ? "var(--green)" : detailLog.status === "Failed" ? "var(--red)" : "var(--amber)", fontWeight: 600 }}>
+                    {pipelineStatusLabel(detailLog)}
+                  </span>
+                  <span>{pipelineStatusDescription(detailLog)}</span>
+                </div>
+              </div>
+
+              <div className="model-section-title">Run Details</div>
+              <div className="model-detail-grid">
+                <div>
+                  <span>Run ID</span>
+                  <b className="mono" title={detailLog.id}>{detailLog.id}</b>
+                </div>
+                <div>
+                  <span>Type</span>
+                  <b>{detailLog.type}</b>
+                </div>
+                <div>
+                  <span>Model Task</span>
+                  <b>{detailLog.model_task || "Unknown"}</b>
+                </div>
+                <div>
+                  <span>Status</span>
+                  <b style={{ color: detailLog.status === "Success" ? "var(--green)" : detailLog.status === "Failed" ? "var(--red)" : "var(--amber)" }}>{pipelineStatusLabel(detailLog)}</b>
+                </div>
+                <div>
+                  <span>Execution Time</span>
+                  <b>{detailLog.execution_time_ms != null ? `${(detailLog.execution_time_ms / 1000).toFixed(1)}s` : "-"}</b>
+                </div>
+                <div>
+                  <span>Data Source</span>
+                  <b>{detailLog.datasource_used || "Unknown"}</b>
+                </div>
+                <div>
+                  <span>MLflow Run ID</span>
+                  <b className="mono" title={detailLog.mlflow_run_id || ""}>{detailLog.mlflow_run_id || "-"}</b>
+                </div>
+                <div>
+                  <span>Timestamp</span>
+                  <b>{detailLog.timestamp ? new Date(detailLog.timestamp).toLocaleString() : "-"}</b>
+                </div>
+              </div>
+              <div className="model-section-title">Terminal Log</div>
+              <pre className="pipeline-terminal-log">{pipelineTerminalLog(detailLog)}</pre>
             </div>
           </div>
         </>
@@ -723,8 +1083,8 @@ export function ModelsPage() {
           <div className="model-modal" role="dialog" aria-label={`${detailModel.name} details`}>
             <div className="model-modal-head">
               <div>
-                <h2>{detailModel.name}</h2>
-                <span>{detailModel.description || "No description"}</span>
+                <h2 title={detailModel.name}>{displayModelName(detailModel.name)}</h2>
+                <span>{detailModel.description || detailModel.name}</span>
               </div>
               <button className="icon-btn" type="button" aria-label="Close model details" onClick={() => setDetailModelName(null)}>
                 <Icon name="x" />
@@ -751,6 +1111,29 @@ export function ModelsPage() {
                 </div>
               </div>
 
+              <div className="model-section-title">Description</div>
+              <div className="model-description-editor">
+                <textarea
+                  className="textarea"
+                  value={descriptionDraft}
+                  onChange={(event) => setDescriptionDraft(event.target.value)}
+                  placeholder="Add a short business-facing description for this model."
+                  maxLength={2000}
+                />
+                <div className="model-description-actions">
+                  <span>{descriptionDraft.length}/2000</span>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={onSaveModelDescription}
+                    disabled={descriptionSubmitting || descriptionDraft.trim() === (detailModel.description ?? "").trim()}
+                  >
+                    <Icon name={descriptionSubmitting ? "refresh" : "check"} className={descriptionSubmitting ? "spin" : undefined} />
+                    <span>{descriptionSubmitting ? "Saving..." : "Save Description"}</span>
+                  </button>
+                </div>
+              </div>
+
               <div className="model-section-title">Version control</div>
               <div className="model-version-control">
                 <Field label="Version">
@@ -766,7 +1149,6 @@ export function ModelsPage() {
                       versions.map((version) => (
                         <option value={version.run_id} key={version.run_id}>
                           v{version.version} - {version.run_id.slice(0, 8)}
-                          {version.current_stage ? ` - ${version.current_stage}` : ""}
                         </option>
                       ))
                     ) : (
@@ -833,6 +1215,40 @@ export function ModelsPage() {
                     </div>
                   ) : (
                     <div className="empty compact">No tags recorded for this version.</div>
+                  )}
+
+                  <div className="model-section-title">Training pipelines</div>
+                  {detailVersionPipelineLogs.length ? (
+                    <div className="model-pipeline-list">
+                      {detailVersionPipelineLogs.map(({ version, log }) => (
+                        <button
+                          className="model-pipeline-row"
+                          key={`${version.version}-${log.id}`}
+                          type="button"
+                          onClick={() => {
+                            setDetailModelName(null);
+                            setDetailLog(log);
+                          }}
+                        >
+                          <span className={`status-dot ${pipelineStatusTone(log)}`} />
+                          <div>
+                            <b>v{version.version} - {log.model_task || log.type}</b>
+                            <span>
+                              {log.datasource_used || "Unknown datasource"}
+                              {log.mlflow_run_id ? ` · ${log.mlflow_run_id.slice(0, 8)}` : ""}
+                            </span>
+                          </div>
+                          <span className={`model-pipeline-status ${log.status === "Success" ? "is-success" : log.status === "Failed" ? "is-failed" : "is-running"}`}>
+                            {pipelineStatusLabel(log)}
+                          </span>
+                          <small>{log.timestamp ? new Date(log.timestamp).toLocaleString() : "Unknown time"}</small>
+                        </button>
+                      ))}
+                    </div>
+                  ) : logsLoading ? (
+                    <div className="empty compact">Loading pipeline history...</div>
+                  ) : (
+                    <div className="empty compact">No pipeline history found for this model's versions.</div>
                   )}
                 </>
               ) : versionsLoading || detailModelName !== selectedModelName ? (

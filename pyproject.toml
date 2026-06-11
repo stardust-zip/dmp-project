@@ -47,3 +47,10 @@ dev = [
     "testcontainers[postgres]>=4.0.0",
     "httpx2>=2.3.0",
 ]
+
+[tool.basedpyright]
+include = ["backend/src", "backend/tests"]
+exclude = ["data", "frontend", "mlflow_artifacts", "notebooks"]
+pythonVersion = "3.12"
+typeCheckingMode = "off"
+reportMissingTypeStubs = false

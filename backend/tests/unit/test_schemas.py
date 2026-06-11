@@ -1,7 +1,12 @@
 import pytest
 from datetime import datetime, timezone
 from pydantic import ValidationError
-from src.schemas import IngestionStatus, ModelTrainingRequest, TelemetryDataPayload
+from src.schemas import (
+    IngestionStatus,
+    ModelTrainingRequest,
+    PredictionScenarioRequest,
+    TelemetryDataPayload,
+)
 
 
 def test_telemetry_payload_enforces_utc():
@@ -71,7 +76,7 @@ def test_model_training_request_normalizes_metrics():
 
     assert payload.metrics == ["electricity", "water"]
     assert payload.building_id is None
-    assert payload.model_task == "forecasting"
+    assert payload.model_task == "prediction"
     assert payload.data_source == "csv"
 
 
@@ -94,3 +99,15 @@ def test_model_training_request_rejects_algorithm_selection():
             time_range_end="2026-06-02T00:00:00Z",
             algorithm="lightgbm",
         )
+
+
+def test_prediction_scenario_accepts_legacy_energy_rate_alias():
+    payload = PredictionScenarioRequest(
+        site_id="SiteA",
+        building_id="BuildingA",
+        metric_type="water",
+        scenario_date="2026-06-10T00:00:00Z",
+        energy_rate_per_kwh=2.5,
+    )
+
+    assert payload.unit_rate == 2.5

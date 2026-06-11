@@ -1,31 +1,29 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/common/icons";
-import { Card, Field, Segmented } from "@/components/common/primitives";
+import { Card, Field } from "@/components/common/primitives";
+import { displayLocationName, displayModelName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
 import {
   createBuilding,
   createMetric,
   createSite,
-  getDevices,
   getLocationOptions,
   getMetricOptions,
   getRegisteredModels,
-  registerDevice,
-  updateDevice,
   updateLocation,
   updateMetric,
-  type DeviceOption,
   type LocationOption,
   type MetricOption,
   type RegisteredModel,
 } from "@/lib/models-api";
 
-type GalleryMode = "locations" | "devices";
 type LocationFilter = "all" | "active" | "archived";
-type DeviceFilter = "all" | "active" | "inactive";
-type AssetModal = "site" | "building" | "device" | null;
-type DetailTarget = { kind: "location"; item: LocationOption } | { kind: "device"; item: DeviceOption } | null;
+type AssetModal = "site" | "building" | null;
+type DetailTarget = { kind: "location"; item: LocationOption } | null;
+
+const LOCATION_INDEX_LIMIT = 1000;
+const LOCATIONS_PER_PAGE = 24;
 
 function parseMetadata(value: string) {
   const trimmed = value.trim();
@@ -33,18 +31,8 @@ function parseMetadata(value: string) {
   return JSON.parse(trimmed) as Record<string, unknown>;
 }
 
-function csvList(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function titleCase(value?: string | null) {
-  if (!value) return "Unspecified";
-  return value
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+  return humanizeIdentifier(value);
 }
 
 function shortJson(value?: Record<string, unknown> | null) {
@@ -68,14 +56,12 @@ function modelMatches(model: RegisteredModel, terms: string[]) {
 export function AssetsPage() {
   const [locations, setLocations] = useState<LocationOption[]>([]);
   const [metrics, setMetrics] = useState<MetricOption[]>([]);
-  const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [models, setModels] = useState<RegisteredModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [galleryMode, setGalleryMode] = useState<GalleryMode>("locations");
   const [activeModal, setActiveModal] = useState<AssetModal>(null);
   const [detailTarget, setDetailTarget] = useState<DetailTarget>(null);
 
@@ -89,7 +75,8 @@ export function AssetsPage() {
   const [buildingMetadata, setBuildingMetadata] = useState("");
 
   const [locationQuery, setLocationQuery] = useState("");
-  const [deviceQuery, setDeviceQuery] = useState("");
+  const [searchedLocations, setSearchedLocations] = useState<LocationOption[] | null>(null);
+  const [locationSearchLoading, setLocationSearchLoading] = useState(false);
 
   const [metricId, setMetricId] = useState("");
   const [metricUnit, setMetricUnit] = useState("");
@@ -98,60 +85,44 @@ export function AssetsPage() {
   const [editMetricUnit, setEditMetricUnit] = useState("");
   const [editMetricDescription, setEditMetricDescription] = useState("");
 
-  const [deviceId, setDeviceId] = useState("");
-  const [deviceBuildingId, setDeviceBuildingId] = useState("");
-  const [deviceTypeId, setDeviceTypeId] = useState("virtual_meter");
-  const [deviceMetrics, setDeviceMetrics] = useState("");
   const [locationStatusFilter, setLocationStatusFilter] = useState<LocationFilter>("all");
-  const [deviceStatusFilter, setDeviceStatusFilter] = useState<DeviceFilter>("all");
+  const [locationPage, setLocationPage] = useState(1);
 
-  const siteOptions = useMemo(() => locations.filter((location) => !location.parent_id && !location.archived), [locations]);
-  const buildingOptions = useMemo(() => locations.filter((location) => location.parent_id && !location.archived), [locations]);
-  const buildingById = useMemo(() => new Map(buildingOptions.map((location) => [location.id, location])), [buildingOptions]);
+  const siteOptions = useMemo(() => locations.filter((location) => isSiteLocation(location) && !location.archived), [locations]);
   const locationById = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
 
   const activeLocationCount = useMemo(() => locations.filter((location) => !location.archived).length, [locations]);
-  const activeDeviceCount = useMemo(() => devices.filter((device) => device.status === "Active").length, [devices]);
+  const archivedLocationCount = locations.length - activeLocationCount;
+  const locationSource = locationQuery.trim() && searchedLocations ? searchedLocations : locations;
 
   const filteredLocations = useMemo(() => {
     const query = locationQuery.trim().toLowerCase();
-    return locations.filter((location) => {
+    return locationSource.filter((location) => {
       if (locationStatusFilter === "active" && location.archived) return false;
       if (locationStatusFilter === "archived" && !location.archived) return false;
       if (!query) return true;
-      return [location.id, location.name, location.location_type, location.parent_id ?? "", location.archived ? "archived" : "active"]
-        .join(" ")
-        .toLowerCase()
-        .includes(query);
+      return `${locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : undefined)} ${location.archived ? "archived" : "active"}`.includes(query);
     });
-  }, [locationQuery, locationStatusFilter, locations]);
-
-  const filteredDevices = useMemo(() => {
-    const query = deviceQuery.trim().toLowerCase();
-    return devices.filter((device) => {
-      if (deviceStatusFilter === "active" && device.status !== "Active") return false;
-      if (deviceStatusFilter === "inactive" && device.status !== "Inactive") return false;
-      if (!query) return true;
-      return [device.id, device.building_id, device.device_type_id, device.status, device.metric_type_ids.join(" ")]
-        .join(" ")
-        .toLowerCase()
-        .includes(query);
-    });
-  }, [deviceQuery, devices, deviceStatusFilter]);
-
+  }, [locationById, locationQuery, locationSource, locationStatusFilter]);
+  const totalLocationPages = Math.max(1, Math.ceil(filteredLocations.length / LOCATIONS_PER_PAGE));
+  const safeLocationPage = Math.min(locationPage, totalLocationPages);
+  const pagedLocations = useMemo(
+    () => filteredLocations.slice((safeLocationPage - 1) * LOCATIONS_PER_PAGE, safeLocationPage * LOCATIONS_PER_PAGE),
+    [filteredLocations, safeLocationPage],
+  );
+  const locationRangeStart = filteredLocations.length ? (safeLocationPage - 1) * LOCATIONS_PER_PAGE + 1 : 0;
+  const locationRangeEnd = Math.min(safeLocationPage * LOCATIONS_PER_PAGE, filteredLocations.length);
   async function refresh() {
     setLoading(true);
     setError(null);
     try {
-      const [locationData, metricData, deviceData, modelData] = await Promise.all([
-        getLocationOptions({ includeArchived: true, limit: 200 }),
+      const [locationData, metricData, modelData] = await Promise.all([
+        getLocationOptions({ includeArchived: true, limit: LOCATION_INDEX_LIMIT }),
         getMetricOptions(),
-        getDevices({ limit: 200 }),
         getRegisteredModels(),
       ]);
       setLocations(locationData.locations);
       setMetrics(metricData.metrics);
-      setDevices(deviceData.devices);
       setModels(modelData.models);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load asset data.");
@@ -170,25 +141,28 @@ export function AssetsPage() {
 
   useEffect(() => {
     const query = locationQuery.trim();
-    if (!query) return;
-
     const controller = new AbortController();
     const timeout = window.setTimeout(async () => {
-      try {
-        const data = await getLocationOptions({ q: query, includeArchived: true, limit: 200 }, controller.signal);
-        setLocations((current) => {
-          const merged = new Map(current.map((location) => [location.id, location]));
-          data.locations.forEach((location) => merged.set(location.id, location));
-          return Array.from(merged.values());
-        });
-      } catch {
-        // The local filter still works if the remote search is cancelled or unavailable.
+      if (!query) {
+        setSearchedLocations(null);
+        setLocationSearchLoading(false);
+        return;
       }
-    }, 250);
+
+      setLocationSearchLoading(true);
+      try {
+        const data = await getLocationOptions({ q: query, includeArchived: true, limit: LOCATION_INDEX_LIMIT }, controller.signal);
+        setSearchedLocations(data.locations);
+      } catch {
+        if (!controller.signal.aborted) setSearchedLocations([]);
+      } finally {
+        if (!controller.signal.aborted) setLocationSearchLoading(false);
+      }
+    }, query ? 180 : 0);
 
     return () => {
-      window.clearTimeout(timeout);
       controller.abort();
+      window.clearTimeout(timeout);
     };
   }, [locationQuery]);
 
@@ -227,13 +201,6 @@ export function AssetsPage() {
     setMetricDescription("");
   }
 
-  function resetDeviceForm() {
-    setDeviceId("");
-    setDeviceBuildingId("");
-    setDeviceTypeId("virtual_meter");
-    setDeviceMetrics("");
-  }
-
   async function toggleLocationArchive(location: LocationOption) {
     const nextArchived = !location.archived;
     const action = `archive-${location.id}`;
@@ -251,26 +218,24 @@ export function AssetsPage() {
     }
   }
 
-  function modelsForLocation(location: LocationOption) {
+  const modelsForLocation = useCallback((location: LocationOption) => {
     const childIds = locations.filter((item) => item.parent_id === location.id).map((item) => item.id);
     return models.filter((model) => modelMatches(model, [location.id, location.name, location.parent_id ?? "", ...childIds]));
-  }
+  }, [locations, models]);
 
-  function modelsForDevice(device: DeviceOption) {
-    const building = buildingById.get(device.building_id);
-    const site = building?.parent_id ? locationById.get(building.parent_id) : null;
-    return models.filter((model) => modelMatches(model, [device.id, device.building_id, building?.name ?? "", site?.id ?? "", ...device.metric_type_ids]));
-  }
+  const modelCoveredLocationCount = useMemo(
+    () => locations.filter((location) => modelsForLocation(location).some((model) => model.production_version)).length,
+    [locations, modelsForLocation],
+  );
 
   const selectedLocation = detailTarget?.kind === "location" ? detailTarget.item : null;
-  const selectedDevice = detailTarget?.kind === "device" ? detailTarget.item : null;
 
   return (
     <main className="page assets-page">
       <div className="page-head assets-head">
         <div>
           <h1 className="page-title">Assets Management</h1>
-          <p className="page-sub">Admin workspace for site hierarchy, building inventory, meters, metadata, and model coverage.</p>
+          <p className="page-sub">Admin workspace for site hierarchy, building inventory, metadata, and model coverage.</p>
         </div>
         <div className="page-head-actions asset-primary-actions">
           <button className="btn" type="button" onClick={refresh} disabled={loading}>
@@ -285,10 +250,6 @@ export function AssetsPage() {
             <Icon name="building" />
             <span>Create Building</span>
           </button>
-          <button className="btn btn-primary" type="button" onClick={() => setActiveModal("device")}>
-            <Icon name="wifi" />
-            <span>Register Meter</span>
-          </button>
         </div>
       </div>
 
@@ -297,14 +258,24 @@ export function AssetsPage() {
 
       <section className="asset-summary-grid">
         <div className="asset-summary-card">
-          <span className="asset-summary-label">Locations</span>
+          <span className="asset-summary-label">Total locations</span>
           <b className="asset-summary-value">{locations.length}</b>
-          <small className="asset-summary-foot">{activeLocationCount} active</small>
+          <small className="asset-summary-foot">Loaded in local index</small>
         </div>
         <div className="asset-summary-card">
-          <span className="asset-summary-label">Registered meters</span>
-          <b className="asset-summary-value">{devices.length}</b>
-          <small className="asset-summary-foot">{activeDeviceCount} active</small>
+          <span className="asset-summary-label">Active locations</span>
+          <b className="asset-summary-value">{activeLocationCount}</b>
+          <small className="asset-summary-foot">Available in selectors</small>
+        </div>
+        <div className="asset-summary-card">
+          <span className="asset-summary-label">Archived locations</span>
+          <b className="asset-summary-value">{archivedLocationCount}</b>
+          <small className="asset-summary-foot">Hidden from active workflows</small>
+        </div>
+        <div className="asset-summary-card">
+          <span className="asset-summary-label">Model-covered locations</span>
+          <b className="asset-summary-value">{modelCoveredLocationCount}</b>
+          <small className="asset-summary-foot">Matched to production models</small>
         </div>
         <div className="asset-summary-card">
           <span className="asset-summary-label">Metric catalog</span>
@@ -314,101 +285,94 @@ export function AssetsPage() {
       </section>
 
       <div className="assets-layout">
-        <Card title="Asset Gallery" sub={galleryMode === "locations" ? `${filteredLocations.length} locations shown` : `${filteredDevices.length} devices shown`} icon={galleryMode === "locations" ? "map" : "wifi"}>
+        <Card title="Location Gallery" sub={`${filteredLocations.length} of ${locations.length} locations found`} icon="map">
           <div className="asset-toolbar">
-            <Segmented
-              value={galleryMode}
-              options={[
-                { value: "locations", label: "Locations" },
-                { value: "devices", label: "Devices" },
-              ]}
-              onChange={setGalleryMode}
-            />
-            {galleryMode === "locations" ? (
-              <>
-                <div className="asset-search">
-                  <Icon name="search" />
-                  <input value={locationQuery} onChange={(event) => setLocationQuery(event.target.value)} placeholder="Search location, parent, type, status" />
-                </div>
-                <div className="asset-filter-row" aria-label="Location status filter">
-                  {(["all", "active", "archived"] as const).map((status) => (
-                    <button className={locationStatusFilter === status ? "is-selected" : ""} type="button" key={status} onClick={() => setLocationStatusFilter(status)}>
-                      {status === "all" ? "All" : status === "active" ? "Active" : "Archived"}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="asset-search">
-                  <Icon name="search" />
-                  <input value={deviceQuery} onChange={(event) => setDeviceQuery(event.target.value)} placeholder="Search device, building, metric, status" />
-                </div>
-                <div className="asset-filter-row" aria-label="Device status filter">
-                  {(["all", "active", "inactive"] as const).map((status) => (
-                    <button className={deviceStatusFilter === status ? "is-selected" : ""} type="button" key={status} onClick={() => setDeviceStatusFilter(status)}>
-                      {status === "all" ? "All" : status === "active" ? "Active" : "Inactive"}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
+            <div className="asset-toolbar-controls">
+              <div className="asset-search">
+                <Icon name="search" />
+                <input
+                  value={locationQuery}
+                  onChange={(event) => {
+                    setLocationQuery(event.target.value);
+                    setLocationPage(1);
+                  }}
+                  placeholder="Search location, parent, type, status"
+                />
+              </div>
+              <div className="asset-filter-row" aria-label="Location status filter">
+                {(["all", "active", "archived"] as const).map((status) => (
+                  <button
+                    className={locationStatusFilter === status ? "is-selected" : ""}
+                    type="button"
+                    key={status}
+                    onClick={() => {
+                      setLocationStatusFilter(status);
+                      setLocationPage(1);
+                    }}
+                  >
+                    {status === "all" ? "All" : status === "active" ? "Active" : "Archived"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <span className="asset-search-help">
+              {locationSearchLoading
+                ? "Searching locations..."
+                : locationQuery.trim()
+                  ? `Found ${filteredLocations.length} locations for "${locationQuery.trim()}"`
+                  : `${locations.length} locations loaded`}
+            </span>
           </div>
 
-          {galleryMode === "locations" ? (
-            <div className="asset-gallery">
-              {filteredLocations.map((location) => {
-                const childBuildings = locations.filter((item) => item.parent_id === location.id);
-                const attachedDevices = devices.filter((device) => device.building_id === location.id || childBuildings.some((building) => building.id === device.building_id));
-                const matchedModels = modelsForLocation(location);
-                return (
-                  <button className="asset-tile" type="button" key={location.id} onClick={() => setDetailTarget({ kind: "location", item: location })}>
-                    <div className="asset-tile-head">
-                      <span className="asset-tile-icon"><Icon name={location.parent_id ? "building" : "map"} /></span>
-                      <span className={`badge ${location.archived ? "badge-neutral" : "badge-resolved"}`}>{location.archived ? "Archived" : "Active"}</span>
-                    </div>
-                    <b>{location.name || location.id}</b>
-                    <span>{location.id}</span>
-                    <div className="asset-tile-meta">
-                      <small>{titleCase(location.location_type)}</small>
-                      <small>{location.parent_id ? `Parent ${location.parent_id}` : "Top-level site"}</small>
-                    </div>
-                    <div className="asset-tile-stats">
-                      {/*<span>{childBuildings.length} buildings</span>
-                      <span>{attachedDevices.length} meters</span>
-                      <span>{matchedModels.length} models</span>*/}
-                      <span>No info yet</span>
-                    </div>
-                  </button>
-                );
-              })}
-              {filteredLocations.length === 0 && <div className="asset-empty">No locations match the selected filters.</div>}
-            </div>
-          ) : (
-            <div className="asset-gallery">
-              {filteredDevices.map((device) => {
-                const building = buildingById.get(device.building_id);
-                const matchedModels = modelsForDevice(device);
-                return (
-                  <button className="asset-tile" type="button" key={device.id} onClick={() => setDetailTarget({ kind: "device", item: device })}>
-                    <div className="asset-tile-head">
-                      <span className="asset-tile-icon"><Icon name="wifi" /></span>
-                      <span className={`badge ${device.status === "Active" ? "badge-resolved" : "badge-neutral"}`}>{device.status}</span>
-                    </div>
-                    <b>{device.id}</b>
-                    <span>{building?.name ?? device.building_id}</span>
-                    <div className="asset-tile-meta">
-                      <small>{titleCase(device.device_type_id)}</small>
-                      <small>{device.metric_type_ids.length} metrics</small>
-                    </div>
-                    <div className="asset-tile-stats">
-                      <span>{device.metric_type_ids.slice(0, 2).join(", ") || "No metrics"}</span>
-                      <span>{matchedModels.length} models</span>
-                    </div>
-                  </button>
-                );
-              })}
-              {filteredDevices.length === 0 && <div className="asset-empty">No devices match the selected filters.</div>}
+          <div className="asset-gallery">
+            {pagedLocations.map((location) => (
+              <button className="asset-tile" type="button" key={location.id} onClick={() => setDetailTarget({ kind: "location", item: location })}>
+                <div className="asset-tile-head">
+                  <span className="asset-tile-icon"><Icon name={isSiteLocation(location) ? "map" : "building"} /></span>
+                  <span className={`badge ${location.archived ? "badge-neutral" : "badge-resolved"}`}>{location.archived ? "Archived" : "Active"}</span>
+                </div>
+                <b title={location.name || location.id}>{displayLocationName(location.name, location.id)}</b>
+                <span>{location.id}</span>
+                <div className="asset-tile-meta">
+                  <small>{titleCase(location.location_type)}</small>
+                  <small>
+                    {isSiteLocation(location)
+                      ? "Site"
+                      : location.parent_id
+                        ? `Site ${location.parent_id}`
+                        : "No site assigned"}
+                  </small>
+                </div>
+                <div className="asset-tile-stats">
+                  <span>{modelsForLocation(location).length} models</span>
+                </div>
+              </button>
+            ))}
+            {filteredLocations.length === 0 && <div className="asset-empty">No locations match the selected filters.</div>}
+          </div>
+          {filteredLocations.length > 0 && (
+            <div className="pager">
+              <span>
+                Showing {locationRangeStart}-{locationRangeEnd} of {filteredLocations.length}
+              </span>
+              <div className="pager-btns">
+                <button className="pg" type="button" disabled={safeLocationPage === 1} onClick={() => setLocationPage((current) => Math.max(1, current - 1))}>
+                  <Icon name="chevLeft" style={{ width: 13, height: 13 }} />
+                </button>
+                {Array.from({ length: totalLocationPages }, (_, index) => index + 1)
+                  .filter((page) => page === 1 || page === totalLocationPages || Math.abs(page - safeLocationPage) <= 1)
+                  .map((page, index, pages) => (
+                    <span key={page}>
+                      {index > 0 && page - pages[index - 1] > 1 && <span className="muted" style={{ padding: "0 4px" }}>...</span>}
+                      <button className={`pg ${safeLocationPage === page ? "on" : ""}`} type="button" onClick={() => setLocationPage(page)}>
+                        {page}
+                      </button>
+                    </span>
+                  ))}
+                <button className="pg" type="button" disabled={safeLocationPage === totalLocationPages} onClick={() => setLocationPage((current) => Math.min(totalLocationPages, current + 1))}>
+                  <Icon name="chevRight" style={{ width: 13, height: 13 }} />
+                </button>
+              </div>
             </div>
           )}
         </Card>
@@ -486,8 +450,8 @@ export function AssetsPage() {
           <div className="asset-modal" role="dialog" aria-modal="true" aria-label={activeModal}>
             <div className="model-modal-head">
               <div>
-                <h2>{activeModal === "site" ? "Create Site" : activeModal === "building" ? "Create Building" : "Register Meter"}</h2>
-                <span>{activeModal === "site" ? "Add a top-level location." : activeModal === "building" ? "Attach a building to a site." : "Register a device capability record."}</span>
+                <h2>{activeModal === "site" ? "Create Site" : "Create Building"}</h2>
+                <span>{activeModal === "site" ? "Add a top-level location." : "Attach a building to a site."}</span>
               </div>
               <button className="icon-btn" type="button" aria-label="Close dialog" onClick={() => setActiveModal(null)}>
                 <Icon name="x" />
@@ -497,10 +461,10 @@ export function AssetsPage() {
               {activeModal === "site" && (
                 <div className="asset-form">
                   <Field label="Site ID">
-                    <input className="input" value={siteId} onChange={(event) => setSiteId(event.target.value)} placeholder="Panther_campus" />
+                    <input className="input" value={siteId} onChange={(event) => setSiteId(event.target.value)} placeholder="Panther" />
                   </Field>
                   <Field label="Name">
-                    <input className="input" value={siteName} onChange={(event) => setSiteName(event.target.value)} placeholder="Panther Campus" />
+                    <input className="input" value={siteName} onChange={(event) => setSiteName(event.target.value)} placeholder="Panther" />
                   </Field>
                   <Field label="Metadata JSON">
                     <textarea className="textarea" value={siteMetadata} onChange={(event) => setSiteMetadata(event.target.value)} placeholder='{"timezone":"UTC"}' />
@@ -558,47 +522,6 @@ export function AssetsPage() {
                   </button>
                 </div>
               )}
-              {activeModal === "device" && (
-                <div className="asset-form">
-                  <Field label="Device ID">
-                    <input className="input" value={deviceId} onChange={(event) => setDeviceId(event.target.value)} placeholder="meter_temperature_building_a" />
-                  </Field>
-                  <Field label="Building">
-                    <select className="input" value={deviceBuildingId} onChange={(event) => setDeviceBuildingId(event.target.value)}>
-                      <option value="">Select building</option>
-                      {buildingOptions.map((building) => (
-                        <option value={building.id} key={building.id}>{building.id}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Device Type">
-                    <input className="input" value={deviceTypeId} onChange={(event) => setDeviceTypeId(event.target.value)} />
-                  </Field>
-                  <Field label="Metric IDs">
-                    <input className="input" value={deviceMetrics} onChange={(event) => setDeviceMetrics(event.target.value)} placeholder="electricity,temperature" />
-                  </Field>
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    disabled={submitting === "device"}
-                    onClick={() =>
-                      run("device", async () => {
-                        await registerDevice({
-                          id: deviceId,
-                          building_id: deviceBuildingId,
-                          device_type_id: deviceTypeId,
-                          metric_type_ids: csvList(deviceMetrics),
-                        });
-                        resetDeviceForm();
-                        return `Device ${deviceId} registered.`;
-                      })
-                    }
-                  >
-                    <Icon name={submitting === "device" ? "refresh" : "plus"} className={submitting === "device" ? "spin" : undefined} />
-                    <span>Register Meter</span>
-                  </button>
-                </div>
-              )}
             </div>
           </div>
         </>
@@ -610,8 +533,8 @@ export function AssetsPage() {
           <aside className="drawer asset-detail" role="dialog" aria-label="Asset details">
             <div className="drawer-head">
               <div>
-                <h3>{selectedLocation?.name ?? selectedDevice?.id}</h3>
-                <span>{detailTarget.kind === "location" ? "Location metadata and model usage" : "Device registration and model usage"}</span>
+                <h3>{selectedLocation ? displayLocationName(selectedLocation.name, selectedLocation.id) : ""}</h3>
+                <span>Location metadata and model usage</span>
               </div>
               <button className="icon-btn" type="button" aria-label="Close details" onClick={() => setDetailTarget(null)}>
                 <Icon name="x" />
@@ -623,47 +546,21 @@ export function AssetsPage() {
                   <div className="sec-label">Metadata</div>
                   <dl className="dl">
                     <dt>ID</dt><dd>{selectedLocation.id}</dd>
-                    <dt>Name</dt><dd>{selectedLocation.name}</dd>
+                    <dt>Name</dt><dd>{displayLocationName(selectedLocation.name, selectedLocation.id)}</dd>
                     <dt>Type</dt><dd>{titleCase(selectedLocation.location_type)}</dd>
-                    <dt>Parent</dt><dd>{selectedLocation.parent_id ?? "Top-level site"}</dd>
+                    <dt>Site</dt><dd>{isSiteLocation(selectedLocation) ? selectedLocation.id : selectedLocation.parent_id ?? "No site assigned"}</dd>
                     <dt>Status</dt><dd>{selectedLocation.archived ? "Archived" : "Active"}</dd>
                   </dl>
                   <pre className="asset-json">{shortJson(selectedLocation.metadata)}</pre>
                   <div className="sec-label">Related Assets</div>
                   <div className="asset-detail-list">
-                    {locations.filter((item) => item.parent_id === selectedLocation.id).map((item) => <span key={item.id}>{item.name || item.id}</span>)}
-                    {devices.filter((device) => device.building_id === selectedLocation.id).map((device) => <span key={device.id}>{device.id}</span>)}
-                    {locations.filter((item) => item.parent_id === selectedLocation.id).length === 0 && devices.filter((device) => device.building_id === selectedLocation.id).length === 0 && <span>No direct children</span>}
+                    {locations.filter((item) => item.parent_id === selectedLocation.id).map((item) => <span key={item.id} title={item.id}>{displayLocationName(item.name, item.id)}</span>)}
+                    {locations.filter((item) => item.parent_id === selectedLocation.id).length === 0 && <span>No direct child locations</span>}
                   </div>
                   <div className="sec-label">Model Usage</div>
                   <div className="asset-detail-list">
-                    {modelsForLocation(selectedLocation).map((model) => <span key={model.name}>{model.name}</span>)}
+                    {modelsForLocation(selectedLocation).map((model) => <span key={model.name} title={model.name}>{displayModelName(model.name)}</span>)}
                     {modelsForLocation(selectedLocation).length === 0 && <span>No matching model tags or names found</span>}
-                  </div>
-                </>
-              )}
-              {selectedDevice && (
-                <>
-                  <div className="sec-label">Registration</div>
-                  <dl className="dl">
-                    <dt>ID</dt><dd>{selectedDevice.id}</dd>
-                    <dt>Building</dt><dd>{selectedDevice.building_id}</dd>
-                    <dt>Type</dt><dd>{titleCase(selectedDevice.device_type_id)}</dd>
-                    <dt>Status</dt><dd>{selectedDevice.status}</dd>
-                    <dt>Metrics</dt><dd>{selectedDevice.metric_type_ids.join(", ") || "No metrics"}</dd>
-                  </dl>
-                  <div className="sec-label">Metric Definitions</div>
-                  <div className="asset-detail-list">
-                    {selectedDevice.metric_type_ids.map((metricId) => {
-                      const metric = metrics.find((item) => item.id === metricId);
-                      return <span key={metricId}>{metricId}{metric?.unit ? ` (${metric.unit})` : ""}{metric?.description ? ` - ${metric.description}` : ""}</span>;
-                    })}
-                    {selectedDevice.metric_type_ids.length === 0 && <span>No metric capabilities recorded</span>}
-                  </div>
-                  <div className="sec-label">Model Usage</div>
-                  <div className="asset-detail-list">
-                    {modelsForDevice(selectedDevice).map((model) => <span key={model.name}>{model.name}</span>)}
-                    {modelsForDevice(selectedDevice).length === 0 && <span>No matching model tags or names found</span>}
                   </div>
                 </>
               )}
@@ -673,24 +570,6 @@ export function AssetsPage() {
                 <button className="btn btn-primary" type="button" disabled={submitting === `archive-${selectedLocation.id}`} onClick={() => void toggleLocationArchive(selectedLocation)}>
                   <Icon name="flag" />
                   <span>{selectedLocation.archived ? "Restore Location" : "Archive Location"}</span>
-                </button>
-              )}
-              {selectedDevice && (
-                <button
-                  className="btn btn-primary"
-                  type="button"
-                  disabled={submitting === `status-${selectedDevice.id}`}
-                  onClick={() =>
-                    run(`status-${selectedDevice.id}`, async () => {
-                      const nextStatus = selectedDevice.status === "Inactive" ? "Active" : "Inactive";
-                      await updateDevice(selectedDevice.id, { status: nextStatus });
-                      setDetailTarget(null);
-                      return `Device ${selectedDevice.id} ${nextStatus === "Active" ? "activated" : "deactivated"}.`;
-                    })
-                  }
-                >
-                  <Icon name="check" />
-                  <span>{selectedDevice.status === "Inactive" ? "Activate Device" : "Deactivate Device"}</span>
                 </button>
               )}
             </div>

@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, toneStyle } from "@/components/common/primitives";
-import { clock, fmt, fmt1, fmtKwh } from "@/lib/format";
+import { clock, displayLocationName, fmt1, fmtKwh } from "@/lib/format";
 import type { AnomalyEvent } from "@/types";
 
 function asTime(value: string) {
@@ -17,8 +17,7 @@ function valueLabel(value?: number | null) {
 const HOUR_MS = 3_600_000;
 
 function buildingLabel(buildingId: string) {
-  const parts = buildingId.split("_");
-  return parts.length >= 3 ? parts.slice(2).join("_") : buildingId;
+  return displayLocationName(null, buildingId);
 }
 
 function durationLabel(hours: number) {

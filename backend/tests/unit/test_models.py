@@ -87,42 +87,32 @@ def test_trigger_training_success(mock_delay):
     assert response.status_code == 200
     assert response.json()["task_id"] == "mock-task-uuid-123"
     assert (
-        response.json()["message"] == "forecasting training job queued using csv data."
+        response.json()["message"] == "prediction training job queued using csv data."
     )
-    assert response.json()["model_task"] == "forecasting"
+    assert response.json()["model_task"] == "prediction"
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["site_id"] == "TestBuilding"
     assert training_request["building_id"] == "TestBuilding"
     assert training_request["metrics"] == ["water"]
     assert training_request["data_source"] == "csv"
-    assert training_request["model_task"] == "forecasting"
+    assert training_request["model_task"] == "prediction"
     assert "algorithm" not in training_request
     assert response.json()["algorithm"] == "random_forest"
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
-def test_trigger_training_accepts_anomaly_training(mock_delay):
-    class MockTask:
-        id = "mock-task-uuid-456"
-
-    mock_delay.return_value = MockTask()
-
+def test_trigger_training_rejects_anomaly_training_until_implemented(mock_delay):
     response = client.post(
         "/api/v1/models/train"
         "?building_id=TestBuilding&metric_type=water"
         "&model_task=anomaly_detection&data_source=db"
     )
 
-    assert response.status_code == 200
-    assert response.json()["message"] == (
-        "anomaly_detection training job queued using db data."
+    assert response.status_code == 501
+    assert response.json()["detail"] == (
+        "anomaly_detection training pipeline is not implemented yet."
     )
-    training_request = mock_delay.call_args.kwargs["training_request"]
-    assert training_request["model_task"] == "anomaly_detection"
-    assert training_request["building_id"] == "TestBuilding"
-    assert training_request["data_source"] == "db"
-    assert "algorithm" not in training_request
-    assert response.json()["algorithm"] == "lightgbm"
+    mock_delay.assert_not_called()
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
@@ -135,7 +125,7 @@ def test_trigger_training_accepts_popup_payload(mock_delay):
     payload = {
         "site_id": "SiteA",
         "building_id": "BuildingA",
-        "metrics": [" electricity ", "Water"],
+        "metrics": [" electricity "],
         "time_range_start": "2026-06-01T00:00:00Z",
         "time_range_end": "2026-06-07T00:00:00Z",
         "model_task": "prediction",
@@ -149,11 +139,32 @@ def test_trigger_training_accepts_popup_payload(mock_delay):
     assert response.json()["model_task"] == "prediction"
     assert response.json()["site_id"] == "SiteA"
     assert response.json()["building_id"] == "BuildingA"
-    assert response.json()["metrics"] == ["electricity", "water"]
-    assert response.json()["algorithm"] == "linear_regression"
+    assert response.json()["metrics"] == ["electricity"]
+    assert response.json()["algorithm"] == "random_forest"
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["csv_path"] == "/tmp/site-a.csv"
     assert "algorithm" not in training_request
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_multi_metric_prediction(mock_delay):
+    payload = {
+        "site_id": "SiteA",
+        "building_id": "BuildingA",
+        "metrics": ["electricity", "water"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "prediction",
+        "data_source": "csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Prediction training requires exactly one metric per model."
+    )
+    mock_delay.assert_not_called()
 
 
 def test_trigger_training_rejects_client_selected_algorithm():
@@ -411,6 +422,33 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
 
 
 @patch("src.api.v1.endpoints.models._mlflow_client")
+def test_update_model_description_updates_registered_model(mock_mlflow_client):
+    updated_model = SimpleNamespace(
+        name="forecasting_v1",
+        description="Business-facing description",
+    )
+    client_mock = Mock()
+    client_mock.update_registered_model.return_value = updated_model
+    mock_mlflow_client.return_value = client_mock
+
+    response = client.patch(
+        "/api/v1/models/forecasting_v1/description",
+        json={"description": "  Business-facing description  "},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "forecasting_v1",
+        "description": "Business-facing description",
+        "updated_by": "admin@vinsmart.com",
+    }
+    client_mock.update_registered_model.assert_called_once_with(
+        name="forecasting_v1",
+        description="Business-facing description",
+    )
+
+
+@patch("src.api.v1.endpoints.models._mlflow_client")
 def test_rollback_returns_409_when_run_id_matches_multiple_versions(
     mock_mlflow_client,
 ):
@@ -504,6 +542,7 @@ def test_get_pipeline_logs_returns_paginated_logs():
         datasource_used="db",
         execution_time_ms=2400,
         created_at=created_at,
+        terminal_log="[2026-06-08T12:00:00+00:00] Pipeline finished successfully.",
     )
 
     query = Mock()
@@ -539,6 +578,7 @@ def test_get_pipeline_logs_returns_paginated_logs():
                 "datasource_used": "db",
                 "execution_time_ms": 2400,
                 "timestamp": data["logs"][0]["timestamp"],
+                "terminal_log": "[2026-06-08T12:00:00+00:00] Pipeline finished successfully.",
             }
         ],
     }

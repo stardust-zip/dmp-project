@@ -75,7 +75,7 @@ def test_seed_lookups(db_session):
         db_session.query(models.MetricType).filter_by(id="electricity").first()
     )
     assert electricity is not None
-    assert electricity.unit == "kWh/kBTU"
+    assert electricity.unit == "kWh"
 
 
 @pytest.mark.usefixtures("create_fake_metadata_csv")

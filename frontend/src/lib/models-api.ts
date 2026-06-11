@@ -120,6 +120,7 @@ export interface PipelineLog {
   datasource_used?: string | null;
   execution_time_ms?: number | null;
   timestamp?: string | null;
+  terminal_log?: string | null;
 }
 
 export type ModelTask = "forecasting" | "anomaly_detection" | "prediction";
@@ -185,6 +186,53 @@ export interface RollbackModelResponse {
   promoted_by: string;
 }
 
+export interface UpdateModelDescriptionPayload {
+  description: string;
+}
+
+export interface UpdateModelDescriptionResponse {
+  name: string;
+  description: string;
+  updated_by: string;
+}
+
+type ApiErrorPayload = {
+  detail?: unknown;
+  error?: unknown;
+  message?: unknown;
+};
+
+function formatApiDetail(detail: unknown): string | null {
+  if (!detail) return null;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object" && "msg" in item) {
+          const loc = "loc" in item && Array.isArray(item.loc) ? item.loc.join(".") : null;
+          return loc ? `${loc}: ${String(item.msg)}` : String(item.msg);
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+  return null;
+}
+
+async function apiErrorMessage(response: Response): Promise<string> {
+  if (response.status === 502) {
+    return "Backend is unavailable. Confirm the dmp_backend container is running and healthy, then refresh this page.";
+  }
+
+  const data = (await response.json().catch(() => null)) as ApiErrorPayload | null;
+  const detail = formatApiDetail(data?.detail);
+  const error = typeof data?.error === "string" ? data.error : null;
+  const message = typeof data?.message === "string" ? data.message : null;
+  return detail ?? error ?? message ?? `API request failed: ${response.status}`;
+}
+
 async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     signal,
@@ -192,7 +240,7 @@ async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status}`);
+    throw new Error(await apiErrorMessage(response));
   }
 
   return response.json() as Promise<T>;
@@ -211,9 +259,7 @@ async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Pr
   });
 
   if (!response.ok) {
-    const data = (await response.json().catch(() => null)) as { detail?: string | string[] } | null;
-    const detail = Array.isArray(data?.detail) ? data.detail.join(" ") : data?.detail;
-    throw new Error(detail ?? `API request failed: ${response.status}`);
+    throw new Error(await apiErrorMessage(response));
   }
 
   return response.json() as Promise<T>;
@@ -232,9 +278,7 @@ async function apiPatch<T>(path: string, body: unknown, signal?: AbortSignal): P
   });
 
   if (!response.ok) {
-    const data = (await response.json().catch(() => null)) as { detail?: string | string[] } | null;
-    const detail = Array.isArray(data?.detail) ? data.detail.join(" ") : data?.detail;
-    throw new Error(detail ?? `API request failed: ${response.status}`);
+    throw new Error(await apiErrorMessage(response));
   }
 
   return response.json() as Promise<T>;
@@ -246,6 +290,10 @@ export function getRegisteredModels(signal?: AbortSignal) {
 
 export function getModelVersions(modelName: string, signal?: AbortSignal) {
   return apiGet<{ model_name: string; versions: ModelVersion[] }>(`/api/v1/models/${encodeURIComponent(modelName)}/versions`, signal);
+}
+
+export function updateModelDescription(modelName: string, payload: UpdateModelDescriptionPayload, signal?: AbortSignal) {
+  return apiPatch<UpdateModelDescriptionResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/description`, payload, signal);
 }
 
 export function getPipelineLogs(signal?: AbortSignal) {

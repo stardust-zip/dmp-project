@@ -45,7 +45,7 @@ async def list_locations(
         description="Filter buildings by parent site ID.",
     ),
     include_archived: bool = Query(False),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> dict[str, list[LocationResponse]]:
@@ -54,7 +54,8 @@ async def list_locations(
     """
     query = db.query(Location)
     if q:
-        term = f"%{q.strip()}%"
+        compact_term = "%".join(q.strip().replace("_", " ").split())
+        term = f"%{compact_term}%"
         query = query.filter(or_(Location.id.ilike(term), Location.name.ilike(term)))
     if location_type:
         query = query.filter(Location.location_type_id == location_type)

@@ -309,7 +309,7 @@ export function Select<T extends string>({
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const selected = options.find((option) => option.value === value) ?? options[0];
   const visibleOptions = searchable && search.trim()
-    ? options.filter((option) => option.label.toLowerCase().includes(search.trim().toLowerCase()))
+    ? options.filter((option) => `${option.label} ${option.value}`.toLowerCase().includes(search.trim().toLowerCase()))
     : options;
 
   useEffect(() => {
@@ -391,7 +391,7 @@ export function Select<T extends string>({
               aria-selected={option.value === value}
               onClick={() => choose(option.value)}
             >
-              <span>{option.label}</span>
+              <span title={option.value}>{option.label}</span>
               {option.value === value && <Icon name="check" />}
             </button>
           ))}

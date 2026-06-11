@@ -1,9 +1,8 @@
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
-    Column,
     DateTime,
     Double,
     Enum,
@@ -11,9 +10,10 @@ from sqlalchemy import (
     Integer,
     PrimaryKeyConstraint,
     String,
+    Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 
 
 class ModelBase:
@@ -36,19 +36,19 @@ class SQLAlchemyKwargsMixin:
 
 
 class StringIDMixin(SQLAlchemyKwargsMixin):
-    id = Column(String, primary_key=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
 
 
 class UUIDMixin(SQLAlchemyKwargsMixin):
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
 
 class TimestampMixin:
-    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=get_utc_now)
 
 
 class UpdateTimestampMixin(TimestampMixin):
-    updated_at = Column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now
     )
 
@@ -83,25 +83,25 @@ ingestion_status_enum = Enum(
 # -----------------------------------------
 class LocationType(StringIDMixin, Base):
     __tablename__ = "location_type"
-    description = Column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class MetricType(StringIDMixin, Base):
     __tablename__ = "metric_type"
-    unit = Column(String, nullable=True)
-    description = Column(String, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class DeviceType(StringIDMixin, Base):
     __tablename__ = "device_type"
-    manufacturer = Column(String, nullable=True)
-    description = Column(String, nullable=True)
+    manufacturer: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ContextType(StringIDMixin, Base):
     __tablename__ = "context_type"
-    unit = Column(String, nullable=True)
-    description = Column(String, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 # -----------------------------------------
@@ -109,18 +109,18 @@ class ContextType(StringIDMixin, Base):
 # -----------------------------------------
 class User(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "users"
-    full_name = Column(String, nullable=False)
-    email = Column(String, nullable=False, unique=True)
-    password_hash = Column(String, nullable=False)
-    role = Column(user_role_enum, nullable=False)
+    full_name: Mapped[str] = mapped_column(String, nullable=False)
+    email: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(user_role_enum, nullable=False)
 
 
 class Location(StringIDMixin, Base):
     __tablename__ = "location"
-    parent_id = Column(String, ForeignKey("location.id"), nullable=True)
-    location_type_id = Column(String, ForeignKey("location_type.id"), nullable=False)
-    name = Column(String, nullable=False)
-    metadata_ = Column(
+    parent_id: Mapped[str | None] = mapped_column(String, ForeignKey("location.id"), nullable=True)
+    location_type_id: Mapped[str] = mapped_column(String, ForeignKey("location_type.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    metadata_: Mapped[dict[str, Any] | None] = mapped_column(
         "metadata", JSONB, nullable=True
     )  # Using metadata_ to avoid conflict with SQLAlchemy Base.metadata
 
@@ -131,10 +131,10 @@ class Location(StringIDMixin, Base):
 
 class Device(StringIDMixin, Base):
     __tablename__ = "device"
-    location_id = Column(String, ForeignKey("location.id"), nullable=False)
-    device_type_id = Column(String, ForeignKey("device_type.id"), nullable=False)
-    status = Column(String, default="Active")
-    installed_at = Column(DateTime(timezone=True), default=get_utc_now)
+    location_id: Mapped[str] = mapped_column(String, ForeignKey("location.id"), nullable=False)
+    device_type_id: Mapped[str] = mapped_column(String, ForeignKey("device_type.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String, default="Active")
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=get_utc_now)
 
     # Relationships
     location = relationship("Location", back_populates="devices")
@@ -148,9 +148,9 @@ class Device(StringIDMixin, Base):
 
 class DeviceMetricCapability(SQLAlchemyKwargsMixin, Base):
     __tablename__ = "device_metric_capability"
-    device_id = Column(String, ForeignKey("device.id"), nullable=False)
-    metric_type_id = Column(String, ForeignKey("metric_type.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+    device_id: Mapped[str] = mapped_column(String, ForeignKey("device.id"), nullable=False)
+    metric_type_id: Mapped[str] = mapped_column(String, ForeignKey("metric_type.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=get_utc_now)
 
     __table_args__ = (PrimaryKeyConstraint("device_id", "metric_type_id"),)
 
@@ -163,23 +163,23 @@ class DeviceMetricCapability(SQLAlchemyKwargsMixin, Base):
 # -----------------------------------------
 class ThresholdConfig(UUIDMixin, UpdateTimestampMixin, Base):
     __tablename__ = "threshold_config"
-    device_id = Column(String, ForeignKey("device.id"), nullable=False)
-    metric_type_id = Column(String, ForeignKey("metric_type.id"), nullable=False)
-    baseline_value = Column(Double, nullable=True)
-    upper_limit = Column(Double, nullable=True)
-    lower_limit = Column(Double, nullable=True)
+    device_id: Mapped[str] = mapped_column(String, ForeignKey("device.id"), nullable=False)
+    metric_type_id: Mapped[str] = mapped_column(String, ForeignKey("metric_type.id"), nullable=False)
+    baseline_value: Mapped[float | None] = mapped_column(Double, nullable=True)
+    upper_limit: Mapped[float | None] = mapped_column(Double, nullable=True)
+    lower_limit: Mapped[float | None] = mapped_column(Double, nullable=True)
 
 
 class AnomalyAlert(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "anomaly_alert"
-    device_id = Column(String, ForeignKey("device.id"), nullable=False)
-    metric_type_id = Column(String, ForeignKey("metric_type.id"), nullable=False)
-    severity = Column(alert_severity_enum, nullable=False)
-    message = Column(String, nullable=False)
-    status = Column(alert_status_enum, default="Open")
-    mlflow_run_id = Column(String, nullable=True)
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-    resolved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    device_id: Mapped[str] = mapped_column(String, ForeignKey("device.id"), nullable=False)
+    metric_type_id: Mapped[str] = mapped_column(String, ForeignKey("metric_type.id"), nullable=False)
+    severity: Mapped[str] = mapped_column(alert_severity_enum, nullable=False)
+    message: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(alert_status_enum, default="Open")
+    mlflow_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
 
 # -----------------------------------------
@@ -188,31 +188,31 @@ class AnomalyAlert(UUIDMixin, TimestampMixin, Base):
 class TelemetryData(SQLAlchemyKwargsMixin, Base):
     __tablename__ = "telemetry_data"
     # Composite Primary Key for TimescaleDB / Time-Series optimization
-    timestamp = Column(DateTime(timezone=True), primary_key=True)
-    device_id = Column(String, ForeignKey("device.id"), primary_key=True)
-    metric_type_id = Column(String, ForeignKey("metric_type.id"), primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String, ForeignKey("device.id"), primary_key=True)
+    metric_type_id: Mapped[str] = mapped_column(String, ForeignKey("metric_type.id"), primary_key=True)
 
-    value = Column(Double, nullable=False)
-    ingestion_status = Column(ingestion_status_enum, default="Success")
+    value: Mapped[float] = mapped_column(Double, nullable=False)
+    ingestion_status: Mapped[str] = mapped_column(ingestion_status_enum, default="Success")
 
 
 class ForecastResult(SQLAlchemyKwargsMixin, Base):
     __tablename__ = "forecast_result"
-    timestamp = Column(DateTime(timezone=True), primary_key=True)
-    device_id = Column(String, ForeignKey("device.id"), primary_key=True)
-    metric_type_id = Column(String, ForeignKey("metric_type.id"), primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String, ForeignKey("device.id"), primary_key=True)
+    metric_type_id: Mapped[str] = mapped_column(String, ForeignKey("metric_type.id"), primary_key=True)
 
-    predicted_value = Column(Double, nullable=False)
-    mlflow_run_id = Column(String, nullable=False)
-    generated_at = Column(DateTime(timezone=True), default=get_utc_now)
+    predicted_value: Mapped[float] = mapped_column(Double, nullable=False)
+    mlflow_run_id: Mapped[str] = mapped_column(String, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=get_utc_now)
 
 
 class ContextData(SQLAlchemyKwargsMixin, Base):
     __tablename__ = "context_data"
-    timestamp = Column(DateTime(timezone=True), primary_key=True)
-    location_id = Column(String, ForeignKey("location.id"), primary_key=True)
-    context_type_id = Column(String, ForeignKey("context_type.id"), primary_key=True)
-    value = Column(Double, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    location_id: Mapped[str] = mapped_column(String, ForeignKey("location.id"), primary_key=True)
+    context_type_id: Mapped[str] = mapped_column(String, ForeignKey("context_type.id"), primary_key=True)
+    value: Mapped[float] = mapped_column(Double, nullable=False)
 
 
 # -----------------------------------------
@@ -220,21 +220,22 @@ class ContextData(SQLAlchemyKwargsMixin, Base):
 # -----------------------------------------
 class AIPipelineLog(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "ai_pipeline_log"
-    type = Column(job_type_enum, nullable=False)
-    model_task = Column(
+    type: Mapped[str] = mapped_column(job_type_enum, nullable=False)
+    model_task: Mapped[str] = mapped_column(
         model_task_enum,
         nullable=False,
         default="forecasting",
         server_default="forecasting",
     )
-    mlflow_run_id = Column(String, nullable=False)
-    datasource_used = Column(String, nullable=True)
-    execution_time_ms = Column(Integer, nullable=False)
-    status = Column(job_status_enum, nullable=False)
+    mlflow_run_id: Mapped[str] = mapped_column(String, nullable=False)
+    datasource_used: Mapped[str | None] = mapped_column(String, nullable=True)
+    execution_time_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(job_status_enum, nullable=False)
+    terminal_log: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SystemLog(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "system_log"
-    event_type = Column(String, nullable=False)
-    actor = Column(String, nullable=False)
-    details = Column(JSONB, nullable=True)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    actor: Mapped[str] = mapped_column(String, nullable=False)
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
