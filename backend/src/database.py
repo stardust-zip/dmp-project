@@ -5,7 +5,6 @@ from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from src.core.config import settings
-from src.models import Base
 
 DATABASE_URL = os.getenv("DATABASE_URL", settings.DATABASE_URL)
 
