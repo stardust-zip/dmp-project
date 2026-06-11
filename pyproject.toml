@@ -35,6 +35,7 @@ dependencies = [
     "bcrypt>=5.0.0",
     "python-multipart>=0.0.32",
     "email-validator>=2.3.0",
+    "huggingface-hub>=1.18.0",
 ]
 
 [dependency-groups]

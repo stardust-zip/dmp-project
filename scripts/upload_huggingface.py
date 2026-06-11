@@ -1,10 +1,10 @@
-"""Upload forecasting feature store and dataset folders to Hugging Face Hub.
+"""Upload the forecasting dataset folder to Hugging Face Hub.
 
 Usage:
     python scripts/upload_huggingface.py --repo-id username/repo-name
 
 Authentication:
-    Set HF_TOKEN or HUGGINGFACE_HUB_TOKEN before running the script.
+    Run `hf auth login` first, or set HF_TOKEN/HUGGINGFACE_HUB_TOKEN.
 """
 
 from __future__ import annotations
@@ -17,14 +17,12 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_ROOT = PROJECT_ROOT / "data3" / "processed" / "forecasting"
-DEFAULT_FOLDERS = ("feature_store", "dataset")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Upload data3/processed/forecasting/feature_store and "
-            "data3/processed/forecasting/dataset to a Hugging Face dataset repo."
+            "Upload data3/processed/forecasting/dataset to a Hugging Face dataset repo."
         )
     )
     parser.add_argument(
@@ -51,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--commit-message",
-        default="Upload forecasting feature store and dataset",
+        default="Upload forecasting dataset",
         help="Commit message for the Hub upload.",
     )
     parser.add_argument(
@@ -68,18 +66,21 @@ def parse_args() -> argparse.Namespace:
 
 
 def get_token() -> str | None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        pass
+    else:
+        load_dotenv(PROJECT_ROOT / ".env")
+
     return os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
 
 
-def validate_source_folders(source_root: Path) -> list[Path]:
-    folders = [source_root / folder_name for folder_name in DEFAULT_FOLDERS]
-    missing = [folder for folder in folders if not folder.is_dir()]
-
-    if missing:
-        missing_text = "\n".join(f"  - {folder}" for folder in missing)
-        raise FileNotFoundError(f"Missing required upload folder(s):\n{missing_text}")
-
-    return folders
+def validate_source_folder(source_root: Path) -> Path:
+    folder = source_root / "dataset"
+    if not folder.is_dir():
+        raise FileNotFoundError(f"Missing required upload folder: {folder}")
+    return folder
 
 
 def count_files(folder: Path) -> int:
@@ -88,30 +89,33 @@ def count_files(folder: Path) -> int:
 
 def upload_folders(args: argparse.Namespace) -> None:
     source_root = args.source_root.resolve()
-    folders = validate_source_folders(source_root)
+    folder = validate_source_folder(source_root)
 
-    for folder in folders:
-        print(f"{folder.relative_to(PROJECT_ROOT)}: {count_files(folder)} files")
+    print(f"{folder.relative_to(PROJECT_ROOT)}: {count_files(folder)} files")
 
     if args.dry_run:
         print("Dry run complete. No files were uploaded.")
         return
 
-    token = get_token()
-    if not token:
-        raise SystemExit(
-            "Missing Hugging Face token. Set HF_TOKEN or HUGGINGFACE_HUB_TOKEN first."
-        )
-
     try:
-        from huggingface_hub import HfApi
+        from huggingface_hub import HfApi, whoami
     except ImportError as exc:
         raise SystemExit(
             "Missing dependency: huggingface_hub\n"
             "Install it with: pip install huggingface_hub"
         ) from exc
 
+    token = get_token()
     api = HfApi(token=token)
+    try:
+        user_info = whoami(token=token)
+        print(f"Authenticated as: {user_info.get('name', 'unknown')}")
+    except Exception as exc:
+        raise SystemExit(
+            "Hugging Face authentication failed. Run `hf auth login` again, "
+            "or set HF_TOKEN/HUGGINGFACE_HUB_TOKEN."
+        ) from exc
+
     api.create_repo(
         repo_id=args.repo_id,
         repo_type=args.repo_type,
@@ -119,17 +123,15 @@ def upload_folders(args: argparse.Namespace) -> None:
         exist_ok=True,
     )
 
-    for folder in folders:
-        path_in_repo = folder.name
-        print(f"Uploading {folder} -> {args.repo_id}/{path_in_repo}")
-        api.upload_folder(
-            repo_id=args.repo_id,
-            repo_type=args.repo_type,
-            folder_path=str(folder),
-            path_in_repo=path_in_repo,
-            revision=args.revision,
-            commit_message=f"{args.commit_message}: {path_in_repo}",
-        )
+    print(f"Uploading {folder} -> {args.repo_id}/dataset")
+    api.upload_folder(
+        repo_id=args.repo_id,
+        repo_type=args.repo_type,
+        folder_path=str(folder),
+        path_in_repo="dataset",
+        revision=args.revision,
+        commit_message=args.commit_message,
+    )
 
     print(f"Upload complete: https://huggingface.co/{args.repo_type}s/{args.repo_id}")
 
