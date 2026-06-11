@@ -47,7 +47,7 @@ class MockEnergyModel(mlflow.pyfunc.PythonModel):
     def __init__(self, default_score: float):
         self.default_score = default_score
 
-    def predict(self, context, model_input):  # type: ignore[no-untyped-def]
+    def predict(self, context: object, model_input: pd.DataFrame) -> list[float]:
         try:
             row_count = len(model_input)
         except TypeError:

@@ -160,12 +160,24 @@ def _event_columns() -> list[str]:
     ]
 
 
+def _concat_event_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    prepared = [
+        frame.dropna(axis=1, how="all")
+        for frame in frames
+        if not frame.empty
+    ]
+    if not prepared:
+        return pd.DataFrame(columns=_event_columns())
+
+    return pd.concat(prepared, ignore_index=True).reindex(columns=_event_columns())
+
+
 @lru_cache(maxsize=1)
 def load_anomaly_events() -> pd.DataFrame:
     data_dir = _data_dir()
     stage1 = _normalize_stage1(data_dir / "stage1_anomalies.parquet")
     stage3 = _normalize_stage3(data_dir / "stage3_residual_anomalies.parquet")
-    events = pd.concat([stage1, stage3], ignore_index=True)
+    events = _concat_event_frames([stage1, stage3])
 
     for col in ["timestamp", "start_time", "end_time"]:
         events[col] = pd.to_datetime(events[col], errors="coerce")
