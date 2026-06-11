@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from src.api.v1.deps import get_current_admin, get_current_user
 from src.database import get_db
 from src.main import app
+from src.models import Location, MetricType
 
 client = TestClient(app)
 
@@ -21,10 +22,51 @@ def get_mock_admin():
     return MockAdminUser()
 
 
+def _override_training_validation_db(
+    *,
+    locations: set[str] | None = None,
+    metrics: set[str] | None = None,
+):
+    known_locations = locations or {"TestBuilding", "SiteA", "BuildingA"}
+    known_metrics = metrics or {"electricity", "water"}
+    db = Mock()
+
+    def query(column):
+        query_mock = Mock()
+        query_mock.filter.return_value = query_mock
+        if column is Location.id:
+            query_mock.one_or_none.side_effect = lambda: (
+                ("location",)
+                if _query_filter_contains(query_mock, known_locations)
+                else None
+            )
+        elif column is MetricType.id:
+            query_mock.all.return_value = [(metric,) for metric in known_metrics]
+        else:
+            query_mock.one_or_none.return_value = None
+            query_mock.all.return_value = []
+        return query_mock
+
+    db.query.side_effect = query
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    return db
+
+
+def _query_filter_contains(query_mock: Mock, values: set[str]) -> bool:
+    filter_arg = query_mock.filter.call_args.args[0]
+    compared_value = getattr(getattr(filter_arg, "right", None), "value", None)
+    return compared_value in values
+
+
 @pytest.fixture(autouse=True)
 def override_auth_dependencies():
     app.dependency_overrides[get_current_admin] = get_mock_admin
     app.dependency_overrides[get_current_user] = get_mock_admin
+    _override_training_validation_db()
 
     yield
 
@@ -44,12 +86,141 @@ def test_trigger_training_success(mock_delay):
 
     assert response.status_code == 200
     assert response.json()["task_id"] == "mock-task-uuid-123"
-    assert response.json()["message"] == "Training job queued using csv data."
-    mock_delay.assert_called_once_with(
-        target_building_id="TestBuilding",
-        metric_type="water",
-        data_source="csv",
+    assert (
+        response.json()["message"] == "prediction training job queued using csv data."
     )
+    assert response.json()["model_task"] == "prediction"
+    training_request = mock_delay.call_args.kwargs["training_request"]
+    assert training_request["site_id"] == "TestBuilding"
+    assert training_request["building_id"] == "TestBuilding"
+    assert training_request["metrics"] == ["water"]
+    assert training_request["data_source"] == "csv"
+    assert training_request["model_task"] == "prediction"
+    assert "algorithm" not in training_request
+    assert response.json()["algorithm"] == "random_forest"
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_anomaly_training_until_implemented(mock_delay):
+    response = client.post(
+        "/api/v1/models/train"
+        "?building_id=TestBuilding&metric_type=water"
+        "&model_task=anomaly_detection&data_source=db"
+    )
+
+    assert response.status_code == 501
+    assert response.json()["detail"] == (
+        "anomaly_detection training pipeline is not implemented yet."
+    )
+    mock_delay.assert_not_called()
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_accepts_popup_payload(mock_delay):
+    class MockTask:
+        id = "mock-task-uuid-789"
+
+    mock_delay.return_value = MockTask()
+
+    payload = {
+        "site_id": "SiteA",
+        "building_id": "BuildingA",
+        "metrics": [" electricity "],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "prediction",
+        "data_source": "csv",
+        "csv_path": "/tmp/site-a.csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["model_task"] == "prediction"
+    assert response.json()["site_id"] == "SiteA"
+    assert response.json()["building_id"] == "BuildingA"
+    assert response.json()["metrics"] == ["electricity"]
+    assert response.json()["algorithm"] == "random_forest"
+    training_request = mock_delay.call_args.kwargs["training_request"]
+    assert training_request["csv_path"] == "/tmp/site-a.csv"
+    assert "algorithm" not in training_request
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_multi_metric_prediction(mock_delay):
+    payload = {
+        "site_id": "SiteA",
+        "building_id": "BuildingA",
+        "metrics": ["electricity", "water"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "prediction",
+        "data_source": "csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Prediction training requires exactly one metric per model."
+    )
+    mock_delay.assert_not_called()
+
+
+def test_trigger_training_rejects_client_selected_algorithm():
+    payload = {
+        "site_id": "SiteA",
+        "metrics": ["electricity"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "forecasting",
+        "data_source": "csv",
+        "algorithm": "lightgbm",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_unknown_location(mock_delay):
+    _override_training_validation_db(locations={"KnownBuilding"})
+
+    payload = {
+        "site_id": "MissingBuilding",
+        "metrics": ["electricity"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "forecasting",
+        "data_source": "csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unknown site/building: MissingBuilding"
+    mock_delay.assert_not_called()
+
+
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_rejects_unknown_metrics(mock_delay):
+    _override_training_validation_db(metrics={"electricity"})
+
+    payload = {
+        "site_id": "SiteA",
+        "metrics": ["electricity", "steam"],
+        "time_range_start": "2026-06-01T00:00:00Z",
+        "time_range_end": "2026-06-07T00:00:00Z",
+        "model_task": "forecasting",
+        "data_source": "csv",
+    }
+
+    response = client.post("/api/v1/models/train", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unknown metric(s): steam"
+    mock_delay.assert_not_called()
 
 
 @patch("src.api.v1.endpoints.models._mlflow_client")
@@ -60,7 +231,7 @@ def test_get_model_versions_returns_run_ids_and_metrics(mock_mlflow_client):
             name="forecasting_v1",
             version="1",
             run_id="run-1",
-            tags={"active": "false"},
+            tags={"active": "false", "model_task": "forecasting"},
             current_stage="None",
             creation_timestamp=100,
             last_updated_timestamp=200,
@@ -91,6 +262,7 @@ def test_get_model_versions_returns_run_ids_and_metrics(mock_mlflow_client):
                 "name": "forecasting_v1",
                 "version": "2",
                 "run_id": "run-2",
+                "model_task": None,
                 "metrics": {"mae": 0.2, "rmse": 0.4},
                 "tags": {"active": "true"},
                 "current_stage": "Production",
@@ -101,8 +273,9 @@ def test_get_model_versions_returns_run_ids_and_metrics(mock_mlflow_client):
                 "name": "forecasting_v1",
                 "version": "1",
                 "run_id": "run-1",
+                "model_task": "forecasting",
                 "metrics": {"mae": 0.1, "rmse": 0.3},
-                "tags": {"active": "false"},
+                "tags": {"active": "false", "model_task": "forecasting"},
                 "current_stage": "None",
                 "creation_timestamp": 100,
                 "last_updated_timestamp": 200,
@@ -200,6 +373,12 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
         current_stage="Production",
         status="READY",
     )
+    production_version = SimpleNamespace(
+        version=2,
+        run_id="run-2",
+        current_stage="None",
+        status="READY",
+    )
     registered_model = SimpleNamespace(
         name="forecasting_v1",
         description="Forecast energy consumption",
@@ -210,6 +389,7 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
     )
     client_mock = Mock()
     client_mock.search_registered_models.return_value = [registered_model]
+    client_mock.get_model_version_by_alias.return_value = production_version
     mock_mlflow_client.return_value = client_mock
 
     response = client.get("/api/v1/models/")
@@ -223,6 +403,12 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
                 "creation_timestamp": 100,
                 "last_updated_timestamp": 200,
                 "tags": {"domain": "forecasting"},
+                "production_version": {
+                    "version": "2",
+                    "run_id": "run-2",
+                    "current_stage": "None",
+                    "status": "READY",
+                },
                 "latest_versions": [
                     {
                         "version": "3",
@@ -233,6 +419,33 @@ def test_list_models_returns_registered_models(mock_mlflow_client):
             }
         ]
     }
+
+
+@patch("src.api.v1.endpoints.models._mlflow_client")
+def test_update_model_description_updates_registered_model(mock_mlflow_client):
+    updated_model = SimpleNamespace(
+        name="forecasting_v1",
+        description="Business-facing description",
+    )
+    client_mock = Mock()
+    client_mock.update_registered_model.return_value = updated_model
+    mock_mlflow_client.return_value = client_mock
+
+    response = client.patch(
+        "/api/v1/models/forecasting_v1/description",
+        json={"description": "  Business-facing description  "},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "forecasting_v1",
+        "description": "Business-facing description",
+        "updated_by": "admin@vinsmart.com",
+    }
+    client_mock.update_registered_model.assert_called_once_with(
+        name="forecasting_v1",
+        description="Business-facing description",
+    )
 
 
 @patch("src.api.v1.endpoints.models._mlflow_client")
@@ -324,10 +537,12 @@ def test_get_pipeline_logs_returns_paginated_logs():
         id=log_id,
         type=SimpleNamespace(name="Training"),
         status=SimpleNamespace(name="Success"),
+        model_task="forecasting",
         mlflow_run_id="run-123",
         datasource_used="db",
         execution_time_ms=2400,
         created_at=created_at,
+        terminal_log="[2026-06-08T12:00:00+00:00] Pipeline finished successfully.",
     )
 
     query = Mock()
@@ -357,11 +572,13 @@ def test_get_pipeline_logs_returns_paginated_logs():
             {
                 "id": str(log_id),
                 "type": "Training",
+                "model_task": "forecasting",
                 "status": "Success",
                 "mlflow_run_id": "run-123",
                 "datasource_used": "db",
                 "execution_time_ms": 2400,
                 "timestamp": data["logs"][0]["timestamp"],
+                "terminal_log": "[2026-06-08T12:00:00+00:00] Pipeline finished successfully.",
             }
         ],
     }

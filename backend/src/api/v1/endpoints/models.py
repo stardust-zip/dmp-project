@@ -1,17 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
 from celery.result import AsyncResult
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
 from src.core.config import settings
-from sqlalchemy.orm import Session
 from src.database import get_db
 from src.models import AIPipelineLog
+from src.ml.training import (
+    algorithm_for_task,
+    create_queued_pipeline_log,
+    legacy_training_request,
+    training_error_detail,
+    validate_training_request,
+)
 from src.schemas import (
     ModelRollbackRequest,
     ModelRollbackResponse,
+    ModelTask,
+    ModelTrainingRequest,
+    ModelTrainingResponse,
+    ModelTrainingValidationResponse,
     ModelVersionResponse,
     ModelVersionsResponse,
+    TrainingDataSource,
     UserResponse,
 )
 from src.tasks import celery_app, train_model_task
@@ -22,6 +35,11 @@ router = APIRouter()
 PRODUCTION_ALIAS = "production"
 ACTIVE_TAG = "active"
 STAGE_TAG = "stage"
+MODEL_TASK_TAG = "model_task"
+
+
+class ModelDescriptionUpdate(BaseModel):
+    description: str = Field(default="", max_length=2000)
 
 
 def _mlflow_client() -> MlflowClient:
@@ -39,12 +57,16 @@ def _model_version_response(
             detail="Model version has no associated run ID.",
         )
     run = client.get_run(run_id)
+    tags = dict(getattr(model_version, "tags", {}) or {})
+    run_tags = dict(getattr(run.data, "tags", {}) or {})
+    model_task = tags.get(MODEL_TASK_TAG) or run_tags.get(MODEL_TASK_TAG)
     return ModelVersionResponse(
         name=model_version.name,
         version=str(model_version.version),
         run_id=run_id,
+        model_task=model_task,
         metrics=dict(run.data.metrics),
-        tags=dict(getattr(model_version, "tags", {}) or {}),
+        tags=tags,
         current_stage=getattr(model_version, "current_stage", None),
         creation_timestamp=getattr(model_version, "creation_timestamp", None),
         last_updated_timestamp=getattr(model_version, "last_updated_timestamp", None),
@@ -96,6 +118,15 @@ def _set_optional_production_alias(
         return
 
 
+def _delete_optional_production_alias(client: MlflowClient, model_name: str) -> None:
+    try:
+        client.delete_registered_model_alias(model_name, PRODUCTION_ALIAS)
+    except AttributeError:
+        return
+    except MlflowException:
+        return
+
+
 def _promote_model_version(client: MlflowClient, model_version) -> None:
     model_name = model_version.name
     version = str(model_version.version)
@@ -108,6 +139,43 @@ def _promote_model_version(client: MlflowClient, model_version) -> None:
     client.set_model_version_tag(model_name, version, ACTIVE_TAG, "true")
     client.set_model_version_tag(model_name, version, STAGE_TAG, "production")
     _set_optional_production_alias(client, model_name, version)
+
+
+def _demote_model_version(client: MlflowClient, model_version) -> None:
+    model_name = model_version.name
+    version = str(model_version.version)
+
+    client.set_model_version_tag(model_name, version, ACTIVE_TAG, "false")
+    client.set_model_version_tag(model_name, version, STAGE_TAG, "archived")
+
+    production_version = _production_model_version(client, model_name)
+    if production_version is not None and str(production_version.version) == version:
+        _delete_optional_production_alias(client, model_name)
+
+
+def _production_model_version(client: MlflowClient, model_name: str):
+    try:
+        return client.get_model_version_by_alias(model_name, PRODUCTION_ALIAS)
+    except AttributeError:
+        pass
+    except MlflowException:
+        pass
+
+    versions = _search_model_versions(client, f"name = '{model_name}'")
+    production_versions = [
+        version
+        for version in versions
+        if (getattr(version, "tags", {}) or {}).get(ACTIVE_TAG) == "true"
+        or (getattr(version, "tags", {}) or {}).get(STAGE_TAG) == "production"
+        or getattr(version, "current_stage", None) == "Production"
+    ]
+    if not production_versions:
+        return None
+
+    return max(
+        production_versions,
+        key=lambda version: getattr(version, "last_updated_timestamp", 0) or 0,
+    )
 
 
 @router.get("/")
@@ -126,6 +194,7 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
 
     models_data = []
     for rm in registered_models:
+        production_version = _production_model_version(client, rm.name)
         models_data.append(
             {
                 "name": rm.name,
@@ -133,6 +202,18 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
                 "creation_timestamp": rm.creation_timestamp,
                 "last_updated_timestamp": rm.last_updated_timestamp,
                 "tags": dict(getattr(rm, "tags", {}) or {}),
+                "production_version": (
+                    {
+                        "version": str(production_version.version),
+                        "run_id": getattr(production_version, "run_id", None),
+                        "current_stage": getattr(
+                            production_version, "current_stage", None
+                        ),
+                        "status": getattr(production_version, "status", None),
+                    }
+                    if production_version is not None
+                    else None
+                ),
                 "latest_versions": [
                     {
                         "version": str(v.version),
@@ -145,6 +226,35 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
         )
 
     return {"models": models_data}
+
+
+@router.patch("/{model_name}/description")
+async def update_model_description(
+    model_name: str,
+    payload: ModelDescriptionUpdate,
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Update a registered model description in MLflow.
+    """
+    client = _mlflow_client()
+    description = payload.description.strip()
+    try:
+        updated = client.update_registered_model(
+            name=model_name,
+            description=description,
+        )
+    except MlflowException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"MLflow registry update failed: {exc}",
+        ) from exc
+
+    return {
+        "name": getattr(updated, "name", model_name),
+        "description": getattr(updated, "description", description),
+        "updated_by": current_user.email,
+    }
 
 
 @router.get("/{model_name}/versions", response_model=ModelVersionsResponse)
@@ -175,29 +285,94 @@ async def get_model_versions(
     )
 
 
-@router.post("/train")
+@router.post("/train", response_model=ModelTrainingResponse)
 async def trigger_training(
-    building_id: str = "Panther_parking_Lorriane",
-    metric_type: str = "electricity",
-    data_source: str = Query(
+    payload: ModelTrainingRequest | None = Body(default=None),
+    building_id: str = Query("Panther_parking_Lorriane"),
+    site_id: str | None = Query(
+        None,
+        description="Optional site ID. Defaults to building_id for legacy callers.",
+    ),
+    metric_type: str = Query("electricity"),
+    model_task: ModelTask = Query(
+        ModelTask.Prediction,
+        description="ML task to train.",
+    ),
+    data_source: TrainingDataSource = Query(
         "csv", description="Choose 'csv' for baseline or 'db' for live data"
     ),
+    db: Session = Depends(get_db),
     current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
 ):
     """
-    Trigger training job for the forecasting model via Celery.
+    Trigger a configurable training job via Celery.
     """
-    task = train_model_task.delay(
-        target_building_id=building_id,
+    request = payload or legacy_training_request(
+        building_id=building_id,
+        site_id=site_id,
         metric_type=metric_type,
+        model_task=model_task,
         data_source=data_source,
     )
+    validation = validate_training_request(
+        request, db, enforce_data_availability=False
+    )
+    if not validation.valid:
+        raise HTTPException(
+            status_code=422,
+            detail=training_error_detail(validation),
+        )
 
-    return {
-        "message": f"Training job queued using {data_source} data.",
-        "task_id": task.id,
-        "triggered_by": current_user.email,
-    }
+    selected_algorithm = algorithm_for_task(ModelTask(request.model_task))
+    if ModelTask(request.model_task) != ModelTask.Prediction:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                f"{ModelTask(request.model_task).value} training pipeline is not "
+                "implemented yet."
+            ),
+        )
+    if len(request.metrics) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Prediction training requires exactly one metric per model.",
+        )
+
+    pipeline_log = create_queued_pipeline_log(db, request)
+    task = train_model_task.delay(
+        training_request=request.model_dump(mode="json", exclude_none=True),
+        pipeline_log_id=str(pipeline_log.id),
+    )
+
+    return ModelTrainingResponse(
+        message=(
+            f"{ModelTask(request.model_task).value} training job queued using "
+            f"{TrainingDataSource(request.data_source).value} data."
+        ),
+        task_id=task.id,
+        model_task=request.model_task,
+        data_source=request.data_source,
+        algorithm=selected_algorithm,
+        site_id=request.site_id,
+        building_id=request.building_id,
+        metrics=request.metrics,
+        triggered_by=current_user.email,
+    )
+
+
+@router.post(
+    "/train/validate",
+    response_model=ModelTrainingValidationResponse,
+)
+async def validate_training(
+    payload: ModelTrainingRequest,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Validate a training request without queueing a training job.
+    """
+    return validate_training_request(payload, db)
 
 
 @router.post("/rollback", response_model=ModelRollbackResponse)
@@ -231,6 +406,44 @@ async def rollback_model(
         )
     return ModelRollbackResponse(
         message="Model version promoted to production.",
+        model_name=model_version.name,
+        version=str(model_version.version),
+        run_id=run_id,
+        promoted_by=current_user.email,
+    )
+
+
+@router.post("/demote", response_model=ModelRollbackResponse)
+async def demote_model_from_production(
+    payload: ModelRollbackRequest,
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Move a registered model version out of production.
+    """
+    client = _mlflow_client()
+    model_version = _find_model_version_by_run_id(
+        client,
+        payload.mlflow_run_id,
+        payload.model_name,
+    )
+
+    try:
+        _demote_model_version(client, model_version)
+    except MlflowException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"MLflow registry update failed: {exc}",
+        ) from exc
+
+    run_id = model_version.run_id
+    if run_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Model version has no associated run ID.",
+        )
+    return ModelRollbackResponse(
+        message="Model version moved out of production.",
         model_name=model_version.name,
         version=str(model_version.version),
         run_id=run_id,
@@ -278,11 +491,17 @@ async def get_pipeline_logs(
         {
             "id": str(log.id),
             "type": log.type.name if hasattr(log.type, "name") else log.type,
+            "model_task": (
+                log.model_task.name
+                if hasattr(log.model_task, "name")
+                else log.model_task
+            ),
             "status": log.status.name if hasattr(log.status, "name") else log.status,
             "mlflow_run_id": log.mlflow_run_id,
             "datasource_used": log.datasource_used,
             "execution_time_ms": log.execution_time_ms,
             "timestamp": log.created_at,
+            "terminal_log": log.terminal_log,
         }
         for log in results
     ]

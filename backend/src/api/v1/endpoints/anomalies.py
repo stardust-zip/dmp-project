@@ -233,12 +233,13 @@ async def get_anomaly_timeline(
 
 
 @router.get("/facets", response_model=AnomalyFacetsResponse)
-async def get_anomaly_facets():
+async def get_anomaly_facets(site_id: str | None = Query(None)):
     events = load_anomaly_events()
+    scoped_events = events if site_id is None else events[events["site_id"] == site_id]
     return {
         "sites": sorted([str(value) for value in events["site_id"].dropna().unique()]),
-        "buildings": sorted([str(value) for value in events["building_id"].dropna().unique()]),
+        "buildings": sorted([str(value) for value in scoped_events["building_id"].dropna().unique()]),
         "severities": SEVERITIES,
-        "types": sorted([str(value) for value in events["type"].dropna().unique()]),
-        "primary_usage_types": sorted([str(value) for value in events["primary_space_usage"].dropna().unique()]),
+        "types": sorted([str(value) for value in scoped_events["type"].dropna().unique()]),
+        "primary_usage_types": sorted([str(value) for value in scoped_events["primary_space_usage"].dropna().unique()]),
     }

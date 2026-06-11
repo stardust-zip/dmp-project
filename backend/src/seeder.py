@@ -1,14 +1,14 @@
-import os
-import math
 import argparse
+import math
+import os
+
 import pandas as pd
 from sqlalchemy.orm import Session
+from src import models, schemas
 from src.database import SessionLocal, init_db
-from src import models
-from src import schemas
 from src.schemas import IngestionStatus
 
-DATA_DIR = "/app/data/building-data-genome-project-2/data"
+DATA_DIR = "/app/data/raw/data"
 
 
 def get_or_create(db: Session, model, **kwargs):
@@ -31,24 +31,29 @@ def seed_lookups(db: Session):
     for dt in device_types:
         get_or_create(db, models.DeviceType, **dt)
 
-    metrics = [
-        "electricity",
-        "chilledwater",
-        "steam",
-        "hotwater",
-        "gas",
-        "water",
-        "solar",
-        "irrigation",
-    ]
-    for m in metrics:
-        get_or_create(
-            db,
-            models.MetricType,
-            id=m,
-            unit="kWh/kBTU",
-            description=f"{m} consumption",
-        )
+    metric_units = {
+        "electricity": "kWh",
+        "solar": "kWh",
+        "steam": "kg",
+        "hotwater": "m3",
+        "chilledwater": "m3",
+        "gas": "m3",
+        "water": "m3",
+        "irrigation": "m3",
+    }
+    for m, unit in metric_units.items():
+        metric = db.query(models.MetricType).filter_by(id=m).first()
+        if metric:
+            metric.unit = unit
+            metric.description = metric.description or f"{m} consumption"
+        else:
+            db.add(
+                models.MetricType(
+                    id=m,
+                    unit=unit,
+                    description=f"{m} consumption",
+                )
+            )
 
     db.commit()
 
@@ -68,12 +73,30 @@ def seed_metadata(db: Session):
     for lt in loc_types:
         lt_str = "Unknown" if pd.isna(lt) else str(lt)
         get_or_create(db, models.LocationType, id=lt_str)
+    if "site_id" in df_meta.columns:
+        get_or_create(db, models.LocationType, id="site")
 
     db.commit()
+
+    if "site_id" in df_meta.columns:
+        for site_id in sorted(df_meta["site_id"].dropna().astype(str).unique()):
+            get_or_create(
+                db,
+                models.Location,
+                id=site_id,
+                location_type_id="site",
+                name=f"Site {site_id}",
+            )
+        db.commit()
 
     # Seed Locations
     for _, row in df_meta.iterrows():
         b_id = str(row["building_id"])
+        site_id = None
+        if "site_id" in df_meta.columns:
+            raw_site_id = row.get("site_id")
+            if not pd.isna(raw_site_id):
+                site_id = str(raw_site_id)
 
         metadata_dict = {}
 
@@ -107,6 +130,7 @@ def seed_metadata(db: Session):
             db,
             models.Location,
             id=loc_payload.id,
+            parent_id=site_id,
             location_type_id=loc_payload.location_type_id,
             name=loc_payload.name,
             metadata_=loc_payload.metadata,

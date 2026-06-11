@@ -8,7 +8,7 @@ import { AlertFeed } from "@/components/features/anomaly/anomaly-alert-feed";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
 import { useAlerts } from "@/hooks/use-alerts";
 import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
-import { clock, fmt, fmtKwh } from "@/lib/format";
+import { clock, displayLocationName, fmt, fmtKwh } from "@/lib/format";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
 type DateRange = "all" | "2017" | "2016" | "scored";
@@ -64,8 +64,7 @@ function severityTone(severity: AnomalySeverity): Tone {
 }
 
 function buildingLabel(buildingId: string) {
-  const parts = buildingId.split("_");
-  return parts.length >= 3 ? parts.slice(2).join("_") : buildingId;
+  return displayLocationName(null, buildingId);
 }
 
 function timeOf(value: string) {

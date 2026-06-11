@@ -3,24 +3,27 @@ import type { AlertStatus } from "@/types";
 
 const STORAGE_KEY = "anomaly-alert-statuses";
 
+function readStoredStatuses() {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, AlertStatus>) : {};
+  } catch {
+    return {};
+  }
+}
+
 export function useAlerts() {
-  const [statuses, setStatuses] = useState<Record<string, AlertStatus>>({});
-  const [loaded, setLoaded] = useState(false);
+  const [statuses, setStatuses] = useState<Record<string, AlertStatus>>(() => readStoredStatuses());
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setStatuses(JSON.parse(raw) as Record<string, AlertStatus>);
-    } catch {}
-    setLoaded(true);
-  }, []);
-
-  useEffect(() => {
-    if (!loaded) return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(statuses));
-    } catch {}
-  }, [statuses, loaded]);
+    } catch {
+      return;
+    }
+  }, [statuses]);
 
   const acknowledge = useCallback((id: string) => {
     setStatuses((prev) => ({ ...prev, [id]: "Acknowledged" }));

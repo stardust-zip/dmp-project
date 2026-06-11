@@ -5,9 +5,20 @@
 mlflow_artifacts/
 mlruns/
 .ipynb_checkpoints/
+.Trash-0/
 .venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.basedpyright/
 
 personal_docs/
+
+# Frontend build/dependency artifacts
+frontend/node_modules/
+frontend/.next/
+frontend/out/
 
 # Docker Data Volumes
 pgdata/
@@ -24,5 +35,3 @@ grafana_data/
 
 # Jetbrains
 .idea
-
-

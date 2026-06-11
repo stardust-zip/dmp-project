@@ -113,7 +113,7 @@ export function EChart({
       }));
     }
     instance.current.setOption(nextOption as EChartsOption, true);
-  }, [build, preserveDataZoom, themeKey, ...deps]);
+  }, [build, preserveDataZoom, themeKey, deps]);
 
   return <div ref={ref} className="chart" style={{ height, width: "100%", ...style }} />;
 }

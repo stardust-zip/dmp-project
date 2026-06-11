@@ -144,9 +144,59 @@ docker compose logs -f worker
 
 ---
 
-## 5. Seeding the Database
+## 5. Database Migrations and Seeding
 
-After standing up the architecture for the first time, your local PostgreSQL database will be empty. You must seed it with the raw Kaggle telemetry data before using the API or training models.
+Database schema changes are managed with Alembic migrations. Do not rely on SQLAlchemy `create_all()` or ad hoc `ALTER TABLE` statements for persistent databases.
+
+### Applying Existing Migrations
+
+The backend container applies pending migrations on startup before it seeds demo users and starts the API. This happens when Docker creates or restarts the `backend` container.
+
+For a fresh stack start or after rebuilding the backend image:
+
+```bash
+docker compose up -d --build
+
+```
+
+If the stack is already running, apply migrations explicitly:
+
+```bash
+docker compose exec backend alembic upgrade head
+
+```
+
+If you need to rerun the backend startup command, recreate only the backend service:
+
+```bash
+docker compose up -d --build --force-recreate backend
+
+```
+
+### Making a Database Schema Change
+
+When you add, remove, rename, or change a column/table in `backend/src/models.py`, create and apply an Alembic migration from inside Docker:
+
+```bash
+# 1. Start the database and backend if they are not already running
+docker compose up -d db backend
+
+# 2. Generate a migration from the SQLAlchemy model changes
+docker compose exec backend alembic revision --autogenerate -m "describe schema change"
+
+# 3. Review the generated file in backend/alembic/versions/
+#    Edit it if Alembic guessed incorrectly, especially for renames, drops, type changes, or data backfills.
+
+# 4. Apply the migration to the Docker Postgres database
+docker compose exec backend alembic upgrade head
+
+```
+
+Commit both the model change and the generated migration file. Do not commit a model change without its matching migration.
+
+For destructive changes such as dropping columns/tables, renaming columns, adding `NOT NULL`, changing column types, or backfilling data, manually review the generated migration before applying it. Alembic will execute exactly what is in the migration file.
+
+After standing up the architecture for the first time, your local PostgreSQL database will contain the schema but not the Kaggle telemetry data. Seed it before using telemetry-backed API features or training models.
 
 Run the seeder script through the backend container:
 

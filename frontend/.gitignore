@@ -5,6 +5,7 @@ node_modules/
 
 # Build Outputs
 .next/
+.next-codex/
 out/
 dist/
 build/
@@ -24,3 +25,7 @@ pnpm-debug.log*
 !.vscode/extensions.json
 .idea
 .DS_Store
+
+
+*.tsbuildinfo
+tsconfig.tsbuildinfo

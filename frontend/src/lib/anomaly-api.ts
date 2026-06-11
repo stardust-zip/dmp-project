@@ -4,8 +4,10 @@ import type {
   AnomalyOverview,
   AnomalyTimelineResponse,
 } from "@/types";
+import { authHeaders } from "@/lib/auth-api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/backend";
+const API_PREFIX = "/api/v1";
 
 export type AnomalyQuery = {
   site?: string;
@@ -34,27 +36,47 @@ function params(query: AnomalyQuery = {}) {
   return value ? `?${value}` : "";
 }
 
+async function responseError(response: Response) {
+  const data = (await response.json().catch(() => null)) as {
+    detail?: string | string[];
+    error?: {
+      message?: string;
+      details?: Record<string, unknown>;
+    };
+  } | null;
+  const detail = Array.isArray(data?.detail) ? data.detail.join(" ") : data?.detail;
+  const message = data?.error?.message ?? detail ?? `API request failed: ${response.status}`;
+  const path = typeof data?.error?.details?.path === "string" ? data.error.details.path : null;
+  return path ? `${message} Missing file: ${path}` : message;
+}
+
 async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { signal });
+  const base = API_BASE.replace(/\/$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const versionedPath = base.endsWith(API_PREFIX) ? normalizedPath : `${API_PREFIX}${normalizedPath}`;
+  const response = await fetch(`${base}${versionedPath}`, {
+    signal,
+    headers: authHeaders(),
+  });
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status}`);
+    throw new Error(await responseError(response));
   }
   return response.json() as Promise<T>;
 }
 
 export function getAnomalyOverview(query: AnomalyQuery, signal?: AbortSignal) {
-  return apiGet<AnomalyOverview>(`/api/v1/anomalies/overview${params(query)}`, signal);
+  return apiGet<AnomalyOverview>(`/anomalies/overview${params(query)}`, signal);
 }
 
 export function getAnomalyEvents(query: AnomalyQuery, signal?: AbortSignal) {
-  return apiGet<AnomalyEventsResponse>(`/api/v1/anomalies/events${params(query)}`, signal);
+  return apiGet<AnomalyEventsResponse>(`/anomalies/events${params(query)}`, signal);
 }
 
 export function getAnomalyTimeline(query: AnomalyQuery, signal?: AbortSignal) {
-  return apiGet<AnomalyTimelineResponse>(`/api/v1/anomalies/timeline${params(query)}`, signal);
+  return apiGet<AnomalyTimelineResponse>(`/anomalies/timeline${params(query)}`, signal);
 }
 
 export function getAnomalyFacets(site?: string, signal?: AbortSignal) {
   const qs = site && site !== "all" ? `?site_id=${encodeURIComponent(site)}` : "";
-  return apiGet<AnomalyFacets>(`/api/v1/anomalies/facets${qs}`, signal);
+  return apiGet<AnomalyFacets>(`/anomalies/facets${qs}`, signal);
 }

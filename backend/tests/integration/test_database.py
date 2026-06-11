@@ -11,7 +11,7 @@ def test_user_unique_email_constraint(db_session):
         full_name="User One",
         email="duplicate@example.com",
         password_hash="hash1",
-        role="Developer",
+        role="Operator",
     )
     db_session.add(user1)
     db_session.commit()
@@ -20,7 +20,7 @@ def test_user_unique_email_constraint(db_session):
         full_name="User Two",
         email="duplicate@example.com",
         password_hash="hash2",
-        role="Developer",
+        role="Operator",
     )
     db_session.add(user2)
 
@@ -119,7 +119,7 @@ def test_enum_valid_values(db_session):
         full_name="Bad Enum",
         email="bad@enum.com",
         password_hash="pw",
-        role="SuperAdmin",  # Not in ('Admin', 'AI_Engineer', 'Operator', 'PO', 'Developer')
+        role="SuperAdmin",  # Not in ('Admin', 'AI_Engineer', 'Operator')
     )
     db_session.add(bad_user)
     # Note: SQLAlchemy might catch this before the DB, or the DB will.

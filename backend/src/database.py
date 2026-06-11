@@ -1,9 +1,10 @@
 import os
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from src.core.config import settings
-from src.models import Base
 
 DATABASE_URL = os.getenv("DATABASE_URL", settings.DATABASE_URL)
 
@@ -13,8 +14,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db():
-    """Initializes the database tables (creates them if they don't exist)."""
-    Base.metadata.create_all(bind=engine)
+    """Applies Alembic migrations to bring the database schema to head."""
+    alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+    command.upgrade(alembic_cfg, "head")
 
 
 def get_db():

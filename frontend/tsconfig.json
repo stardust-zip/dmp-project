@@ -35,7 +35,9 @@
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts",
+    ".next-codex/types/**/*.ts",
+    ".next-codex/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
