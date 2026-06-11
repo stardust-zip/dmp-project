@@ -27,3 +27,5 @@ grafana_data/
 __pycache__/
 
 building-data-genome-project-2/
+data/
+data2/

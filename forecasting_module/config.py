@@ -14,7 +14,7 @@ METADATA_PATH = DATA_SOURCE / "metadata" / "metadata.csv"
 WEATHER_PATH = DATA_SOURCE / "weather" / "weather.csv"
 
 # Output layers (Bronze → Silver → Gold)
-OUTPUT_BASE = PROJECT_ROOT / "data" / "processed" / "forecasting"
+OUTPUT_BASE = PROJECT_ROOT / "data2" / "processed" / "forecasting"
 BRONZE_DIR = OUTPUT_BASE / "bronze"
 SILVER_DIR = OUTPUT_BASE / "silver"
 GOLD_DIR = OUTPUT_BASE / "gold"
@@ -27,8 +27,6 @@ METADATA_KEEP = [
     "site_id",
     "primaryspaceusage",
     "sqm",
-    "lat",
-    "lng",
     "timezone",
 ]
 
@@ -36,10 +34,7 @@ WEATHER_KEEP = [
     "timestamp",
     "site_id",
     "airTemperature",
-    "cloudCoverage",
     "dewTemperature",
-    "precipDepth1HR",
-    "seaLvlPressure",
     "windDirection",
     "windSpeed",
 ]
@@ -49,5 +44,19 @@ WEATHER_KEEP = [
 # ---------------------------------------------------------------------------
 CHUNK_SIZE = 200                 # buildings per melt-batch (memory control)
 INTERP_MAX_GAP_HOURS = 6        # only interpolate gaps ≤ this size
+SEASONAL_MAX_GAP_HOURS = 24     # upper bound for seasonal imputation (t-24h)
+MISSING_RATE_THRESHOLD = 0.30   # drop buildings exceeding this consumption null rate
+
+# Outlier detection
+IQR_MULTIPLIER = 3.0            # IQR fence multiplier (generous, not 1.5)
+WEATHER_BOUNDS: dict = {        # rule-based physical bounds
+    "airTemperature":  (-30.0, 60.0),
+    "windSpeed":       (0.0, None),
+    "seaLvlPressure":  (800.0, 1100.0),
+}
+
 EXPECTED_START = "2016-01-01T00:00:00"
 EXPECTED_END = "2017-12-31T23:00:00"
+
+# Report output
+REPORT_DIR = OUTPUT_BASE / "report"
