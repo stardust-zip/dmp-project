@@ -1,4 +1,4 @@
-"""Pipeline orchestrator — ties Ingestion → Preprocessing → Validation → Outlier."""
+"""Pipeline orchestrator — ties Ingestion → Preprocessing → Validation → Outlier → Feature Engineering → Dataset Builder."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from forecasting_module.ingestion import DataIngestion
 from forecasting_module.outlier import OutlierDetector
 from forecasting_module.preprocessing import Preprocessor
 from forecasting_module.validation import DataValidator
+from forecasting_module.feature_engineering import FeatureEngineer
+from forecasting_module.dataset_builder import DatasetBuilder
 
 
 class ForecastingPipeline:
@@ -38,7 +40,15 @@ class ForecastingPipeline:
         gc.collect()
         print(f"  Memory cleanup after {stage_name} done.")
 
-    def run(self, skip_outlier: bool = False, reload_gold_before_outlier: bool = True) -> pl.DataFrame:
+    def run(
+        self,
+        skip_outlier: bool = False,
+        reload_gold_before_outlier: bool = True,
+        skip_feature_engineering: bool = False,
+        skip_dataset_builder: bool = False,
+        forecast_horizon_hours: int = 24,
+        weather_mode: str = "none",
+    ) -> pl.DataFrame:
         """Run the full forecasting data pipeline.
 
         Parameters
@@ -50,6 +60,14 @@ class ForecastingPipeline:
             re-read Gold from disk before Stage 4. This is safer for large data
             because it avoids keeping Bronze + Silver + Gold in RAM while the
             outlier stage performs group_by/join operations.
+        skip_feature_engineering:
+            If True, stop after Stage 4 and return Gold v2.
+        skip_dataset_builder:
+            If True, stop after Stage 5 and return None.
+        forecast_horizon_hours:
+            Forecast horizon for feature engineering (24 or 168).
+        weather_mode:
+            Weather feature mode: "none", "historical", or "forecast".
         """
         t0 = time.perf_counter()
 
@@ -119,11 +137,60 @@ class ForecastingPipeline:
             final = self.outlier_detector.run(gold, self.preprocessor)
             print("\nOutlier detection done.")
 
+        if skip_feature_engineering:
+            elapsed = time.perf_counter() - t0
+            print("\n" + "=" * 60)
+            print(f"DONE in {elapsed:.1f}s  —  {final.shape[0]:,} rows × {final.shape[1]} cols")
+            print("=" * 60)
+            return final
+
+        # ── Feature Engineering ────────────────────────────────────────
+        del final
+        self._force_gc("Stage 4")
+
+        gold_v2_path = GOLD_DIR / "validated_v2.parquet"
+        if not gold_v2_path.exists():
+            raise FileNotFoundError(
+                f"Gold v2 file not found: {gold_v2_path}. "
+                "Run Stage 4 (Outlier) first."
+            )
+        print(f"\n  Reloading Gold v2 from disk: {gold_v2_path}")
+        gold_v2 = pl.read_parquet(gold_v2_path)
+        print(f"  Loaded Gold v2: {gold_v2.shape[0]:,} rows × {gold_v2.shape[1]} cols")
+
+        print("\nStage 5 — Feature Engineering (Feature Store)")
+        fe = FeatureEngineer(
+            forecast_horizon_hours=forecast_horizon_hours,
+            weather_mode=weather_mode,
+        )
+        fe.run(gold_v2)
+        feature_path = fe.output_dir / fe._build_filename()
+
+        if skip_dataset_builder:
+            elapsed = time.perf_counter() - t0
+            print("\n" + "=" * 60)
+            print(f"DONE in {elapsed:.1f}s")
+            print("=" * 60)
+            return None
+
+        # ── Dataset Builder ─────────────────────────────────────────────
+        del gold_v2
+        self._force_gc("Stage 5")
+
+        print(f"\n  Reloading features from disk: {feature_path}")
+        features = pl.read_parquet(feature_path)
+        print(f"  Loaded features: {features.shape[0]:,} rows × {features.shape[1]} cols")
+
+        print("\nStage 6 — Dataset Builder (Train / Val / Test)")
+        # Derive subfolder from feature filename: features_h24_energy → h24_energy
+        subfolder = feature_path.stem.replace("features_", "")
+        DatasetBuilder(subfolder=subfolder).run(features)
+
         elapsed = time.perf_counter() - t0
         print("\n" + "=" * 60)
-        print(f"DONE in {elapsed:.1f}s  —  {final.shape[0]:,} rows × {final.shape[1]} cols")
+        print(f"DONE in {elapsed:.1f}s")
         print("=" * 60)
-        return final
+        return None
 
 
 # -----------------------------------------------------------------------
@@ -143,6 +210,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not reload Gold from disk before Stage 4. Uses more RAM.",
     )
+    parser.add_argument(
+        "--skip-feature-engineering",
+        action="store_true",
+        help="Stop after Stage 4 (Outlier) and skip Feature Engineering.",
+    )
+    parser.add_argument(
+        "--skip-dataset-builder",
+        action="store_true",
+        help="Stop after Stage 5 (Feature Engineering) and skip Dataset Builder.",
+    )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=24,
+        help="Forecast horizon in hours for feature engineering (default: 24).",
+    )
+    parser.add_argument(
+        "--weather-mode",
+        type=str,
+        default="none",
+        choices=["none", "historical", "forecast"],
+        help="Weather feature mode (default: none).",
+    )
     return parser.parse_args()
 
 
@@ -151,4 +241,8 @@ if __name__ == "__main__":
     ForecastingPipeline().run(
         skip_outlier=args.skip_outlier,
         reload_gold_before_outlier=not args.no_reload_gold,
+        skip_feature_engineering=args.skip_feature_engineering,
+        skip_dataset_builder=args.skip_dataset_builder,
+        forecast_horizon_hours=args.horizon,
+        weather_mode=args.weather_mode,
     )
