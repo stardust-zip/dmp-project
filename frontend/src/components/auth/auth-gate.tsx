@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { canAccessPath } from "@/lib/rbac";
@@ -12,10 +12,17 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { session, status, isAuthenticated } = useAuth();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const isPublicRoute = PUBLIC_ROUTES.has(pathname);
   const canAccess = isPublicRoute || !isAuthenticated || canAccessPath(session?.user, pathname);
 
   useEffect(() => {
+    if (!mounted) return;
     if (status === "loading") return;
 
     if (!isAuthenticated && !isPublicRoute) {
@@ -26,9 +33,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (isAuthenticated && isPublicRoute) {
       router.replace("/dashboard");
     }
-  }, [isAuthenticated, isPublicRoute, pathname, router, status]);
+  }, [mounted, isAuthenticated, isPublicRoute, pathname, router, status]);
 
-  if (status === "loading" || (!isAuthenticated && !isPublicRoute) || (isAuthenticated && isPublicRoute)) {
+  if (!mounted || status === "loading" || (!isAuthenticated && !isPublicRoute) || (isAuthenticated && isPublicRoute)) {
     return (
       <div className="auth-loading">
         <Icon name="refresh" />

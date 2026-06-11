@@ -37,7 +37,10 @@ def _validate_locations_exist(db: Session, location_ids: list[str]) -> None:
 
 
 def _can_manage_user(current_user: UserResponse, target_user: models.User) -> bool:
-    if current_user.is_global_admin:
+    # Admin users can manage all accounts regardless of scope.
+    # The admin RBAC gate (get_current_admin) already restricts this endpoint
+    # to users with the Admin role.
+    if current_user.role == "Admin":
         return True
     if str(target_user.id) == current_user.id:
         return True

@@ -227,11 +227,11 @@ export function UsersPage() {
   const requiresSites = form.role !== "AI_Engineer" && !(form.role === "Admin" && form.is_global_admin);
   const canSubmit = Boolean(
     form.email.trim() &&
-      form.full_name.trim() &&
-      form.password &&
-      !issue &&
-      isManagedUserRole(form.role) &&
-      (!requiresSites || form.assigned_site_ids.length > 0),
+    form.full_name.trim() &&
+    form.password &&
+    !issue &&
+    isManagedUserRole(form.role) &&
+    (!requiresSites || form.assigned_site_ids.length > 0),
   );
 
   function addAssignedLocation(location: LocationOption) {
@@ -434,19 +434,6 @@ export function UsersPage() {
                     <td>
                       <div className="user-role-cell">
                         <span className={`user-role-badge ${roleTone(user.role)}`}>{managedRoleLabel(user.role)}</span>
-                        <select
-                          className="user-role-select"
-                          value={user.role}
-                          onChange={(event) => handleRoleChange(user, event.target.value as ManagedUserRole)}
-                          disabled={submitting === `role-${user.id}`}
-                          aria-label={`Role for ${user.full_name}`}
-                        >
-                          {USER_ROLES.map((role) => (
-                            <option key={role} value={role}>
-                              {managedRoleLabel(role)}
-                            </option>
-                          ))}
-                        </select>
                       </div>
                     </td>
                     <td>
