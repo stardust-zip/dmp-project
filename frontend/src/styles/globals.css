@@ -3419,6 +3419,97 @@ table.tbl tbody tr:last-child td {
     height: 12px;
 }
 
+.date-range-row {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    overflow: hidden;
+    transition: border-color .12s, box-shadow .12s;
+}
+
+.date-range-row:focus-within {
+    border-color: var(--accent-600);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.date-range-segment {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex: 1;
+    min-width: 0;
+    padding: 0 12px;
+    height: 40px;
+}
+
+.date-range-segment:first-child {
+    border-right: 1px solid var(--border);
+}
+
+.date-range-segment>svg {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    color: var(--muted);
+}
+
+.date-range-segment-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.date-range-segment-body>span {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    line-height: 1;
+}
+
+.date-range-segment-body>input[type="date"] {
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    font-weight: 500;
+    outline: none;
+    padding: 0;
+    width: 100%;
+    cursor: pointer;
+    line-height: 1.2;
+}
+
+.date-range-row.is-invalid {
+    border-color: var(--red-border);
+}
+
+.date-range-row.is-invalid:focus-within {
+    border-color: var(--red);
+    box-shadow: 0 0 0 3px var(--red-soft);
+}
+
+.date-range-error {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--red);
+    font-size: 11.5px;
+    line-height: 1.3;
+}
+
+.date-range-error svg {
+    width: 12px;
+    height: 12px;
+    flex: 0 0 12px;
+}
+
 .training-validation {
     display: grid;
     grid-template-columns: 1fr;

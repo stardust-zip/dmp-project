@@ -124,6 +124,11 @@ def train_model_task(
             ),
         )
     else:
+        log_status = pipeline_log.status.name if hasattr(pipeline_log.status, "name") else pipeline_log.status
+        if log_status == "Cancelled":
+            db.close()
+            return {"message": "Pipeline was cancelled; retry skipped."}
+
         pipeline_log.status = "Running"  # type: ignore
         _append_terminal_log(
             db, pipeline_log, "Worker picked up queued training pipeline."
@@ -133,6 +138,8 @@ def train_model_task(
         start = perf_counter()
 
         with mlflow.start_run() as run:
+            pipeline_log.mlflow_run_id = run.info.run_id  # type: ignore
+            db.commit()
             _append_terminal_log(
                 db,
                 pipeline_log,
@@ -167,6 +174,22 @@ def train_model_task(
                     model_name=registered_model_name,
                 )
                 message_prefix = "Prediction"
+            elif ModelTask(request.model_task) == ModelTask.AnomalyDetection:
+                from src.ml.anomaly_detection import train_anomaly_detection_model
+
+                anomaly_result = train_anomaly_detection_model(
+                    request=request,
+                    db=db,
+                    mlflow_run=run,
+                    pipeline_log=pipeline_log,
+                    append_log=lambda msg: _append_terminal_log(db, pipeline_log, msg),
+                )
+                metrics = {
+                    key: float(value)
+                    for key, value in anomaly_result.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
+                message_prefix = "Anomaly detection"
             else:
                 _append_terminal_log(
                     db,
@@ -641,3 +664,27 @@ def _mock_training_metrics(request: ModelTrainingRequest) -> dict[str, float]:
     if "mae" in scores:
         return {key: max(value - algorithm_boost, 0.0) for key, value in scores.items()}
     return {key: min(value + algorithm_boost, 0.99) for key, value in scores.items()}
+
+
+@celery_app.task(bind=True, name="run_anomaly_inference_task")
+def run_anomaly_inference_task(self):
+    from datetime import datetime, timezone
+
+    from src.ml.anomaly_inference import run_hourly_inference
+
+    db = SessionLocal()
+    try:
+        target_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        count = run_hourly_inference(db, target_hour)
+        return {"rows_written": count, "target_hour": target_hour.isoformat()}
+    finally:
+        db.close()
+
+
+celery_app.conf.beat_schedule = {
+    **getattr(celery_app.conf, "beat_schedule", {}),
+    "anomaly-inference-hourly": {
+        "task": "run_anomaly_inference_task",
+        "schedule": 3600.0,
+    },
+}

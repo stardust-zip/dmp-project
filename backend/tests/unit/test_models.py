@@ -101,18 +101,31 @@ def test_trigger_training_success(mock_delay):
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
-def test_trigger_training_rejects_anomaly_training_until_implemented(mock_delay):
+def test_trigger_training_queues_anomaly_training(mock_delay):
+    class MockTask:
+        id = "mock-anomaly-task-456"
+
+    mock_delay.return_value = MockTask()
+
     response = client.post(
         "/api/v1/models/train"
         "?building_id=TestBuilding&metric_type=water"
         "&model_task=anomaly_detection&data_source=db"
     )
 
-    assert response.status_code == 501
-    assert response.json()["detail"] == (
-        "anomaly_detection training pipeline is not implemented yet."
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_id"] == "mock-anomaly-task-456"
+    assert body["model_task"] == "anomaly_detection"
+    assert body["algorithm"] == "lightgbm"
+    assert (
+        body["message"]
+        == "anomaly_detection training job queued using db data."
     )
-    mock_delay.assert_not_called()
+    training_request = mock_delay.call_args.kwargs["training_request"]
+    assert training_request["model_task"] == "anomaly_detection"
+    assert training_request["data_source"] == "db"
+    mock_delay.assert_called_once()
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")

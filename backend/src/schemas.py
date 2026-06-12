@@ -164,7 +164,11 @@ class ModelTrainingRequest(BaseSchema):
         extra="forbid",
     )
 
-    site_id: str = Field(..., min_length=1, description="Site to train on.")
+    site_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Site to train on. Required for prediction/forecasting; omit for anomaly_detection (trains across all buildings).",
+    )
     building_id: str | None = Field(
         default=None,
         min_length=1,
@@ -189,6 +193,12 @@ class ModelTrainingRequest(BaseSchema):
         return metrics
 
     @model_validator(mode="after")
+    def site_id_required_for_non_anomaly(self) -> "ModelTrainingRequest":
+        if ModelTask(self.model_task) != ModelTask.AnomalyDetection and not self.site_id:
+            raise ValueError("site_id is required for prediction and forecasting tasks")
+        return self
+
+    @model_validator(mode="after")
     def validate_time_range(self) -> "ModelTrainingRequest":
         if self.time_range_end <= self.time_range_start:
             raise ValueError("time_range_end must be after time_range_start")
@@ -201,7 +211,7 @@ class ModelTrainingResponse(BaseSchema):
     model_task: ModelTask
     data_source: TrainingDataSource
     algorithm: MLAlgorithm
-    site_id: str
+    site_id: str | None
     building_id: str | None = None
     metrics: list[str]
     triggered_by: str
@@ -222,7 +232,7 @@ class ModelTrainingValidationMetric(BaseSchema):
 class ModelTrainingValidationResponse(BaseSchema):
     valid: bool
     data_source: TrainingDataSource
-    site_id: str
+    site_id: str | None
     building_id: str | None = None
     target_building_ids: list[str] = Field(default_factory=list)
     required_rows_per_metric: int

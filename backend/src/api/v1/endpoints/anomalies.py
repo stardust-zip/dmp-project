@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 from typing import Literal
 
 import pandas as pd
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+from src.database import get_db
 from src.ml.anomaly_events import (
     SEVERITIES,
     event_records,
@@ -30,6 +32,7 @@ def _query_time(value: datetime | None) -> pd.Timestamp | None:
 
 
 def _filtered(
+    db: Session,
     site_id: str | None,
     building_id: str | None,
     severity: str | None,
@@ -38,6 +41,7 @@ def _filtered(
     end: datetime | None,
 ):
     return filter_events(
+        db,
         site_id=site_id,
         building_id=building_id,
         severity=severity,
@@ -78,6 +82,7 @@ def _merge_gaps(
 
 
 def _timeline_points_and_gaps(
+    db: Session,
     *,
     site_id: str | None,
     building_id: str | None,
@@ -91,6 +96,7 @@ def _timeline_points_and_gaps(
     window_start = _query_time(start)
     window_end = _query_time(end)
     series = filter_series(
+        db,
         site_id=site_id,
         building_id=building_id,
         start=window_start,
@@ -169,8 +175,9 @@ async def get_anomaly_overview(
     type: str | None = Query(None),
     start: datetime | None = Query(None),
     end: datetime | None = Query(None),
+    db: Session = Depends(get_db),
 ):
-    events = _filtered(site_id, building_id, severity, type, start, end)
+    events = _filtered(db, site_id, building_id, severity, type, start, end)
     severity_counts = {key: int((events["severity"] == key).sum()) for key in SEVERITIES}
     type_counts = events["type"].value_counts().head(12).astype(int).to_dict()
     site_counts = events["site_id"].value_counts()
@@ -198,8 +205,9 @@ async def get_anomaly_events(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     sort: Literal["severity", "newest", "oldest", "duration"] = Query("severity"),
+    db: Session = Depends(get_db),
 ):
-    events = _filtered(site_id, building_id, severity, type, start, end)
+    events = _filtered(db, site_id, building_id, severity, type, start, end)
     events = sort_events(events, sort)
     page = events.iloc[offset : offset + limit]
     return {
@@ -219,10 +227,12 @@ async def get_anomaly_timeline(
     start: datetime | None = Query(None),
     end: datetime | None = Query(None),
     limit: int = Query(1000, ge=1, le=5000),
+    db: Session = Depends(get_db),
 ):
-    events = _filtered(site_id, building_id, severity, type, start, end)
+    events = _filtered(db, site_id, building_id, severity, type, start, end)
     timeline_events = sort_events(events, "newest").head(limit)
     points, gaps = _timeline_points_and_gaps(
+        db,
         site_id=site_id,
         building_id=building_id,
         events=events,
@@ -233,8 +243,11 @@ async def get_anomaly_timeline(
 
 
 @router.get("/facets", response_model=AnomalyFacetsResponse)
-async def get_anomaly_facets(site_id: str | None = Query(None)):
-    events = load_anomaly_events()
+async def get_anomaly_facets(
+    site_id: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    events = load_anomaly_events(db)
     scoped_events = events if site_id is None else events[events["site_id"] == site_id]
     return {
         "sites": sorted([str(value) for value in events["site_id"].dropna().unique()]),

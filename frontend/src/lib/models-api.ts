@@ -117,6 +117,7 @@ export interface PipelineLog {
   model_task?: string | null;
   status: string;
   mlflow_run_id?: string | null;
+  celery_task_id?: string | null;
   datasource_used?: string | null;
   execution_time_ms?: number | null;
   timestamp?: string | null;
@@ -127,7 +128,7 @@ export type ModelTask = "forecasting" | "anomaly_detection" | "prediction";
 export type TrainingDataSource = "csv" | "db";
 
 export interface TrainModelPayload {
-  site_id: string;
+  site_id: string | null;
   building_id?: string | null;
   metrics: string[];
   time_range_start: string;
@@ -298,6 +299,14 @@ export function updateModelDescription(modelName: string, payload: UpdateModelDe
 
 export function getPipelineLogs(signal?: AbortSignal) {
   return apiGet<{ limit: number; offset: number; logs: PipelineLog[] }>("/api/v1/models/logs/pipeline", signal);
+}
+
+export function cancelPipelineLog(logId: string, signal?: AbortSignal) {
+  return apiPost<{ id: string; status: string; cancelled_by: string }>(
+    `/api/v1/models/logs/${encodeURIComponent(logId)}/cancel`,
+    {},
+    signal,
+  );
 }
 
 export function trainModel(payload: TrainModelPayload, signal?: AbortSignal) {

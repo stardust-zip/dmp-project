@@ -324,15 +324,10 @@ async def trigger_training(
         )
 
     selected_algorithm = algorithm_for_task(ModelTask(request.model_task))
-    if ModelTask(request.model_task) != ModelTask.Prediction:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                f"{ModelTask(request.model_task).value} training pipeline is not "
-                "implemented yet."
-            ),
-        )
-    if len(request.metrics) != 1:
+    if (
+        ModelTask(request.model_task) == ModelTask.Prediction
+        and len(request.metrics) != 1
+    ):
         raise HTTPException(
             status_code=422,
             detail="Prediction training requires exactly one metric per model.",
@@ -343,6 +338,8 @@ async def trigger_training(
         training_request=request.model_dump(mode="json", exclude_none=True),
         pipeline_log_id=str(pipeline_log.id),
     )
+    pipeline_log.celery_task_id = task.id  # type: ignore
+    db.commit()
 
     return ModelTrainingResponse(
         message=(
@@ -451,6 +448,45 @@ async def demote_model_from_production(
     )
 
 
+@router.post("/logs/{log_id}/cancel")
+async def cancel_pipeline_log(
+    log_id: str,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Cancel a running or queued training pipeline by revoking the Celery task.
+    """
+    from uuid import UUID
+    from datetime import datetime, timezone
+
+    try:
+        log = db.get(AIPipelineLog, UUID(log_id))
+    except ValueError:
+        log = None
+
+    if log is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline log not found.")
+
+    log_status = log.status.name if hasattr(log.status, "name") else log.status
+    if log_status not in ("Running", "running"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot cancel a pipeline with status '{log_status}'.",
+        )
+
+    if log.celery_task_id:
+        celery_app.control.revoke(log.celery_task_id, terminate=True, signal="SIGTERM")
+
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    line = f"[{ts}] Pipeline cancelled by {current_user.email}."
+    log.terminal_log = f"{log.terminal_log}\n{line}" if log.terminal_log else line  # type: ignore
+    log.status = "Cancelled"  # type: ignore
+    db.commit()
+
+    return {"id": log_id, "status": "Cancelled", "cancelled_by": current_user.email}
+
+
 @router.get("/tasks/{task_id}")
 async def get_task_status(
     task_id: str,
@@ -498,6 +534,7 @@ async def get_pipeline_logs(
             ),
             "status": log.status.name if hasattr(log.status, "name") else log.status,
             "mlflow_run_id": log.mlflow_run_id,
+            "celery_task_id": log.celery_task_id,
             "datasource_used": log.datasource_used,
             "execution_time_ms": log.execution_time_ms,
             "timestamp": log.created_at,
