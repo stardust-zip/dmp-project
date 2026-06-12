@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -17,7 +18,11 @@ SPIKE_MULTIPLIER = 10.0
 # Rule-based checks
 # ---------------------------------------------------------------------------
 
-def run_rule_based_checks(df: pd.DataFrame, mlflow_run_id: str | None) -> list:
+def run_rule_based_checks(
+    df: pd.DataFrame,
+    mlflow_run_id: str | None,
+    progress_cb: "Callable[[str], None] | None" = None,
+) -> list:
     """
     Run deterministic data-quality checks over df.
     Returns list of AnomalyDetectedEvent instances (not yet committed).
@@ -27,8 +32,12 @@ def run_rule_based_checks(df: pd.DataFrame, mlflow_run_id: str | None) -> list:
     from src.models import AnomalyDetectedEvent
 
     events: list[AnomalyDetectedEvent] = []
+    buildings = list(df.groupby("building_id"))
+    total_buildings = len(buildings)
 
-    for building_id, grp in df.groupby("building_id"):
+    for i, (building_id, grp) in enumerate(buildings, start=1):
+        if progress_cb and i % 200 == 0:
+            progress_cb(f"Rule-based checks: {i}/{total_buildings} buildings processed.")
         grp = grp.sort_values("timestamp").copy()
         site_id = grp["site_id"].iloc[0] if "site_id" in grp.columns else None
         metric_type_id = grp["metric_type_id"].iloc[0] if "metric_type_id" in grp.columns else "energy"

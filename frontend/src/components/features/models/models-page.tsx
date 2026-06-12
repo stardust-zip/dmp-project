@@ -267,6 +267,7 @@ function TrainingValidationPanel({
 
 export function ModelsPage() {
   const locationPickerRef = useRef<HTMLDivElement | null>(null);
+  const terminalLogRef = useRef<HTMLPreElement | null>(null);
   const registryRefreshRunIdsRef = useRef<Set<string>>(new Set());
   const [models, setModels] = useState<RegisteredModel[]>([]);
   const [logs, setLogs] = useState<PipelineLog[]>([]);
@@ -511,6 +512,7 @@ export function ModelsPage() {
   const detailVersionPipelineLogs = detailVersions.flatMap((version) =>
     (pipelineLogsByRunId.get(version.run_id) ?? []).map((log) => ({ version, log })),
   );
+  const detailTerminalLog = detailLog ? pipelineTerminalLog(detailLog) : "";
   const selectedMetricsKey = selectedMetrics.join(",");
   const selectedTaskLabel = MODEL_TASK_OPTIONS.find((option) => option.value === modelTask)?.label ?? modelTask;
   const trainingTaskImplemented =
@@ -537,6 +539,11 @@ export function ModelsPage() {
     [dataSource, endDate, isAnomalyDetection, locationId, modelTask, selectedMetrics, startDate],
   );
   const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && dateRangeValid && !submitting && !validationLoading && trainingValidation?.valid !== false;
+
+  useEffect(() => {
+    if (!terminalLogRef.current) return;
+    terminalLogRef.current.scrollTop = terminalLogRef.current.scrollHeight;
+  }, [detailTerminalLog]);
 
   useEffect(() => {
     if (!trainModalOpen) return;
@@ -1125,7 +1132,7 @@ export function ModelsPage() {
                 </div>
               </div>
               <div className="model-section-title">Terminal Log</div>
-              <pre className="pipeline-terminal-log">{pipelineTerminalLog(detailLog)}</pre>
+              <pre ref={terminalLogRef} className="pipeline-terminal-log">{detailTerminalLog}</pre>
             </div>
             {["Running", "running"].includes(pipelineDisplayStatus(detailLog)) && (
               <div className="model-modal-foot">

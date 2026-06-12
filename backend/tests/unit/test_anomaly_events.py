@@ -6,6 +6,8 @@ from src.ml.anomaly_events import (
     load_anomaly_series,
     sort_events,
 )
+from src.ml.anomaly_detection import _anomaly_event_insert_records
+from src.ml.anomaly_detection import _filter_events_with_existing_locations
 from src.models import AnomalyDetectedEvent
 
 
@@ -28,6 +30,14 @@ class _FakeSession:
 
     def query(self, *args, **kwargs):
         return _FakeQuery(self._rows)
+
+
+class _FakeLocationSession:
+    def __init__(self, location_ids):
+        self._location_ids = location_ids
+
+    def query(self, *args, **kwargs):
+        return _FakeQuery([(location_id,) for location_id in self._location_ids])
 
 
 def _sample_rows():
@@ -153,3 +163,32 @@ def test_load_anomaly_series_filters_to_lgbm_source():
 
     assert len(series) == 2
     assert set(series["building_id"]) == {"B2"}
+
+
+def test_anomaly_event_insert_records_omits_default_managed_columns():
+    event = _sample_rows()[0]
+
+    records = _anomaly_event_insert_records([event])
+
+    assert len(records) == 1
+    assert "id" not in records[0]
+    assert "created_at" not in records[0]
+    assert records[0]["building_id"] == "B1"
+    assert records[0]["source"] == "rule_based"
+
+
+def test_filter_events_with_existing_locations_skips_orphan_events():
+    events = _sample_rows()
+    logs = []
+
+    filtered = _filter_events_with_existing_locations(
+        events,
+        _FakeLocationSession({"B1"}),
+        logs.append,
+    )
+
+    assert len(filtered) == 1
+    assert filtered[0].building_id == "B1"
+    assert logs == [
+        "Skipped 1 rule-based events for 1 buildings missing from location metadata."
+    ]

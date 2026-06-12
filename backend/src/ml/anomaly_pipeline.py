@@ -116,7 +116,7 @@ def _load_telemetry_from_db(db: Session, request: ModelTrainingRequest) -> pd.Da
         return pd.DataFrame(columns=["timestamp", "building_id", "site_id", "metric_type_id", "consumption"])
 
     df = pd.DataFrame(rows, columns=["timestamp", "consumption", "metric_type_id", "building_id", "site_id"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df.sort_values(["timestamp", "building_id"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
@@ -258,12 +258,12 @@ def load_weather_for_range(
             logger.warning("No weather data in DB and no CSV fallback found.")
             return pd.DataFrame(), []
         weather = pd.read_csv(csv_path)
-        weather["timestamp"] = pd.to_datetime(weather["timestamp"])
+        weather["timestamp"] = pd.to_datetime(weather["timestamp"], utc=True)
         for col in ["airTemperature", "dewTemperature", "windSpeed"]:
             if col in weather.columns:
                 weather[col] = pd.to_numeric(weather[col], errors="coerce")
 
-    weather["timestamp"] = pd.to_datetime(weather["timestamp"])
+    weather["timestamp"] = pd.to_datetime(weather["timestamp"], utc=True)
 
     if {"airTemperature", "dewTemperature"}.issubset(weather.columns):
         weather["temp_dew_spread"] = weather["airTemperature"] - weather["dewTemperature"]
@@ -317,6 +317,7 @@ def build_feature_matrix(
 ) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Build the full feature matrix. df must include a 168h lookback prefix for lag warmup."""
     out = df.copy()
+    out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True)
     out.sort_values(["building_id", "timestamp"], inplace=True)
 
     grp = out.groupby("building_id")["consumption"]
@@ -399,6 +400,8 @@ def build_feature_matrix(
 
     # Weather merge
     if use_weather and not weather_df.empty:
+        weather_df = weather_df.copy()
+        weather_df["timestamp"] = pd.to_datetime(weather_df["timestamp"], utc=True)
         out = out.merge(weather_df, on=["timestamp", "site_id"], how="left")
         for col in weather_feature_cols:
             if col in out.columns:

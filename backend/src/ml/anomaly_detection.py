@@ -1,6 +1,6 @@
 import logging
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from pathlib import Path
 
@@ -23,6 +23,63 @@ from src.models import AIPipelineLog, AnomalyDetectedEvent
 from src.schemas import ModelTrainingRequest
 
 logger = logging.getLogger(__name__)
+
+
+_ANOMALY_EVENT_DEFAULT_COLUMNS = {"id", "created_at"}
+
+
+def _anomaly_event_insert_records(
+    events: Sequence[AnomalyDetectedEvent],
+) -> list[dict[str, object]]:
+    return [
+        {
+            c.key: getattr(event, c.key)
+            for c in AnomalyDetectedEvent.__table__.columns
+            if c.key not in _ANOMALY_EVENT_DEFAULT_COLUMNS
+        }
+        for event in events
+    ]
+
+
+def _existing_location_ids_for_events(
+    events: Sequence[AnomalyDetectedEvent],
+    db: Session,
+) -> set[str]:
+    from src.models import Location
+
+    building_ids = sorted({event.building_id for event in events})
+    if not building_ids:
+        return set()
+
+    rows = db.query(Location.id).filter(Location.id.in_(building_ids)).all()
+    existing_ids: set[str] = set()
+    for row in rows:
+        if isinstance(row, tuple):
+            existing_ids.add(str(row[0]))
+        elif hasattr(row, "id"):
+            existing_ids.add(str(row.id))
+        else:
+            existing_ids.add(str(row[0]))
+    return existing_ids
+
+
+def _filter_events_with_existing_locations(
+    events: Sequence[AnomalyDetectedEvent],
+    db: Session,
+    append_log: Callable[[str], None],
+) -> list[AnomalyDetectedEvent]:
+    existing_ids = _existing_location_ids_for_events(events, db)
+    filtered = [event for event in events if event.building_id in existing_ids]
+    skipped = len(events) - len(filtered)
+    if skipped:
+        missing_buildings = {
+            event.building_id for event in events if event.building_id not in existing_ids
+        }
+        append_log(
+            f"Skipped {skipped:,} rule-based events for "
+            f"{len(missing_buildings):,} buildings missing from location metadata."
+        )
+    return filtered
 
 
 def train_anomaly_detection_model(
@@ -52,19 +109,24 @@ def train_anomaly_detection_model(
     append_log(f"Loaded {len(df):,} rows, {df['building_id'].nunique()} buildings.")
 
     # --- Rule-based checks ---
-    append_log("Running rule-based checks...")
-    rule_events = run_rule_based_checks(df, mlflow_run_id=mlflow_run.info.run_id)
-    if rule_events:
+    n_buildings = df["building_id"].nunique()
+    append_log(f"Running rule-based checks across {n_buildings} buildings...")
+    rule_events = run_rule_based_checks(df, mlflow_run_id=mlflow_run.info.run_id, progress_cb=append_log)
+    persisted_rule_events = _filter_events_with_existing_locations(rule_events, db, append_log)
+    if persisted_rule_events:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
-        records = [
-            {c.key: getattr(e, c.key) for c in AnomalyDetectedEvent.__table__.columns if c.key != "id"}
-            for e in rule_events
-        ]
-        stmt = pg_insert(AnomalyDetectedEvent.__table__).values(records)
-        stmt = stmt.on_conflict_do_nothing(constraint="uq_anomaly_detected_event")
-        db.execute(stmt)
+        records = _anomaly_event_insert_records(persisted_rule_events)
+        chunk_size = 500
+        for offset in range(0, len(records), chunk_size):
+            chunk = records[offset: offset + chunk_size]
+            stmt = pg_insert(AnomalyDetectedEvent.__table__).values(chunk)
+            stmt = stmt.on_conflict_do_nothing(constraint="uq_anomaly_detected_event")
+            db.execute(stmt)
         db.commit()
-    append_log(f"Rule-based checks complete: {len(rule_events)} events.")
+    append_log(
+        f"Rule-based checks complete: {len(rule_events)} events, "
+        f"{len(persisted_rule_events)} persisted."
+    )
 
     # --- Weather loading ---
     weather_df, weather_feature_cols = pd.DataFrame(), []

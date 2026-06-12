@@ -245,6 +245,7 @@ def train_model_task(
             }
 
     except Exception as e:
+        db.rollback()
         pipeline_log.status = "Failed"  # type: ignore
         pipeline_log.execution_time_ms = int((perf_counter() - start) * 1000)
         _append_terminal_log(
