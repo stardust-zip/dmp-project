@@ -28,6 +28,7 @@ from src.schemas import (
     UserResponse,
 )
 from src.tasks import celery_app, train_model_task
+from src.tasks import mark_pipeline_log_external_failure
 
 from mlflow import set_tracking_uri
 
@@ -45,6 +46,34 @@ class ModelDescriptionUpdate(BaseModel):
 def _mlflow_client() -> MlflowClient:
     set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     return MlflowClient()
+
+
+def _pipeline_log_status_value(log: AIPipelineLog) -> str:
+    return log.status.name if hasattr(log.status, "name") else str(log.status)
+
+
+def _sync_running_pipeline_log_with_celery(log: AIPipelineLog) -> bool:
+    if _pipeline_log_status_value(log) not in {"Running", "running"}:
+        return False
+    if not log.celery_task_id:
+        return False
+
+    task_result = AsyncResult(log.celery_task_id, app=celery_app)
+    task_status = str(task_result.status).upper()
+    if task_status not in {"FAILURE", "REVOKED"}:
+        return False
+
+    result = task_result.result
+    exception = (
+        result
+        if isinstance(result, BaseException)
+        else RuntimeError(str(result) if result is not None else task_status)
+    )
+    return mark_pipeline_log_external_failure(
+        log.celery_task_id,
+        exception,
+        task_state=task_status,
+    )
 
 
 def _model_version_response(
@@ -522,6 +551,9 @@ async def get_pipeline_logs(
     """
     query = db.query(AIPipelineLog).order_by(AIPipelineLog.created_at.desc())
     results = query.offset(offset).limit(limit).all()
+    if any(_sync_running_pipeline_log_with_celery(log) for log in results):
+        db.expire_all()
+        results = query.offset(offset).limit(limit).all()
 
     formatted_logs = [
         {

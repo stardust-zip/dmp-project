@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 from src.api.v1.deps import get_current_admin, get_current_user
+from src.api.v1.endpoints.models import _sync_running_pipeline_log_with_celery
 from src.database import get_db
 from src.main import app
 from src.models import Location, MetricType
@@ -541,6 +542,32 @@ def test_get_task_status_hides_result_until_task_is_ready(mock_async_result):
         "status": "PENDING",
         "result": None,
     }
+
+
+@patch("src.api.v1.endpoints.models.mark_pipeline_log_external_failure")
+@patch("src.api.v1.endpoints.models.AsyncResult")
+def test_sync_running_pipeline_log_marks_failed_celery_task(
+    mock_async_result,
+    mock_mark_failure,
+):
+    task_result = Mock()
+    task_result.status = "FAILURE"
+    task_result.result = RuntimeError("Worker exited prematurely: signal 9 (SIGKILL)")
+    mock_async_result.return_value = task_result
+    mock_mark_failure.return_value = True
+    pipeline_log = SimpleNamespace(
+        status="Running",
+        celery_task_id="task-123",
+    )
+
+    synced = _sync_running_pipeline_log_with_celery(pipeline_log)
+
+    assert synced is True
+    mock_async_result.assert_called_once()
+    mock_mark_failure.assert_called_once()
+    assert mock_mark_failure.call_args.args[0] == "task-123"
+    assert "SIGKILL" in str(mock_mark_failure.call_args.args[1])
+    assert mock_mark_failure.call_args.kwargs["task_state"] == "FAILURE"
 
 
 def test_get_pipeline_logs_returns_paginated_logs():

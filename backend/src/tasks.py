@@ -8,6 +8,7 @@ import mlflow.pyfunc
 import numpy as np
 import pandas as pd
 from celery import Celery
+from celery.signals import task_failure, task_revoked
 from mlflow.tracking import MlflowClient
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
@@ -65,6 +66,103 @@ def _append_terminal_log(db, pipeline_log: AIPipelineLog, message: str) -> None:
         f"{pipeline_log.terminal_log}\n{line}" if pipeline_log.terminal_log else line
     )
     db.commit()
+
+
+def _pipeline_log_status_value(pipeline_log: AIPipelineLog) -> str:
+    status = pipeline_log.status
+    return status.name if hasattr(status, "name") else str(status)
+
+
+def _external_task_failure_message(exception: object, task_state: str = "FAILURE") -> str:
+    exception_name = type(exception).__name__
+    exception_text = str(exception) or task_state
+    message = (
+        "Pipeline failed outside the task handler: "
+        f"{exception_name}: {exception_text}"
+    )
+    if "SIGKILL" in exception_text or "signal 9" in exception_text:
+        message += (
+            " The worker process was killed by the OS or Docker, commonly due "
+            "to memory pressure."
+        )
+    return message
+
+
+def mark_pipeline_log_external_failure(
+    celery_task_id: str | None,
+    exception: object,
+    *,
+    task_state: str = "FAILURE",
+) -> bool:
+    if not celery_task_id:
+        return False
+
+    db = SessionLocal()
+    try:
+        pipeline_log = (
+            db.query(AIPipelineLog)
+            .filter(AIPipelineLog.celery_task_id == celery_task_id)
+            .one_or_none()
+        )
+        if pipeline_log is None:
+            return False
+
+        if _pipeline_log_status_value(pipeline_log) in {"Success", "Failed", "Cancelled"}:
+            return False
+
+        message = _external_task_failure_message(exception, task_state)
+        if pipeline_log.terminal_log and message in pipeline_log.terminal_log:
+            return False
+
+        pipeline_log.status = "Failed"  # type: ignore
+        if pipeline_log.created_at:
+            created_at = pipeline_log.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            pipeline_log.execution_time_ms = int(
+                (datetime.now(timezone.utc) - created_at).total_seconds() * 1000
+            )
+        _append_terminal_log(db, pipeline_log, message)
+        return True
+    finally:
+        db.close()
+
+
+@task_failure.connect
+def _mark_training_pipeline_failed_on_worker_failure(
+    sender=None,
+    task_id: str | None = None,
+    exception: object | None = None,
+    **_: object,
+) -> None:
+    task_name = getattr(sender, "name", sender)
+    if task_name != "train_model_task":
+        return
+    mark_pipeline_log_external_failure(task_id, exception or "Task failed")
+
+
+@task_revoked.connect
+def _mark_training_pipeline_failed_on_revoke(
+    sender=None,
+    request=None,
+    terminated: bool = False,
+    signum: object | None = None,
+    expired: bool = False,
+    **_: object,
+) -> None:
+    task_name = getattr(sender, "name", sender)
+    if task_name != "train_model_task" or request is None:
+        return
+    reason = "revoked"
+    if terminated:
+        reason = f"terminated by signal {signum}"
+    elif expired:
+        reason = "expired before execution"
+    mark_pipeline_log_external_failure(
+        getattr(request, "id", None),
+        RuntimeError(f"Celery task was {reason}."),
+        task_state="REVOKED",
+    )
 
 
 @celery_app.task(bind=True, name="train_model_task")
