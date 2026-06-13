@@ -12,6 +12,13 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 SPIKE_MULTIPLIER = 10.0
+WEATHER_FEATURE_NAMES = {
+    "airTemperature",
+    "windSpeed",
+    "temp_dew_spread",
+    "airTemperature_roll24h",
+    "airTemperature_roll168h",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -144,47 +151,120 @@ def run_rule_based_checks(
 # Inference runner
 # ---------------------------------------------------------------------------
 
+def _find_production_model_version(client, model_name: str):
+    """
+    Locate the production version using alias first, then tag-based fallback.
+    Mirrors the same logic used in the API's _production_model_version helper.
+    """
+    from mlflow.exceptions import MlflowException
+
+    try:
+        return client.get_model_version_by_alias(model_name, "production")
+    except (AttributeError, MlflowException):
+        pass
+
+    try:
+        all_versions = client.search_model_versions(f"name = '{model_name}'")
+    except Exception:
+        return None
+
+    production = [
+        v for v in all_versions
+        if (getattr(v, "tags", {}) or {}).get("active") == "true"
+        or (getattr(v, "tags", {}) or {}).get("stage") == "production"
+        or getattr(v, "current_stage", None) == "Production"
+    ]
+    if not production:
+        return None
+
+    return max(production, key=lambda v: getattr(v, "last_updated_timestamp", 0) or 0)
+
+
+def _model_feature_names(model) -> list[str]:
+    feature_names = getattr(model, "feature_name_", None)
+    if feature_names:
+        return [str(feature) for feature in feature_names]
+
+    booster = getattr(model, "booster_", None) or getattr(model, "_Booster", None)
+    if booster is None:
+        return []
+
+    try:
+        return [str(feature) for feature in booster.feature_name()]
+    except Exception:
+        return []
+
+
 def load_production_anomaly_model(client) -> tuple | None:
     """
     Find the Production version of dmp_energy_anomaly_detection in MLflow.
-    Returns (model, resid_stats_df, feature_cols, cat_features, use_weather) or None.
+    Returns (model, resid_stats_df, feature_cols, cat_features, use_weather, metrics) or None.
     """
     import tempfile
 
     import mlflow.lightgbm
 
-    try:
-        versions = client.get_latest_versions("dmp_energy_anomaly_detection", stages=["Production"])
-    except Exception:
+    model_name = "dmp_energy_anomaly_detection"
+    version = _find_production_model_version(client, model_name)
+    if version is None:
         return None
 
-    if not versions:
-        return None
-
-    version = versions[0]
     run_id = version.run_id
+    version_number = str(version.version)
 
-    model = mlflow.lightgbm.load_model("models:/dmp_energy_anomaly_detection/Production")
+    model = mlflow.lightgbm.load_model(f"models:/{model_name}/{version_number}")
 
     # Download resid_stats artifact
     with tempfile.TemporaryDirectory() as tmp:
         local_path = client.download_artifacts(run_id, "resid_stats.parquet", tmp)
         resid_stats = pd.read_parquet(local_path)
 
-    # Read tags
+    # Training stores anomaly metadata on the registered model version. Older
+    # runs may also have these as run tags, so use run tags as a fallback.
     run = client.get_run(run_id)
-    tags = run.data.tags
+    run_tags = getattr(run.data, "tags", {}) or {}
+    version_tags = getattr(version, "tags", {}) or {}
+    tags = {**run_tags, **version_tags}
     feature_set = tags.get("feature_set", "")
     feature_cols = [f.strip() for f in feature_set.split(",") if f.strip()]
-    use_weather = tags.get("weather_features", "false").lower() == "true"
+    if not feature_cols:
+        feature_cols = _model_feature_names(model)
+    if not feature_cols:
+        raise ValueError(
+            "Production anomaly model is missing feature metadata. "
+            "Expected the model version tag 'feature_set' or LightGBM feature names."
+        )
+
+    weather_tag = tags.get("weather_features")
+    use_weather = (
+        str(weather_tag).lower() == "true"
+        if weather_tag is not None
+        else any(feature in WEATHER_FEATURE_NAMES for feature in feature_cols)
+    )
+    metrics = [
+        metric.strip().lower()
+        for metric in str(tags.get("metrics", "")).split(",")
+        if metric.strip()
+    ]
+    if not metrics:
+        metrics = ["electricity"]
 
     from src.ml.anomaly_pipeline import CAT_FEATURES
     cat_features = [c for c in CAT_FEATURES if c in feature_cols]
 
-    return model, resid_stats, feature_cols, cat_features, use_weather
+    return model, resid_stats, feature_cols, cat_features, use_weather, metrics
 
 
 def run_hourly_inference(db: Session, target_hour: datetime) -> int:
+    """Score target_hour against the production model. Returns rows written."""
+    return run_hourly_inference_with_diagnostics(db, target_hour)
+
+
+def run_hourly_inference_with_diagnostics(
+    db: Session,
+    target_hour: datetime,
+    diagnostic_cb: Callable[[str], None] | None = None,
+) -> int:
     """Score target_hour against the production model. Returns rows written."""
     from mlflow.tracking import MlflowClient
 
@@ -201,7 +281,7 @@ def run_hourly_inference(db: Session, target_hour: datetime) -> int:
         logger.info("No production anomaly model found; skipping inference.")
         return 0
 
-    model, resid_stats, feature_cols, cat_features, use_weather = result
+    model, resid_stats, feature_cols, cat_features, use_weather, _metrics = result
 
     # Fetch 168h history for lag warmup
     lookback_start = target_hour - timedelta(hours=168)
@@ -262,7 +342,13 @@ def run_hourly_inference(db: Session, target_hour: datetime) -> int:
     for c in missing:
         target_df[c] = np.nan
 
-    scored = score_anomalies(model, resid_stats, target_df, feature_cols)
+    scored = score_anomalies(
+        model,
+        resid_stats,
+        target_df,
+        feature_cols,
+        diagnostic_cb=diagnostic_cb,
+    )
 
     # Build ORM objects and upsert
     from sqlalchemy.dialects.postgresql import insert as pg_insert

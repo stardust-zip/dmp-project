@@ -197,6 +197,7 @@ def train_anomaly_detection_model(
         client.set_model_version_tag(v.name, v.version, "model_task", "anomaly_detection")
         client.set_model_version_tag(v.name, v.version, "weather_features", str(use_weather).lower())
         client.set_model_version_tag(v.name, v.version, "feature_set", ",".join(feature_cols))
+        client.set_model_version_tag(v.name, v.version, "metrics", ",".join(request.metrics))
 
     append_log("Model registered as dmp_energy_anomaly_detection.")
 

@@ -5,6 +5,7 @@ import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
 import { displayLocationName, displayModelName, humanizeIdentifier, locationSearchText } from "@/lib/format";
 import {
+  backfillAnomalyInference,
   cancelPipelineLog,
   demoteModel,
   getLocationOptions,
@@ -16,6 +17,7 @@ import {
   trainModel,
   updateModelDescription,
   validateTrainingRequest,
+  type AnomalyBackfillPayload,
   type LocationOption,
   type MetricOption,
   type ModelTask,
@@ -309,6 +311,10 @@ export function ModelsPage() {
   const [modelTaskFilter, setModelTaskFilter] = useState<"all" | ModelTask | "unknown">("all");
   const [modelStageFilter, setModelStageFilter] = useState<"all" | "production" | "non_production">("all");
   const [modelMetricFilter, setModelMetricFilter] = useState("all");
+  const [backfillModalOpen, setBackfillModalOpen] = useState(false);
+  const [backfillStartDate, setBackfillStartDate] = useState("2017-10-01");
+  const [backfillEndDate, setBackfillEndDate] = useState("2017-12-31");
+  const [backfillSubmitting, setBackfillSubmitting] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -777,6 +783,28 @@ export function ModelsPage() {
     }
   }
 
+  async function onBackfillInference() {
+    setBackfillSubmitting(true);
+    setError(null);
+    setTrainMessage(null);
+
+    try {
+      const payload: AnomalyBackfillPayload = {
+        time_range_start: isoFromDateInput(backfillStartDate),
+        time_range_end: isoFromDateInput(backfillEndDate, true),
+      };
+      const response = await backfillAnomalyInference(payload);
+      setTrainMessage(`${response.message} Task ${response.task_id} queued.`);
+      setBackfillModalOpen(false);
+      setPipelineModalOpen(true);
+      await refreshLogs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start backfill inference.");
+    } finally {
+      setBackfillSubmitting(false);
+    }
+  }
+
   async function onSaveModelDescription() {
     if (!detailModel) return;
 
@@ -810,6 +838,10 @@ export function ModelsPage() {
           <button className="btn" type="button" onClick={() => setPipelineModalOpen(true)}>
             <Icon name="table" />
             <span>Pipeline</span>
+          </button>
+          <button className="btn" type="button" onClick={() => setBackfillModalOpen(true)}>
+            <Icon name="refresh" />
+            <span>Backfill Inference</span>
           </button>
           <button className="btn btn-primary" type="button" onClick={() => setTrainModalOpen(true)}>
             <Icon name="spark2" />
@@ -887,6 +919,68 @@ export function ModelsPage() {
           )}
         </Card>
       </div>
+
+      {backfillModalOpen && (
+        <>
+          <button className="overlay" type="button" aria-label="Close backfill dialog" onClick={() => setBackfillModalOpen(false)} />
+          <div className="model-modal train-model-modal" role="dialog" aria-modal="true" aria-label="Backfill inference">
+            <div className="model-modal-head">
+              <div>
+                <h2>Backfill Inference</h2>
+                <span>Score rule-based and LGBm anomalies for a historical date range and save to DB.</span>
+              </div>
+              <button className="icon-btn" type="button" aria-label="Close backfill dialog" onClick={() => setBackfillModalOpen(false)}>
+                <Icon name="x" />
+              </button>
+            </div>
+            <div className="model-modal-body">
+              <div className="train-model-form">
+                <Field label="Date range">
+                  <div className="date-range-row">
+                    <div className="date-range-segment">
+                      <Icon name="calendar" />
+                      <div className="date-range-segment-body">
+                        <span>From</span>
+                        <input type="date" value={backfillStartDate} onChange={(event) => setBackfillStartDate(event.target.value)} />
+                      </div>
+                    </div>
+                    <div className="date-range-segment">
+                      <Icon name="calendar" />
+                      <div className="date-range-segment-body">
+                        <span>To</span>
+                        <input type="date" value={backfillEndDate} onChange={(event) => setBackfillEndDate(event.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+                </Field>
+              </div>
+              <div className="training-validation">
+                <Icon name="info" />
+                <span>
+                  Requires a production anomaly detection model in MLflow. Rule-based checks run once
+                  over the full range; LGBm inference runs hour by hour. Results are saved to the DB
+                  and will appear in the Anomaly Detection simulator.
+                </span>
+              </div>
+            </div>
+            <div className="model-modal-foot">
+              <button className="btn" type="button" onClick={() => setBackfillModalOpen(false)}>
+                <Icon name="x" />
+                <span>Cancel</span>
+              </button>
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={onBackfillInference}
+                disabled={backfillSubmitting || !backfillStartDate || !backfillEndDate || backfillEndDate <= backfillStartDate}
+              >
+                <Icon name={backfillSubmitting ? "refresh" : "play"} className={backfillSubmitting ? "spin" : undefined} />
+                <span>{backfillSubmitting ? "Queueing..." : "Run Backfill"}</span>
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {trainModalOpen && (
         <>

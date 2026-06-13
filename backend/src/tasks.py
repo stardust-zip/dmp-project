@@ -1,5 +1,5 @@
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from uuid import UUID
@@ -128,6 +128,9 @@ def mark_pipeline_log_external_failure(
         db.close()
 
 
+_MONITORED_TASK_NAMES = {"train_model_task", "run_anomaly_backfill_task"}
+
+
 @task_failure.connect
 def _mark_training_pipeline_failed_on_worker_failure(
     sender=None,
@@ -136,7 +139,7 @@ def _mark_training_pipeline_failed_on_worker_failure(
     **_: object,
 ) -> None:
     task_name = getattr(sender, "name", sender)
-    if task_name != "train_model_task":
+    if task_name not in _MONITORED_TASK_NAMES:
         return
     mark_pipeline_log_external_failure(task_id, exception or "Task failed")
 
@@ -151,7 +154,7 @@ def _mark_training_pipeline_failed_on_revoke(
     **_: object,
 ) -> None:
     task_name = getattr(sender, "name", sender)
-    if task_name != "train_model_task" or request is None:
+    if task_name not in _MONITORED_TASK_NAMES or request is None:
         return
     reason = "revoked"
     if terminated:
@@ -765,6 +768,102 @@ def _mock_training_metrics(request: ModelTrainingRequest) -> dict[str, float]:
     return {key: min(value + algorithm_boost, 0.99) for key, value in scores.items()}
 
 
+def _utc_timestamp(value: datetime) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    return timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+
+
+def _load_anomaly_backfill_telemetry_from_csv(
+    db,
+    *,
+    metrics: list[str],
+    start: datetime,
+    end: datetime,
+) -> pd.DataFrame:
+    """Load cleaned meter CSV rows with 168h lookback and DB location metadata."""
+    empty = pd.DataFrame(
+        columns=[
+            "timestamp",
+            "consumption",
+            "metric_type_id",
+            "building_id",
+            "site_id",
+            "sqm",
+            "primaryspaceusage",
+            "timezone",
+        ]
+    )
+    lookback_start = _utc_timestamp(start - timedelta(hours=168))
+    range_end = _utc_timestamp(end)
+
+    frames = []
+    missing_paths = []
+    for metric in metrics:
+        csv_path = cleaned_meter_csv_path(metric)
+        if not csv_path.exists():
+            missing_paths.append(str(csv_path))
+            continue
+
+        raw = pd.read_csv(csv_path)
+        if "timestamp" not in raw.columns:
+            raise ValueError(f"Meter data file is missing timestamp column: {csv_path}")
+
+        raw["timestamp"] = pd.to_datetime(raw["timestamp"], utc=True, errors="coerce")
+        raw = raw[
+            (raw["timestamp"] >= lookback_start)
+            & (raw["timestamp"] <= range_end)
+        ]
+        if raw.empty:
+            continue
+
+        building_cols = [column for column in raw.columns if column != "timestamp"]
+        melted = raw.melt(
+            id_vars=["timestamp"],
+            value_vars=building_cols,
+            var_name="building_id",
+            value_name="consumption",
+        )
+        melted["building_id"] = melted["building_id"].astype(str)
+        melted["consumption"] = pd.to_numeric(melted["consumption"], errors="coerce")
+        melted["metric_type_id"] = metric
+        frames.append(melted)
+
+    if not frames:
+        if missing_paths:
+            raise FileNotFoundError(
+                "No cleaned meter CSV files found for backfill metrics: "
+                + ", ".join(missing_paths)
+            )
+        return empty
+
+    df = pd.concat(frames, ignore_index=True)
+    df.sort_values(["timestamp", "building_id"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    loc_rows = (
+        db.query(Location.id, Location.parent_id, Location.metadata_)
+        .filter(Location.id.in_(df["building_id"].unique().tolist()))
+        .all()
+    )
+    loc_meta = {
+        str(loc_id): {
+            "site_id": parent_id,
+            "sqm": (meta or {}).get("sqm"),
+            "primaryspaceusage": (meta or {}).get("primaryspaceusage"),
+            "timezone": (meta or {}).get("timezone"),
+        }
+        for loc_id, parent_id, meta in loc_rows
+    }
+
+    df["site_id"] = df["building_id"].map(lambda b: loc_meta.get(b, {}).get("site_id"))
+    df["sqm"] = df["building_id"].map(lambda b: loc_meta.get(b, {}).get("sqm"))
+    df["primaryspaceusage"] = df["building_id"].map(
+        lambda b: loc_meta.get(b, {}).get("primaryspaceusage")
+    )
+    df["timezone"] = df["building_id"].map(lambda b: loc_meta.get(b, {}).get("timezone"))
+    return df
+
+
 @celery_app.task(bind=True, name="run_anomaly_inference_task")
 def run_anomaly_inference_task(self):
     from datetime import datetime, timezone
@@ -776,6 +875,345 @@ def run_anomaly_inference_task(self):
         target_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         count = run_hourly_inference(db, target_hour)
         return {"rows_written": count, "target_hour": target_hour.isoformat()}
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="run_anomaly_backfill_task")
+def run_anomaly_backfill_task(
+    self,
+    start_iso: str,
+    end_iso: str,
+    pipeline_log_id: str | None = None,
+):
+    """
+    Backfill rule-based and LGBm anomaly inference for a historical date range.
+    Rule-based checks run once over the full range; LGBm inference runs hour by hour.
+    """
+    from datetime import datetime, timezone
+
+    import pandas as pd
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from src.ml.anomaly_inference import (
+        load_production_anomaly_model,
+        run_rule_based_checks,
+    )
+    from src.ml.anomaly_pipeline import (
+        build_feature_matrix,
+        load_weather_for_range,
+        score_anomalies,
+    )
+    from src.models import AnomalyDetectedEvent, Location
+
+    start = datetime.fromisoformat(start_iso).replace(tzinfo=timezone.utc)
+    end = datetime.fromisoformat(end_iso).replace(tzinfo=timezone.utc)
+
+    db = SessionLocal()
+    pipeline_log = None
+
+    if pipeline_log_id:
+        try:
+            pipeline_log = db.get(AIPipelineLog, UUID(pipeline_log_id))
+        except ValueError:
+            pipeline_log = None
+
+    if pipeline_log is None:
+        pipeline_log = AIPipelineLog(
+            type="Inference",
+            model_task="anomaly_detection",
+            datasource_used="csv",
+            status="Running",
+            execution_time_ms=0,
+            mlflow_run_id="backfill",
+            terminal_log="",
+        )
+        db.add(pipeline_log)
+        db.commit()
+    else:
+        pipeline_log.status = "Running"  # type: ignore
+        db.commit()
+
+    start_perf = perf_counter()
+
+    try:
+        _append_terminal_log(
+            db, pipeline_log,
+            f"Backfill started: {start_iso} → {end_iso}",
+        )
+
+        mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
+        model_result = load_production_anomaly_model(MlflowClient())
+        if model_result is None:
+            raise ValueError("No production anomaly model found for backfill inference.")
+
+        model, resid_stats, feature_cols, _cat_features, use_weather, metrics = model_result
+        _append_terminal_log(
+            db,
+            pipeline_log,
+            "Loading telemetry from cleaned CSV for metrics: " + ", ".join(metrics),
+        )
+
+        telemetry_df = _load_anomaly_backfill_telemetry_from_csv(
+            db,
+            metrics=metrics,
+            start=start,
+            end=end,
+        )
+        if telemetry_df.empty:
+            raise ValueError("No cleaned CSV telemetry found for the requested backfill range.")
+
+        target_start = _utc_timestamp(start)
+        target_end = _utc_timestamp(end)
+        range_df = telemetry_df[
+            (telemetry_df["timestamp"] >= target_start)
+            & (telemetry_df["timestamp"] <= target_end)
+        ].copy()
+        if range_df.empty:
+            raise ValueError("No cleaned CSV telemetry found inside the requested backfill range.")
+
+        _append_terminal_log(
+            db,
+            pipeline_log,
+            (
+                f"Loaded CSV telemetry: {len(range_df):,} target rows, "
+                f"{range_df['building_id'].nunique()} buildings "
+                f"({len(telemetry_df):,} rows including lag warmup)."
+            ),
+        )
+
+        # --- Rule-based checks over full CSV-backed range ---
+        _append_terminal_log(
+            db, pipeline_log,
+            f"Running rule-based checks: {len(range_df):,} rows, {range_df['building_id'].nunique()} buildings.",
+        )
+        rule_events = run_rule_based_checks(
+            range_df,
+            mlflow_run_id=None,
+            progress_cb=lambda msg: _append_terminal_log(db, pipeline_log, msg),
+        )
+
+        existing_loc_ids = {
+            str(row[0])
+            for row in db.query(Location.id)
+            .filter(Location.id.in_(sorted({e.building_id for e in rule_events})))
+            .all()
+        }
+        persisted = [e for e in rule_events if e.building_id in existing_loc_ids]
+        skipped = len(rule_events) - len(persisted)
+
+        if persisted:
+            records = [
+                {
+                    c.key: getattr(event, c.key)
+                    for c in AnomalyDetectedEvent.__table__.columns
+                    if c.key not in {"id", "created_at"}
+                }
+                for event in persisted
+            ]
+            chunk_size = 500
+            for offset_idx in range(0, len(records), chunk_size):
+                chunk = records[offset_idx: offset_idx + chunk_size]
+                stmt = pg_insert(AnomalyDetectedEvent.__table__).values(chunk)
+                stmt = stmt.on_conflict_do_nothing(constraint="uq_anomaly_detected_event")
+                db.execute(stmt)
+            db.commit()
+
+        _append_terminal_log(
+            db, pipeline_log,
+            f"Rule-based complete: {len(rule_events)} events, "
+            f"{len(persisted)} persisted, {skipped} skipped (unknown buildings).",
+        )
+
+        # --- LGBm inference over CSV-backed feature matrix ---
+        total_hours = int((end - start).total_seconds() // 3600) + 1
+        _append_terminal_log(
+            db, pipeline_log,
+            f"Starting LGBm inference for {total_hours} hours from CSV telemetry...",
+        )
+
+        logged_lgbm_diagnostic = False
+
+        def append_lgbm_diagnostic_once(message: str) -> None:
+            nonlocal logged_lgbm_diagnostic
+            if logged_lgbm_diagnostic:
+                return
+            logged_lgbm_diagnostic = True
+            _append_terminal_log(db, pipeline_log, message)
+
+        site_ids = telemetry_df["site_id"].dropna().unique().tolist()
+        weather_df, weather_feature_cols = pd.DataFrame(), []
+        if use_weather:
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                f"Loading weather features for {len(site_ids)} sites...",
+            )
+            weather_df, weather_feature_cols = load_weather_for_range(
+                db,
+                site_ids,
+                target_start - pd.Timedelta(hours=168),
+                target_end,
+            )
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                f"Weather feature load complete: {weather_feature_cols or 'none'}.",
+            )
+        else:
+            _append_terminal_log(db, pipeline_log, "Weather features disabled for this model.")
+
+        _append_terminal_log(
+            db,
+            pipeline_log,
+            f"Building feature matrix for {len(telemetry_df):,} CSV rows...",
+        )
+        feature_df, _, _ = build_feature_matrix(
+            telemetry_df,
+            use_weather,
+            weather_df,
+            weather_feature_cols,
+        )
+        _append_terminal_log(
+            db,
+            pipeline_log,
+            f"Feature matrix complete: {len(feature_df):,} rows, {len(feature_cols)} model features.",
+        )
+        score_df = feature_df[
+            (feature_df["timestamp"] >= target_start)
+            & (feature_df["timestamp"] <= target_end)
+        ].dropna(subset=["consumption"]).copy()
+        _append_terminal_log(
+            db,
+            pipeline_log,
+            f"LGBm scoring frame prepared: {len(score_df):,} rows, {score_df['building_id'].nunique()} buildings.",
+        )
+
+        if score_df.empty:
+            total_written = 0
+            _append_terminal_log(db, pipeline_log, "No non-missing CSV rows available for LGBm scoring.")
+        else:
+            existing_loc_ids = {
+                str(row[0])
+                for row in db.query(Location.id)
+                .filter(Location.id.in_(score_df["building_id"].astype(str).unique().tolist()))
+                .all()
+            }
+            before_filter = len(score_df)
+            score_df = score_df[score_df["building_id"].astype(str).isin(existing_loc_ids)].copy()
+            skipped_lgbm = before_filter - len(score_df)
+
+            score_chunk_size = 50_000
+            scored_chunks = []
+            for offset_idx in range(0, len(score_df), score_chunk_size):
+                chunk = score_df.iloc[offset_idx: offset_idx + score_chunk_size].copy()
+                _append_terminal_log(
+                    db,
+                    pipeline_log,
+                    (
+                        f"LGBm scoring progress: "
+                        f"{min(offset_idx + len(chunk), len(score_df)):,}/{len(score_df):,} rows..."
+                    ),
+                )
+                scored_chunks.append(
+                    score_anomalies(
+                        model,
+                        resid_stats,
+                        chunk,
+                        feature_cols,
+                        diagnostic_cb=append_lgbm_diagnostic_once,
+                    )
+                )
+            scored = pd.concat(scored_chunks, ignore_index=True)
+            _append_terminal_log(
+                db,
+                pipeline_log,
+                f"LGBm scoring complete: {len(scored):,} scored rows.",
+            )
+
+            records = []
+            for _, row in scored.iterrows():
+                records.append({
+                    "building_id": str(row["building_id"]),
+                    "site_id": str(row.get("site_id", "")),
+                    "timestamp": row["timestamp"],
+                    "metric_type_id": str(row.get("metric_type_id", "energy")),
+                    "primary_space_usage": row.get("primaryspaceusage"),
+                    "actual_value": float(row["consumption"]) if pd.notna(row.get("consumption")) else None,
+                    "predicted_value": float(row["predicted_value"]) if pd.notna(row.get("predicted_value")) else None,
+                    "residual": float(row["residual"]) if pd.notna(row.get("residual")) else None,
+                    "residual_z": float(row["residual_z"]) if pd.notna(row.get("residual_z")) else None,
+                    "anomaly_score": float(row["anomaly_score"]) if pd.notna(row.get("anomaly_score")) else None,
+                    "is_anomaly": bool(row["is_anomaly"]),
+                    "direction": str(row["direction"]) if pd.notna(row.get("direction")) else None,
+                    "severity": str(row["severity"]),
+                    "source": "lgbm",
+                    "mlflow_run_id": None,
+                })
+
+            chunk_size = 50_000
+            for offset_idx in range(0, len(records), chunk_size):
+                chunk = records[offset_idx: offset_idx + chunk_size]
+                stmt = pg_insert(AnomalyDetectedEvent.__table__).values(chunk)
+                stmt = stmt.on_conflict_do_update(
+                    constraint="uq_anomaly_detected_event",
+                    set_={
+                        "predicted_value": stmt.excluded.predicted_value,
+                        "residual": stmt.excluded.residual,
+                        "residual_z": stmt.excluded.residual_z,
+                        "anomaly_score": stmt.excluded.anomaly_score,
+                        "is_anomaly": stmt.excluded.is_anomaly,
+                        "direction": stmt.excluded.direction,
+                        "severity": stmt.excluded.severity,
+                    },
+                )
+                db.execute(stmt)
+                if offset_idx == 0 or (offset_idx + len(chunk)) % 5_000 == 0 or offset_idx + len(chunk) == len(records):
+                    _append_terminal_log(
+                        db,
+                        pipeline_log,
+                        (
+                            f"LGBm persistence progress: "
+                            f"{offset_idx + len(chunk):,}/{len(records):,} rows written..."
+                        ),
+                    )
+            db.commit()
+            total_written = len(records)
+            if skipped_lgbm:
+                _append_terminal_log(
+                    db,
+                    pipeline_log,
+                    f"LGBm skipped {skipped_lgbm:,} rows for buildings missing from location metadata.",
+                )
+
+        _append_terminal_log(
+            db, pipeline_log,
+            f"LGBm inference complete: {total_hours} hours, {total_written} rows written.",
+        )
+
+        pipeline_log.execution_time_ms = int((perf_counter() - start_perf) * 1000)
+        pipeline_log.status = "Success"  # type: ignore
+        _append_terminal_log(
+            db, pipeline_log,
+            f"Backfill finished in {pipeline_log.execution_time_ms} ms.",
+        )
+        db.commit()
+
+        return {
+            "message": "Anomaly backfill inference complete.",
+            "hours_processed": total_hours,
+            "lgbm_events_written": total_written,
+        }
+
+    except Exception as e:
+        db.rollback()
+        if pipeline_log is not None:
+            pipeline_log.status = "Failed"  # type: ignore
+            pipeline_log.execution_time_ms = int((perf_counter() - start_perf) * 1000)
+            _append_terminal_log(db, pipeline_log, f"Backfill failed: {type(e).__name__}: {e}")
+            db.commit()
+        raise
+
     finally:
         db.close()
 

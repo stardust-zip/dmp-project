@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from celery.result import AsyncResult
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from mlflow.exceptions import MlflowException
@@ -27,7 +28,7 @@ from src.schemas import (
     TrainingDataSource,
     UserResponse,
 )
-from src.tasks import celery_app, train_model_task
+from src.tasks import celery_app, run_anomaly_backfill_task, train_model_task
 from src.tasks import mark_pipeline_log_external_failure
 
 from mlflow import set_tracking_uri
@@ -475,6 +476,61 @@ async def demote_model_from_production(
         run_id=run_id,
         promoted_by=current_user.email,
     )
+
+
+class AnomalyBackfillRequest(BaseModel):
+    time_range_start: datetime
+    time_range_end: datetime
+
+
+@router.post("/anomaly/backfill")
+async def trigger_anomaly_backfill(
+    payload: AnomalyBackfillRequest,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Queue a backfill inference job that scores rule-based and LGBm anomalies
+    for every hour in the requested historical date range.
+    """
+    start = payload.time_range_start.replace(tzinfo=timezone.utc) if payload.time_range_start.tzinfo is None else payload.time_range_start.astimezone(timezone.utc)
+    end = payload.time_range_end.replace(tzinfo=timezone.utc) if payload.time_range_end.tzinfo is None else payload.time_range_end.astimezone(timezone.utc)
+
+    if end <= start:
+        raise HTTPException(status_code=422, detail="time_range_end must be after time_range_start.")
+
+    total_hours = int((end - start).total_seconds() // 3600) + 1
+    if total_hours > 8760:
+        raise HTTPException(status_code=422, detail="Backfill range cannot exceed 365 days (8 760 hours).")
+
+    pipeline_log = AIPipelineLog(
+        type="Inference",
+        model_task="anomaly_detection",
+        datasource_used="csv",
+        status="Running",
+        execution_time_ms=0,
+        mlflow_run_id="backfill",
+        terminal_log="",
+    )
+    db.add(pipeline_log)
+    db.commit()
+
+    task = run_anomaly_backfill_task.delay(
+        start_iso=start.isoformat(),
+        end_iso=end.isoformat(),
+        pipeline_log_id=str(pipeline_log.id),
+    )
+    pipeline_log.celery_task_id = task.id  # type: ignore
+    db.commit()
+
+    return {
+        "message": f"Anomaly backfill queued for {total_hours} hours.",
+        "task_id": task.id,
+        "pipeline_log_id": str(pipeline_log.id),
+        "time_range_start": start.isoformat(),
+        "time_range_end": end.isoformat(),
+        "triggered_by": current_user.email,
+    }
 
 
 @router.post("/logs/{log_id}/cancel")

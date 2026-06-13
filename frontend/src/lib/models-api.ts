@@ -389,3 +389,21 @@ export function updateDevice(deviceId: string, payload: UpdateDevicePayload, sig
 export function deactivateDevice(deviceId: string, signal?: AbortSignal) {
   return apiPost<DeviceOption>(`/api/v1/metadata/devices/${encodeURIComponent(deviceId)}/deactivate`, {}, signal);
 }
+
+export interface AnomalyBackfillPayload {
+  time_range_start: string;
+  time_range_end: string;
+}
+
+export interface AnomalyBackfillResponse {
+  message: string;
+  task_id: string;
+  pipeline_log_id: string;
+  time_range_start: string;
+  time_range_end: string;
+  triggered_by: string;
+}
+
+export function backfillAnomalyInference(payload: AnomalyBackfillPayload, signal?: AbortSignal) {
+  return apiPost<AnomalyBackfillResponse>("/api/v1/models/anomaly/backfill", payload, signal);
+}

@@ -10,9 +10,10 @@ from src.ml.anomaly_events import (
     event_records,
     filter_events,
     filter_series,
-    load_anomaly_events,
+    load_anomaly_facets,
     sort_events,
 )
+from loguru import logger
 from src.schemas import (
     AnomalyEventsResponse,
     AnomalyFacetsResponse,
@@ -27,8 +28,8 @@ def _query_time(value: datetime | None) -> pd.Timestamp | None:
     if value is None:
         return None
     if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc).replace(tzinfo=None)
-    return pd.Timestamp(value)
+        return pd.Timestamp(value.astimezone(timezone.utc))
+    return pd.Timestamp(value, tz="UTC")
 
 
 def _filtered(
@@ -177,7 +178,9 @@ async def get_anomaly_overview(
     end: datetime | None = Query(None),
     db: Session = Depends(get_db),
 ):
+    logger.info("Anomaly overview requested — site={} building={} severity={} type={} start={} end={}", site_id, building_id, severity, type, start, end)
     events = _filtered(db, site_id, building_id, severity, type, start, end)
+    logger.info("Anomaly overview — {} events matched", len(events))
     severity_counts = {key: int((events["severity"] == key).sum()) for key in SEVERITIES}
     type_counts = events["type"].value_counts().head(12).astype(int).to_dict()
     site_counts = events["site_id"].value_counts()
@@ -207,7 +210,9 @@ async def get_anomaly_events(
     sort: Literal["severity", "newest", "oldest", "duration"] = Query("severity"),
     db: Session = Depends(get_db),
 ):
+    logger.info("Anomaly events requested — site={} building={} severity={} type={} start={} end={} limit={} offset={} sort={}", site_id, building_id, severity, type, start, end, limit, offset, sort)
     events = _filtered(db, site_id, building_id, severity, type, start, end)
+    logger.info("Anomaly events — {} events matched", len(events))
     events = sort_events(events, sort)
     page = events.iloc[offset : offset + limit]
     return {
@@ -229,7 +234,9 @@ async def get_anomaly_timeline(
     limit: int = Query(1000, ge=1, le=5000),
     db: Session = Depends(get_db),
 ):
+    logger.info("Anomaly timeline requested — site={} building={} severity={} type={} start={} end={} limit={}", site_id, building_id, severity, type, start, end, limit)
     events = _filtered(db, site_id, building_id, severity, type, start, end)
+    logger.info("Anomaly timeline — {} events matched, building series fetched: {}", len(events), bool(building_id))
     timeline_events = sort_events(events, "newest").head(limit)
     points, gaps = _timeline_points_and_gaps(
         db,
@@ -247,12 +254,15 @@ async def get_anomaly_facets(
     site_id: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    events = load_anomaly_events(db)
-    scoped_events = events if site_id is None else events[events["site_id"] == site_id]
-    return {
-        "sites": sorted([str(value) for value in events["site_id"].dropna().unique()]),
-        "buildings": sorted([str(value) for value in scoped_events["building_id"].dropna().unique()]),
-        "severities": SEVERITIES,
-        "types": sorted([str(value) for value in scoped_events["type"].dropna().unique()]),
-        "primary_usage_types": sorted([str(value) for value in scoped_events["primary_space_usage"].dropna().unique()]),
-    }
+    logger.info("Anomaly detection tab opened — facets requested (site={})", site_id)
+    response = load_anomaly_facets(db, site_id=site_id)
+    logger.info(
+        "Anomaly facets loaded - sites={} primary_usage_types={} buildings={} site_sample={} primary_usage_sample={} building_sample={}",
+        len(response["sites"]),
+        len(response["primary_usage_types"]),
+        len(response["buildings"]),
+        response["sites"][:5],
+        response["primary_usage_types"][:5],
+        response["buildings"][:5],
+    )
+    return response
