@@ -1,3 +1,4 @@
+import gc
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -901,6 +902,7 @@ def run_anomaly_backfill_task(
     )
     from src.ml.anomaly_pipeline import (
         build_feature_matrix,
+        downcast_telemetry_dtypes,
         load_weather_for_range,
         score_anomalies,
     )
@@ -1068,12 +1070,15 @@ def run_anomaly_backfill_task(
             pipeline_log,
             f"Building feature matrix for {len(telemetry_df):,} CSV rows...",
         )
+        downcast_telemetry_dtypes(telemetry_df)
         feature_df, _, _ = build_feature_matrix(
             telemetry_df,
             use_weather,
             weather_df,
             weather_feature_cols,
         )
+        del telemetry_df, weather_df
+        gc.collect()
         _append_terminal_log(
             db,
             pipeline_log,

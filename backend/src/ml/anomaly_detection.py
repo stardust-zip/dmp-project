@@ -1,3 +1,4 @@
+import gc
 import logging
 import tempfile
 from collections.abc import Callable, Sequence
@@ -14,6 +15,7 @@ from src.ml.anomaly_inference import run_rule_based_checks
 from src.ml.anomaly_pipeline import (
     build_feature_matrix,
     compute_residual_stats,
+    downcast_telemetry_dtypes,
     load_telemetry_for_training,
     load_weather_for_range,
     score_anomalies,
@@ -106,6 +108,7 @@ def train_anomaly_detection_model(
     df = load_telemetry_for_training(db, request)
     if df.empty:
         raise ValueError("No telemetry data found for the requested date range.")
+    downcast_telemetry_dtypes(df)
     append_log(f"Loaded {len(df):,} rows, {df['building_id'].nunique()} buildings.")
 
     # --- Rule-based checks ---
@@ -143,6 +146,8 @@ def train_anomaly_detection_model(
     # --- Feature matrix ---
     append_log("Building feature matrix...")
     feature_df, feature_cols, cat_features = build_feature_matrix(df, use_weather, weather_df, weather_feature_cols)
+    del df, weather_df
+    gc.collect()
     append_log(f"Feature matrix: {len(feature_df):,} rows × {len(feature_cols)} features.")
 
     # --- Train ---

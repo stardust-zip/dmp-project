@@ -310,6 +310,15 @@ def _build_holiday_lookup(df: pd.DataFrame, years: list[int]) -> pd.DataFrame:
     return pd.DataFrame(records) if records else pd.DataFrame(columns=["site_id", "date"])
 
 
+def downcast_telemetry_dtypes(df: pd.DataFrame) -> None:
+    """Downcast float64→float32 and int64→int32 in-place before feature matrix build."""
+    for col in df.columns:
+        if df[col].dtype == "float64":
+            df[col] = df[col].astype("float32")
+        elif df[col].dtype == "int64":
+            df[col] = df[col].astype("int32")
+
+
 def build_feature_matrix(
     df: pd.DataFrame,
     use_weather: bool,
