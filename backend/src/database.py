@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
@@ -11,11 +12,15 @@ engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Locate alembic.ini relative to this file (backend/src/database.py -> backend/../alembic.ini)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ALEMBIC_INI_PATH = _PROJECT_ROOT / "alembic.ini"
 
 def init_db():
     """Initializes the database tables (creates them if they don't exist)."""
     Base.metadata.create_all(bind=engine)
     _ensure_user_profile_columns()
+    _ensure_pipeline_log_schema()
 
 
 def _ensure_user_profile_columns():
@@ -52,6 +57,24 @@ def _ensure_user_profile_columns():
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+
+
+def _ensure_pipeline_log_schema():
+    inspector = inspect(engine)
+    if "ai_pipeline_log" not in inspector.get_table_names():
+        return
+
+    with engine.begin() as connection:
+        if engine.dialect.name == "postgresql":
+            connection.execute(text(
+                "ALTER TYPE job_status ADD VALUE IF NOT EXISTS 'Cancelled'"
+            ))
+
+        existing_columns = {col["name"] for col in inspector.get_columns("ai_pipeline_log")}
+        if "celery_task_id" not in existing_columns:
+            connection.execute(text(
+                "ALTER TABLE ai_pipeline_log ADD COLUMN celery_task_id VARCHAR"
+            ))
 
 
 def get_db():

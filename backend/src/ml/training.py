@@ -33,7 +33,7 @@ def create_queued_pipeline_log(
         mlflow_run_id="pending",
         terminal_log=(
             f"[{_terminal_timestamp()}] Queued training pipeline "
-            f"task={model_task_value} site={request.site_id} "
+            f"task={model_task_value} site={request.site_id or 'all'} "
             f"building={request.building_id or '-'} metrics={','.join(request.metrics)} "
             f"source={TrainingDataSource(request.data_source).value}"
         ),
@@ -94,11 +94,11 @@ def validate_training_request(
     start = _to_utc(request.time_range_start)
     end = _to_utc(request.time_range_end)
 
-    site = _get_location_ref(db, request.site_id)
+    site = _get_location_ref(db, request.site_id) if request.site_id else None
     building = (
         _get_location_ref(db, request.building_id) if request.building_id else None
     )
-    if site is None:
+    if request.site_id and site is None:
         errors.append(f"Unknown site/building: {request.site_id}")
     if request.building_id and building is None:
         errors.append(f"Unknown building: {request.building_id}")
@@ -121,13 +121,21 @@ def validate_training_request(
         )
         child_ids = [row[0] for row in child_rows]
         target_building_ids = child_ids or [site.id]
+    elif not request.site_id:
+        all_rows = _safe_all(db.query(Location.id).order_by(Location.id))
+        target_building_ids = [row[0] for row in all_rows]
 
-    known_metrics = {
-        row[0]
-        for row in db.query(MetricType.id)
-        .filter(MetricType.id.in_(request.metrics))
-        .all()
-    }
+    is_anomaly = ModelTask(request.model_task) == ModelTask.AnomalyDetection
+    known_metrics = (
+        set(request.metrics)
+        if is_anomaly
+        else {
+            row[0]
+            for row in db.query(MetricType.id)
+            .filter(MetricType.id.in_(request.metrics))
+            .all()
+        }
+    )
     db_counts = (
         _count_db_training_rows(
             db=db,

@@ -21,6 +21,7 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
       headers,
       body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
       cache: "no-store",
+      signal: AbortSignal.timeout(30_000),
     });
 
     const body = await response.text();

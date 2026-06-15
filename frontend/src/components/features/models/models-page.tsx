@@ -5,6 +5,8 @@ import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
 import { displayLocationName, displayModelName, humanizeIdentifier, locationSearchText } from "@/lib/format";
 import {
+  backfillAnomalyInference,
+  cancelPipelineLog,
   demoteModel,
   getLocationOptions,
   getMetricOptions,
@@ -15,6 +17,7 @@ import {
   trainModel,
   updateModelDescription,
   validateTrainingRequest,
+  type AnomalyBackfillPayload,
   type LocationOption,
   type MetricOption,
   type ModelTask,
@@ -47,9 +50,8 @@ const DATA_SOURCE_OPTIONS: Array<{ value: TrainingDataSource; label: string }> =
   { value: "db", label: "Database" },
 ];
 
-const DEFAULT_LOCATION = "Panther_parking_Lorriane";
-const DEFAULT_METRICS = ["electricity"];
 const LOCATION_INDEX_LIMIT = 1000;
+const MIN_TRAINING_DAYS = 30;
 
 function defaultStartDate() {
   const date = new Date();
@@ -267,6 +269,7 @@ function TrainingValidationPanel({
 
 export function ModelsPage() {
   const locationPickerRef = useRef<HTMLDivElement | null>(null);
+  const terminalLogRef = useRef<HTMLPreElement | null>(null);
   const registryRefreshRunIdsRef = useRef<Set<string>>(new Set());
   const [models, setModels] = useState<RegisteredModel[]>([]);
   const [logs, setLogs] = useState<PipelineLog[]>([]);
@@ -277,9 +280,9 @@ export function ModelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [modelTask, setModelTask] = useState<ModelTask>("prediction");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
-  const [locationId, setLocationId] = useState(DEFAULT_LOCATION);
-  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(DEFAULT_METRICS);
-  const [locationQuery, setLocationQuery] = useState(DEFAULT_LOCATION);
+  const [locationId, setLocationId] = useState("");
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
+  const [locationQuery, setLocationQuery] = useState("");
   const [metricQuery, setMetricQuery] = useState("");
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(defaultEndDate);
@@ -303,10 +306,15 @@ export function ModelsPage() {
   const [detailLog, setDetailLog] = useState<PipelineLog | null>(null);
   const [descriptionDraft, setDescriptionDraft] = useState("");
   const [descriptionSubmitting, setDescriptionSubmitting] = useState(false);
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const [modelTaskFilter, setModelTaskFilter] = useState<"all" | ModelTask | "unknown">("all");
   const [modelStageFilter, setModelStageFilter] = useState<"all" | "production" | "non_production">("all");
   const [modelMetricFilter, setModelMetricFilter] = useState("all");
+  const [backfillModalOpen, setBackfillModalOpen] = useState(false);
+  const [backfillStartDate, setBackfillStartDate] = useState("2017-10-01");
+  const [backfillEndDate, setBackfillEndDate] = useState("2017-12-31");
+  const [backfillSubmitting, setBackfillSubmitting] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -510,23 +518,38 @@ export function ModelsPage() {
   const detailVersionPipelineLogs = detailVersions.flatMap((version) =>
     (pipelineLogsByRunId.get(version.run_id) ?? []).map((log) => ({ version, log })),
   );
+  const detailTerminalLog = detailLog ? pipelineTerminalLog(detailLog) : "";
   const selectedMetricsKey = selectedMetrics.join(",");
   const selectedTaskLabel = MODEL_TASK_OPTIONS.find((option) => option.value === modelTask)?.label ?? modelTask;
-  const trainingTaskImplemented = modelTask === "prediction";
-  const metricSelectionValid = !trainingTaskImplemented || selectedMetrics.length === 1;
-  const validationInputReady = Boolean(locationId.trim() && selectedMetrics.length && startDate && endDate);
+  const trainingTaskImplemented =
+    modelTask === "prediction" || modelTask === "anomaly_detection";
+  const metricSelectionValid =
+    modelTask !== "prediction" || selectedMetrics.length === 1;
+  const isAnomalyDetection = modelTask === "anomaly_detection";
+  const validationInputReady = isAnomalyDetection
+    ? Boolean(startDate && endDate)
+    : Boolean(locationId.trim() && selectedMetrics.length && startDate && endDate);
+  const dateRangeDays = startDate && endDate
+    ? Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000)
+    : 0;
+  const dateRangeValid = dateRangeDays >= MIN_TRAINING_DAYS;
   const trainingPayload = useMemo<TrainModelPayload>(
     () => ({
-      site_id: locationId.trim(),
-      metrics: selectedMetrics,
+      site_id: isAnomalyDetection ? null : locationId.trim(),
+      metrics: isAnomalyDetection ? ["electricity"] : selectedMetrics,
       time_range_start: isoFromDateInput(startDate),
       time_range_end: isoFromDateInput(endDate, true),
       model_task: modelTask,
       data_source: dataSource,
     }),
-    [dataSource, endDate, locationId, modelTask, selectedMetrics, startDate],
+    [dataSource, endDate, isAnomalyDetection, locationId, modelTask, selectedMetrics, startDate],
   );
-  const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && !submitting && !validationLoading && trainingValidation?.valid !== false;
+  const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && dateRangeValid && !submitting && !validationLoading && trainingValidation?.valid !== false;
+
+  useEffect(() => {
+    if (!terminalLogRef.current) return;
+    terminalLogRef.current.scrollTop = terminalLogRef.current.scrollHeight;
+  }, [detailTerminalLog]);
 
   useEffect(() => {
     if (!trainModalOpen) return;
@@ -552,7 +575,7 @@ export function ModelsPage() {
   }, [locationQuery, trainModalOpen]);
 
   useEffect(() => {
-    if (!trainModalOpen || !trainingTaskImplemented || !metricSelectionValid || !validationInputReady) {
+    if (!trainModalOpen || !trainingTaskImplemented || !metricSelectionValid || !validationInputReady || isAnomalyDetection) {
       const timeout = window.setTimeout(() => {
         setTrainingValidation(null);
         setValidationError(null);
@@ -585,7 +608,7 @@ export function ModelsPage() {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [metricSelectionValid, selectedMetricsKey, trainModalOpen, trainingPayload, trainingTaskImplemented, validationInputReady]);
+  }, [isAnomalyDetection, metricSelectionValid, selectedMetricsKey, trainModalOpen, trainingPayload, trainingTaskImplemented, validationInputReady]);
 
   function chooseLocation(location: LocationOption) {
     setLocationId(location.id);
@@ -633,33 +656,35 @@ export function ModelsPage() {
   }
 
   async function onTrainModel() {
-    const resolvedLocationId = locationId.trim();
-    const knownMetricIds = new Set(metricOptions.map((metric) => metric.id));
-    const invalidMetrics = selectedMetrics.filter((metric) => !knownMetricIds.has(metric));
-
-    if (!resolvedLocationId) {
-      setError("Select a location from the search results before training.");
-      return;
-    }
-
-    if (!selectedMetrics.length) {
-      setError("At least one metric is required.");
-      return;
-    }
-
-    if (!metricSelectionValid) {
-      setError("Prediction training requires exactly one metric per model.");
-      return;
-    }
-
     if (!trainingTaskImplemented) {
       setError(`${selectedTaskLabel} training pipeline is not implemented yet.`);
       return;
     }
 
-    if (invalidMetrics.length) {
-      setError(`Unknown metric(s): ${invalidMetrics.join(", ")}`);
-      return;
+    if (!isAnomalyDetection) {
+      const resolvedLocationId = locationId.trim();
+      const knownMetricIds = new Set(metricOptions.map((metric) => metric.id));
+      const invalidMetrics = selectedMetrics.filter((metric) => !knownMetricIds.has(metric));
+
+      if (!resolvedLocationId) {
+        setError("Select a location from the search results before training.");
+        return;
+      }
+
+      if (!selectedMetrics.length) {
+        setError("At least one metric is required.");
+        return;
+      }
+
+      if (!metricSelectionValid) {
+        setError("Prediction training requires exactly one metric per model.");
+        return;
+      }
+
+      if (invalidMetrics.length) {
+        setError(`Unknown metric(s): ${invalidMetrics.join(", ")}`);
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -667,12 +692,14 @@ export function ModelsPage() {
     setTrainMessage(null);
 
     try {
-      const validation = await validateTrainingRequest(trainingPayload);
-      setTrainingValidation(validation);
+      if (!isAnomalyDetection) {
+        const validation = await validateTrainingRequest(trainingPayload);
+        setTrainingValidation(validation);
 
-      if (!validation.valid) {
-        setError("Training data is not valid. Review the validation details below.");
-        return;
+        if (!validation.valid) {
+          setError("Training data is not valid. Review the validation details below.");
+          return;
+        }
       }
 
       const response = await trainModel(trainingPayload);
@@ -741,6 +768,43 @@ export function ModelsPage() {
     }
   }
 
+  async function onCancelPipeline(log: PipelineLog) {
+    setCancelSubmitting(true);
+    setError(null);
+    try {
+      await cancelPipelineLog(log.id);
+      await refreshLogs();
+      setDetailLog((current) => (current?.id === log.id ? { ...current, status: "Cancelled" } : current));
+      setTrainMessage("Pipeline cancelled.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to cancel pipeline.");
+    } finally {
+      setCancelSubmitting(false);
+    }
+  }
+
+  async function onBackfillInference() {
+    setBackfillSubmitting(true);
+    setError(null);
+    setTrainMessage(null);
+
+    try {
+      const payload: AnomalyBackfillPayload = {
+        time_range_start: isoFromDateInput(backfillStartDate),
+        time_range_end: isoFromDateInput(backfillEndDate, true),
+      };
+      const response = await backfillAnomalyInference(payload);
+      setTrainMessage(`${response.message} Task ${response.task_id} queued.`);
+      setBackfillModalOpen(false);
+      setPipelineModalOpen(true);
+      await refreshLogs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start backfill inference.");
+    } finally {
+      setBackfillSubmitting(false);
+    }
+  }
+
   async function onSaveModelDescription() {
     if (!detailModel) return;
 
@@ -774,6 +838,10 @@ export function ModelsPage() {
           <button className="btn" type="button" onClick={() => setPipelineModalOpen(true)}>
             <Icon name="table" />
             <span>Pipeline</span>
+          </button>
+          <button className="btn" type="button" onClick={() => setBackfillModalOpen(true)}>
+            <Icon name="refresh" />
+            <span>Backfill Inference</span>
           </button>
           <button className="btn btn-primary" type="button" onClick={() => setTrainModalOpen(true)}>
             <Icon name="spark2" />
@@ -852,6 +920,68 @@ export function ModelsPage() {
         </Card>
       </div>
 
+      {backfillModalOpen && (
+        <>
+          <button className="overlay" type="button" aria-label="Close backfill dialog" onClick={() => setBackfillModalOpen(false)} />
+          <div className="model-modal train-model-modal" role="dialog" aria-modal="true" aria-label="Backfill inference">
+            <div className="model-modal-head">
+              <div>
+                <h2>Backfill Inference</h2>
+                <span>Score rule-based and LGBm anomalies for a historical date range and save to DB.</span>
+              </div>
+              <button className="icon-btn" type="button" aria-label="Close backfill dialog" onClick={() => setBackfillModalOpen(false)}>
+                <Icon name="x" />
+              </button>
+            </div>
+            <div className="model-modal-body">
+              <div className="train-model-form">
+                <Field label="Date range">
+                  <div className="date-range-row">
+                    <div className="date-range-segment">
+                      <Icon name="calendar" />
+                      <div className="date-range-segment-body">
+                        <span>From</span>
+                        <input type="date" value={backfillStartDate} onChange={(event) => setBackfillStartDate(event.target.value)} />
+                      </div>
+                    </div>
+                    <div className="date-range-segment">
+                      <Icon name="calendar" />
+                      <div className="date-range-segment-body">
+                        <span>To</span>
+                        <input type="date" value={backfillEndDate} onChange={(event) => setBackfillEndDate(event.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+                </Field>
+              </div>
+              <div className="training-validation">
+                <Icon name="info" />
+                <span>
+                  Requires a production anomaly detection model in MLflow. Rule-based checks run once
+                  over the full range; LGBm inference runs hour by hour. Results are saved to the DB
+                  and will appear in the Anomaly Detection simulator.
+                </span>
+              </div>
+            </div>
+            <div className="model-modal-foot">
+              <button className="btn" type="button" onClick={() => setBackfillModalOpen(false)}>
+                <Icon name="x" />
+                <span>Cancel</span>
+              </button>
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={onBackfillInference}
+                disabled={backfillSubmitting || !backfillStartDate || !backfillEndDate || backfillEndDate <= backfillStartDate}
+              >
+                <Icon name={backfillSubmitting ? "refresh" : "play"} className={backfillSubmitting ? "spin" : undefined} />
+                <span>{backfillSubmitting ? "Queueing..." : "Run Backfill"}</span>
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       {trainModalOpen && (
         <>
           <button className="overlay" type="button" aria-label="Close train model dialog" onClick={() => setTrainModalOpen(false)} />
@@ -873,83 +1003,108 @@ export function ModelsPage() {
                 <Field label="Data source">
                   <Select value={dataSource} onChange={setDataSource} options={DATA_SOURCE_OPTIONS} />
                 </Field>
-                <Field label="Location">
-                  <div className="model-combobox" ref={locationPickerRef}>
-                    <input
-                      className="input"
-                      value={locationQuery}
-                      onFocus={() => setLocationPickerOpen(true)}
-                      onChange={(event) => {
-                        setLocationQuery(event.target.value);
-                        setLocationId("");
-                        setLocationPickerOpen(true);
-                      }}
-                      placeholder="Search site or building by name or ID"
-                    />
-                    {locationPickerOpen && (
-                      <div className="model-picker-list">
-                        {locationSearchLoading ? (
-                          <div className="model-picker-empty">Searching locations...</div>
-                        ) : filteredLocationOptions.length ? (
-                          filteredLocationOptions.map((location) => (
-                            <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
-                              <b title={location.id}>{displayLocationName(location.name, location.id)}</b>
-                              <span title={location.id}>
-                                {location.parent_id ? `Site ${location.parent_id} · ` : ""}{location.id}
-                              </span>
-                            </button>
-                          ))
-                        ) : (
-                          <div className="model-picker-empty">No locations found.</div>
-                        )}
+                {!isAnomalyDetection && (
+                  <Field label="Location">
+                    <div className="model-combobox" ref={locationPickerRef}>
+                      <input
+                        className="input"
+                        value={locationQuery}
+                        onFocus={() => setLocationPickerOpen(true)}
+                        onChange={(event) => {
+                          setLocationQuery(event.target.value);
+                          setLocationId("");
+                          setLocationPickerOpen(true);
+                        }}
+                        placeholder="Search site or building by name or ID"
+                      />
+                      {locationPickerOpen && (
+                        <div className="model-picker-list">
+                          {locationSearchLoading ? (
+                            <div className="model-picker-empty">Searching locations...</div>
+                          ) : filteredLocationOptions.length ? (
+                            filteredLocationOptions.map((location) => (
+                              <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
+                                <b title={location.id}>{displayLocationName(location.name, location.id)}</b>
+                                <span title={location.id}>
+                                  {location.parent_id ? `Site ${location.parent_id} · ` : ""}{location.id}
+                                </span>
+                              </button>
+                            ))
+                          ) : (
+                            <div className="model-picker-empty">No locations found.</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </Field>
+                )}
+                {!isAnomalyDetection && (
+                  <Field label="Metrics">
+                    <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder="Choose one metric for prediction training" />
+                    <div className="metric-choice-list">
+                      {filteredMetrics.map((metric) => (
+                        <button key={metric.id} type="button" className={selectedMetrics.includes(metric.id) ? "is-selected" : ""} onClick={() => toggleMetric(metric.id)}>
+                          {humanizeIdentifier(metric.id)}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="metric-chip-list">
+                      {selectedMetrics.map((metric) => (
+                        <button key={metric} type="button" onClick={() => toggleMetric(metric)}>
+                          {humanizeIdentifier(metric)}
+                          <Icon name="x" />
+                        </button>
+                      ))}
+                    </div>
+                  </Field>
+                )}
+                <Field label="Date range">
+                  <div className={`date-range-row${startDate && endDate && !dateRangeValid ? " is-invalid" : ""}`}>
+                    <div className="date-range-segment">
+                      <Icon name="calendar" />
+                      <div className="date-range-segment-body">
+                        <span>From</span>
+                        <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
                       </div>
-                    )}
+                    </div>
+                    <div className="date-range-segment">
+                      <Icon name="calendar" />
+                      <div className="date-range-segment-body">
+                        <span>To</span>
+                        <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+                      </div>
+                    </div>
                   </div>
-                </Field>
-                <Field label="Metrics">
-                  <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder="Choose one metric for prediction training" />
-                  <div className="metric-choice-list">
-                    {filteredMetrics.map((metric) => (
-                      <button key={metric.id} type="button" className={selectedMetrics.includes(metric.id) ? "is-selected" : ""} onClick={() => toggleMetric(metric.id)}>
-                        {humanizeIdentifier(metric.id)}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="metric-chip-list">
-                    {selectedMetrics.map((metric) => (
-                      <button key={metric} type="button" onClick={() => toggleMetric(metric)}>
-                        {humanizeIdentifier(metric)}
-                        <Icon name="x" />
-                      </button>
-                    ))}
-                  </div>
-                </Field>
-                <Field label="Start date">
-                  <input className="input" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
-                </Field>
-                <Field label="End date">
-                  <input className="input" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+                  {startDate && endDate && !dateRangeValid && (
+                    <span className="date-range-error">
+                      <Icon name="alert" />
+                      Minimum {MIN_TRAINING_DAYS} days required ({dateRangeDays} selected).
+                    </span>
+                  )}
                 </Field>
               </div>
-              {trainingTaskImplemented ? (
-                metricSelectionValid ? (
-                  <TrainingValidationPanel
-                    dataSource={dataSource}
-                    validation={validationInputReady ? trainingValidation : null}
-                    loading={validationInputReady && validationLoading}
-                    error={validationInputReady ? validationError : null}
-                  />
-                ) : (
-                  <div className="training-validation is-invalid">
-                    <Icon name="alert" />
-                    <span>Prediction training requires exactly one metric per model.</span>
-                  </div>
-                )
-              ) : (
+              {!trainingTaskImplemented ? (
                 <div className="training-validation is-invalid">
                   <Icon name="alert" />
                   <span>{selectedTaskLabel} training pipeline is not implemented yet.</span>
                 </div>
+              ) : isAnomalyDetection ? (
+                <div className="training-validation">
+                  <Icon name="info" />
+                  <span>Trains across all buildings using electricity data. Select a date range to proceed.</span>
+                </div>
+              ) : !metricSelectionValid ? (
+                <div className="training-validation is-invalid">
+                  <Icon name="alert" />
+                  <span>Prediction training requires exactly one metric per model.</span>
+                </div>
+              ) : (
+                <TrainingValidationPanel
+                  dataSource={dataSource}
+                  validation={validationInputReady ? trainingValidation : null}
+                  loading={validationInputReady && validationLoading}
+                  error={validationInputReady ? validationError : null}
+                />
               )}
             </div>
             <div className="model-modal-foot">
@@ -1071,8 +1226,21 @@ export function ModelsPage() {
                 </div>
               </div>
               <div className="model-section-title">Terminal Log</div>
-              <pre className="pipeline-terminal-log">{pipelineTerminalLog(detailLog)}</pre>
+              <pre ref={terminalLogRef} className="pipeline-terminal-log">{detailTerminalLog}</pre>
             </div>
+            {["Running", "running"].includes(pipelineDisplayStatus(detailLog)) && (
+              <div className="model-modal-foot">
+                <button
+                  className="btn btn-danger"
+                  type="button"
+                  onClick={() => onCancelPipeline(detailLog)}
+                  disabled={cancelSubmitting}
+                >
+                  <Icon name={cancelSubmitting ? "refresh" : "x"} className={cancelSubmitting ? "spin" : undefined} />
+                  <span>{cancelSubmitting ? "Cancelling..." : "Cancel Pipeline"}</span>
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}

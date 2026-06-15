@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 mlflow_artifacts/
+mlflow.db
+mlflow.db-journal
 mlruns/
 .ipynb_checkpoints/
 .Trash-0/

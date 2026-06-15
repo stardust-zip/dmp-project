@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 from src.api.v1.deps import get_current_admin, get_current_user
+from src.api.v1.endpoints.models import _sync_running_pipeline_log_with_celery
 from src.database import get_db
 from src.main import app
 from src.models import Location, MetricType
@@ -101,18 +102,31 @@ def test_trigger_training_success(mock_delay):
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
-def test_trigger_training_rejects_anomaly_training_until_implemented(mock_delay):
+def test_trigger_training_queues_anomaly_training(mock_delay):
+    class MockTask:
+        id = "mock-anomaly-task-456"
+
+    mock_delay.return_value = MockTask()
+
     response = client.post(
         "/api/v1/models/train"
         "?building_id=TestBuilding&metric_type=water"
         "&model_task=anomaly_detection&data_source=db"
     )
 
-    assert response.status_code == 501
-    assert response.json()["detail"] == (
-        "anomaly_detection training pipeline is not implemented yet."
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_id"] == "mock-anomaly-task-456"
+    assert body["model_task"] == "anomaly_detection"
+    assert body["algorithm"] == "lightgbm"
+    assert (
+        body["message"]
+        == "anomaly_detection training job queued using db data."
     )
-    mock_delay.assert_not_called()
+    training_request = mock_delay.call_args.kwargs["training_request"]
+    assert training_request["model_task"] == "anomaly_detection"
+    assert training_request["data_source"] == "db"
+    mock_delay.assert_called_once()
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
@@ -530,6 +544,32 @@ def test_get_task_status_hides_result_until_task_is_ready(mock_async_result):
     }
 
 
+@patch("src.api.v1.endpoints.models.mark_pipeline_log_external_failure")
+@patch("src.api.v1.endpoints.models.AsyncResult")
+def test_sync_running_pipeline_log_marks_failed_celery_task(
+    mock_async_result,
+    mock_mark_failure,
+):
+    task_result = Mock()
+    task_result.status = "FAILURE"
+    task_result.result = RuntimeError("Worker exited prematurely: signal 9 (SIGKILL)")
+    mock_async_result.return_value = task_result
+    mock_mark_failure.return_value = True
+    pipeline_log = SimpleNamespace(
+        status="Running",
+        celery_task_id="task-123",
+    )
+
+    synced = _sync_running_pipeline_log_with_celery(pipeline_log)
+
+    assert synced is True
+    mock_async_result.assert_called_once()
+    mock_mark_failure.assert_called_once()
+    assert mock_mark_failure.call_args.args[0] == "task-123"
+    assert "SIGKILL" in str(mock_mark_failure.call_args.args[1])
+    assert mock_mark_failure.call_args.kwargs["task_state"] == "FAILURE"
+
+
 def test_get_pipeline_logs_returns_paginated_logs():
     created_at = datetime(2026, 6, 8, 12, 0, tzinfo=timezone.utc)
     log_id = UUID("11111111-1111-1111-1111-111111111111")
@@ -539,6 +579,7 @@ def test_get_pipeline_logs_returns_paginated_logs():
         status=SimpleNamespace(name="Success"),
         model_task="forecasting",
         mlflow_run_id="run-123",
+        celery_task_id="task-123",
         datasource_used="db",
         execution_time_ms=2400,
         created_at=created_at,
@@ -575,6 +616,7 @@ def test_get_pipeline_logs_returns_paginated_logs():
                 "model_task": "forecasting",
                 "status": "Success",
                 "mlflow_run_id": "run-123",
+                "celery_task_id": "task-123",
                 "datasource_used": "db",
                 "execution_time_ms": 2400,
                 "timestamp": data["logs"][0]["timestamp"],

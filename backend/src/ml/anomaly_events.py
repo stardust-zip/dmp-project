@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 
 import numpy as np
 import pandas as pd
-
-from src.core.config import settings
-from src.core.exceptions import NotFoundException
+from sqlalchemy.orm import Session
 
 SEVERITY_ORDER = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
 SEVERITIES = ["Critical", "High", "Medium", "Low"]
@@ -22,19 +18,10 @@ STAGE1_TYPE_LABELS = {
     "spike_extreme_reading": "Extreme spike",
 }
 
-
-def _project_root() -> Path:
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "pyproject.toml").exists():
-            return parent
-    return Path(__file__).resolve().parents[3]
-
-
-def _data_dir() -> Path:
-    configured = Path(settings.ANOMALY_DATA_DIR)
-    if configured.is_absolute():
-        return configured
-    return _project_root() / configured
+_DIRECTION_TYPE_LABELS = {
+    "under": "Unusual low consumption",
+    "over": "Unusual high consumption",
+}
 
 
 def _safe_float(value) -> float | None:
@@ -53,92 +40,6 @@ def _safe_datetime(value):
     if value is None or pd.isna(value):
         return None
     return pd.Timestamp(value).to_pydatetime()
-
-
-def _normalize_stage1(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise NotFoundException(
-            "Stage 1 anomaly export was not found.",
-            {"path": str(path)},
-        )
-
-    df = pd.read_parquet(path)
-    if df.empty:
-        return pd.DataFrame(columns=_event_columns())
-
-    records = pd.DataFrame(
-        {
-            "id": df["anomaly_id"].astype(str),
-            "site_id": df["site_id"].astype(object).fillna("Unknown").astype(str),
-            "building_id": df["building_id"].astype(str),
-            "primary_space_usage": df["primaryspaceusage"].astype(object),
-            "timestamp": df["timestamp"].where(df["timestamp"].notna(), df["start_time"]),
-            "start_time": df["start_time"].where(df["start_time"].notna(), df["timestamp"]),
-            "end_time": df["end_time"].where(df["end_time"].notna(), df["timestamp"]),
-            "duration_hours": df["duration_hours"].fillna(1.0),
-            "severity": df["severity"].astype(str),
-            "type": df["anomaly_type"].map(STAGE1_TYPE_LABELS).fillna("Meter data anomaly"),
-            "actual_value": df["actual_value"],
-            "expected_value": np.nan,
-            "deviation_percent": np.nan,
-            "reason": df["reason"].fillna("Meter data did not match expected quality checks."),
-        }
-    )
-    return records[_event_columns()]
-
-
-def _normalize_stage3(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise NotFoundException(
-            "Residual anomaly export was not found.",
-            {"path": str(path)},
-        )
-
-    df = pd.read_parquet(path)
-    if df.empty:
-        return pd.DataFrame(columns=_event_columns())
-
-    df = df[df["is_anomaly"]].copy()
-    if df.empty:
-        return pd.DataFrame(columns=_event_columns())
-
-    predicted = df["predicted"].replace(0, np.nan)
-    deviation = ((df["consumption"] - df["predicted"]) / predicted) * 100
-    direction_label = np.where(
-        df["direction"].astype(str).str.lower() == "under",
-        "Unusual low consumption",
-        "Unusual high consumption",
-    )
-    reason = np.where(
-        df["direction"].astype(str).str.lower() == "under",
-        "Consumption was lower than the expected building baseline.",
-        "Consumption was higher than the expected building baseline.",
-    )
-
-    records = pd.DataFrame(
-        {
-            "id": (
-                "R-"
-                + df["building_id"].astype(str)
-                + "-"
-                + pd.to_datetime(df["timestamp"]).dt.strftime("%Y%m%d%H")
-            ),
-            "site_id": df["site_id"].astype(object).fillna("Unknown").astype(str),
-            "building_id": df["building_id"].astype(str),
-            "primary_space_usage": df["primaryspaceusage"].astype(object),
-            "timestamp": df["timestamp"],
-            "start_time": df["timestamp"],
-            "end_time": df["timestamp"],
-            "duration_hours": 1.0,
-            "severity": df["severity"].astype(str),
-            "type": direction_label,
-            "actual_value": df["consumption"],
-            "expected_value": df["predicted"],
-            "deviation_percent": deviation,
-            "reason": reason,
-        }
-    )
-    return records[_event_columns()]
 
 
 def _event_columns() -> list[str]:
@@ -160,85 +61,150 @@ def _event_columns() -> list[str]:
     ]
 
 
-def _concat_event_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
-    prepared = [
-        frame.dropna(axis=1, how="all")
-        for frame in frames
-        if not frame.empty
-    ]
-    if not prepared:
-        return pd.DataFrame(columns=_event_columns())
-
-    return pd.concat(prepared, ignore_index=True).reindex(columns=_event_columns())
+def _event_type(row) -> str:
+    if row["source"] == "rule_based" and row["anomaly_type"]:
+        return STAGE1_TYPE_LABELS.get(row["anomaly_type"], "Meter data anomaly")
+    direction = str(row["direction"]).lower() if row["direction"] is not None else ""
+    return _DIRECTION_TYPE_LABELS.get(direction, "Unusual consumption")
 
 
-@lru_cache(maxsize=1)
-def load_anomaly_events() -> pd.DataFrame:
-    data_dir = _data_dir()
-    stage1 = _normalize_stage1(data_dir / "stage1_anomalies.parquet")
-    stage3 = _normalize_stage3(data_dir / "stage3_residual_anomalies.parquet")
-    events = _concat_event_frames([stage1, stage3])
+def load_anomaly_facets(db: Session, site_id: str | None = None) -> dict:
+    from src.models import AnomalyDetectedEvent
 
+    base = [AnomalyDetectedEvent.is_anomaly.is_(True)]
+    scoped = base + ([AnomalyDetectedEvent.site_id == site_id] if site_id else [])
+
+    site_rows = (
+        db.query(AnomalyDetectedEvent.site_id)
+        .filter(*base, AnomalyDetectedEvent.site_id.isnot(None))
+        .distinct()
+        .all()
+    )
+    building_rows = (
+        db.query(AnomalyDetectedEvent.building_id)
+        .filter(*scoped, AnomalyDetectedEvent.building_id.isnot(None))
+        .distinct()
+        .all()
+    )
+    usage_rows = (
+        db.query(AnomalyDetectedEvent.primary_space_usage)
+        .filter(*scoped, AnomalyDetectedEvent.primary_space_usage.isnot(None))
+        .distinct()
+        .all()
+    )
+    type_rows = (
+        db.query(
+            AnomalyDetectedEvent.source,
+            AnomalyDetectedEvent.anomaly_type,
+            AnomalyDetectedEvent.direction,
+        )
+        .filter(*scoped)
+        .distinct()
+        .all()
+    )
+    types = sorted({
+        _event_type({"source": r.source, "anomaly_type": r.anomaly_type, "direction": r.direction})
+        for r in type_rows
+    })
+    return {
+        "sites": sorted(str(r.site_id) for r in site_rows),
+        "buildings": sorted(str(r.building_id) for r in building_rows),
+        "severities": SEVERITIES,
+        "types": types,
+        "primary_usage_types": sorted(str(r.primary_space_usage) for r in usage_rows),
+    }
+
+
+def _rows_to_events_df(rows) -> pd.DataFrame:
+    if not rows:
+        events = pd.DataFrame(columns=_event_columns())
+        events["severity_rank"] = pd.Series(dtype=int)
+        return events
+
+    records = []
+    for row in rows:
+        predicted = row.predicted_value
+        actual = row.actual_value
+        deviation = ((actual - predicted) / predicted) * 100 if predicted not in (None, 0) and actual is not None else np.nan
+        records.append(
+            {
+                "id": str(row.id),
+                "site_id": _safe_str(row.site_id),
+                "building_id": _safe_str(row.building_id),
+                "primary_space_usage": row.primary_space_usage,
+                "timestamp": row.timestamp,
+                "start_time": row.timestamp,
+                "end_time": row.timestamp,
+                "duration_hours": 1.0,
+                "severity": _safe_str(row.severity),
+                "type": _event_type({"source": row.source, "anomaly_type": row.anomaly_type, "direction": row.direction}),
+                "actual_value": actual,
+                "expected_value": predicted,
+                "deviation_percent": deviation,
+                "reason": row.reason if row.reason else "Meter data did not match expected quality checks.",
+            }
+        )
+
+    events = pd.DataFrame(records, columns=_event_columns())
     for col in ["timestamp", "start_time", "end_time"]:
         events[col] = pd.to_datetime(events[col], errors="coerce")
-
     events["severity_rank"] = events["severity"].map(SEVERITY_ORDER).fillna(0).astype(int)
     events = events.sort_values(["severity_rank", "timestamp"], ascending=[False, False])
     return events.reset_index(drop=True)
 
 
-@lru_cache(maxsize=1)
-def load_anomaly_series() -> pd.DataFrame:
-    path = _data_dir() / "stage3_residual_anomalies.parquet"
-    if not path.exists():
-        raise NotFoundException(
-            "Residual anomaly export was not found.",
-            {"path": str(path)},
-        )
+def load_anomaly_events(db: Session) -> pd.DataFrame:
+    from src.models import AnomalyDetectedEvent
 
-    df = pd.read_parquet(
-        path,
-        columns=[
-            "building_id",
-            "timestamp",
-            "consumption",
-            "predicted",
-            "severity",
-            "is_anomaly",
-            "site_id",
-            "primaryspaceusage",
-        ],
+    rows = db.query(AnomalyDetectedEvent).filter(AnomalyDetectedEvent.is_anomaly.is_(True)).all()
+    return _rows_to_events_df(rows)
+
+
+def load_anomaly_series(db: Session) -> pd.DataFrame:
+    from src.models import AnomalyDetectedEvent
+
+    columns = [
+        "site_id",
+        "building_id",
+        "primary_space_usage",
+        "timestamp",
+        "actual_value",
+        "expected_value",
+        "severity",
+        "is_anomaly",
+    ]
+
+    rows = (
+        db.query(AnomalyDetectedEvent)
+        .filter(AnomalyDetectedEvent.source == "lgbm")
+        .all()
     )
-    if df.empty:
-        return pd.DataFrame(
-            columns=[
-                "site_id",
-                "building_id",
-                "primary_space_usage",
-                "timestamp",
-                "actual_value",
-                "expected_value",
-                "severity",
-                "is_anomaly",
-            ]
-        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
 
     series = pd.DataFrame(
-        {
-            "site_id": df["site_id"].astype(object).fillna("Unknown").astype(str),
-            "building_id": df["building_id"].astype(str),
-            "primary_space_usage": df["primaryspaceusage"].astype(object),
-            "timestamp": pd.to_datetime(df["timestamp"], errors="coerce"),
-            "actual_value": df["consumption"],
-            "expected_value": df["predicted"],
-            "severity": df["severity"].astype(str),
-            "is_anomaly": df["is_anomaly"].astype(bool),
-        }
+        [
+            {
+                "site_id": _safe_str(row.site_id),
+                "building_id": _safe_str(row.building_id),
+                "primary_space_usage": row.primary_space_usage,
+                "timestamp": row.timestamp,
+                "actual_value": row.actual_value,
+                "expected_value": row.predicted_value,
+                "severity": _safe_str(row.severity),
+                "is_anomaly": bool(row.is_anomaly),
+            }
+            for row in rows
+        ],
+        columns=columns,
     )
+    series["timestamp"] = pd.to_datetime(series["timestamp"], errors="coerce")
     return series.sort_values(["building_id", "timestamp"]).reset_index(drop=True)
 
 
 def filter_events(
+    db: Session,
     *,
     site_id: str | None = None,
     building_id: str | None = None,
@@ -247,45 +213,72 @@ def filter_events(
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    events = load_anomaly_events()
-    mask = pd.Series(True, index=events.index)
+    from src.models import AnomalyDetectedEvent
 
+    q = db.query(AnomalyDetectedEvent).filter(AnomalyDetectedEvent.is_anomaly.is_(True))
     if site_id:
-        mask &= events["site_id"] == site_id
+        q = q.filter(AnomalyDetectedEvent.site_id == site_id)
     if building_id:
-        mask &= events["building_id"] == building_id
+        q = q.filter(AnomalyDetectedEvent.building_id == building_id)
     if severity:
-        mask &= events["severity"] == severity
-    if anomaly_type:
-        mask &= events["type"] == anomaly_type
+        q = q.filter(AnomalyDetectedEvent.severity == severity)
     if start is not None:
-        mask &= events["end_time"] >= start
+        q = q.filter(AnomalyDetectedEvent.timestamp >= start)
     if end is not None:
-        mask &= events["start_time"] <= end
+        q = q.filter(AnomalyDetectedEvent.timestamp <= end)
 
-    return events[mask].copy()
+    events = _rows_to_events_df(q.all())
+
+    if anomaly_type:
+        events = events[events["type"] == anomaly_type].copy()
+
+    return events
 
 
 def filter_series(
+    db: Session,
     *,
     site_id: str | None = None,
     building_id: str | None = None,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    series = load_anomaly_series()
-    mask = pd.Series(True, index=series.index)
+    from src.models import AnomalyDetectedEvent
 
+    columns = ["site_id", "building_id", "primary_space_usage", "timestamp", "actual_value", "expected_value", "severity", "is_anomaly"]
+
+    q = db.query(AnomalyDetectedEvent).filter(AnomalyDetectedEvent.source == "lgbm")
     if site_id:
-        mask &= series["site_id"] == site_id
+        q = q.filter(AnomalyDetectedEvent.site_id == site_id)
     if building_id:
-        mask &= series["building_id"] == building_id
+        q = q.filter(AnomalyDetectedEvent.building_id == building_id)
     if start is not None:
-        mask &= series["timestamp"] >= start
+        q = q.filter(AnomalyDetectedEvent.timestamp >= start)
     if end is not None:
-        mask &= series["timestamp"] <= end
+        q = q.filter(AnomalyDetectedEvent.timestamp <= end)
 
-    return series[mask].copy()
+    rows = q.all()
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    series = pd.DataFrame(
+        [
+            {
+                "site_id": _safe_str(row.site_id),
+                "building_id": _safe_str(row.building_id),
+                "primary_space_usage": row.primary_space_usage,
+                "timestamp": row.timestamp,
+                "actual_value": row.actual_value,
+                "expected_value": row.predicted_value,
+                "severity": _safe_str(row.severity),
+                "is_anomaly": bool(row.is_anomaly),
+            }
+            for row in rows
+        ],
+        columns=columns,
+    )
+    series["timestamp"] = pd.to_datetime(series["timestamp"], errors="coerce")
+    return series.sort_values(["building_id", "timestamp"]).reset_index(drop=True)
 
 
 def event_records(events: pd.DataFrame) -> list[dict]:
