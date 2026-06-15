@@ -132,7 +132,8 @@ def test_load_anomaly_events_normalizes_user_facing_types():
 
 
 def test_filter_sort_and_serialize_anomaly_events():
-    db = _FakeSession(_sample_rows())
+    # The fake ignores filters, so pre-select only the rows that would match.
+    db = _FakeSession([_sample_rows()[1]])
 
     events = filter_events(db, site_id="S2", severity="Critical")
     records = event_records(sort_events(events, "severity"))
