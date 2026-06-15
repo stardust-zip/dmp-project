@@ -2,7 +2,6 @@
 One-off script: backfill primaryspaceusage into Location.metadata_ and fix
 anomaly_detected_event.primary_space_usage rows stored as 'NaN'.
 """
-import math
 import os
 
 import pandas as pd

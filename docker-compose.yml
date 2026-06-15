@@ -144,14 +144,12 @@ services:
     ports:
       - "3001:3000"
     environment:
-      # - VITE_API_URL=http://localhost:8000
-      # - NEXT_PUBLIC_API_URL=/api/backend
+      - NEXT_PUBLIC_API_URL=/api/backend
       - BACKEND_API_URL=http://backend:8000
       - WATCHPACK_POLLING=true
     volumes:
       - ./frontend:/app/frontend
       - frontend_node_modules:/app/frontend/node_modules
-      - frontend_next:/app/frontend/.next
     depends_on:
       - backend
     networks:
@@ -260,4 +258,4 @@ volumes:
   grafana_data:
   dbgate_data:
   frontend_node_modules:
-  frontend_next:
+

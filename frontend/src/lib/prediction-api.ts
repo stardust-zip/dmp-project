@@ -1,6 +1,5 @@
 import { authHeaders } from "@/lib/auth-api";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/backend";
+import { API_BASE } from "@/lib/api-base";
 
 export interface PredictionHourlyPoint {
   timestamp: string;
