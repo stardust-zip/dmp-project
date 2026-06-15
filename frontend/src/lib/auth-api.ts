@@ -1,7 +1,7 @@
 import type { AuthSession, JwtPayload, LoginCredentials, LoginResponse } from "@/types/auth";
 import type { AuthRole } from "@/types/auth";
+import { API_BASE } from "@/lib/api-base";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/backend";
 const SESSION_STORAGE_KEY = "dmp.auth.session";
 
 const USER_NAMES: Record<string, string> = {

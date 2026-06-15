@@ -5,8 +5,8 @@ import type {
   AnomalyTimelineResponse,
 } from "@/types";
 import { authHeaders } from "@/lib/auth-api";
+import { API_BASE } from "@/lib/api-base";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/backend";
 const API_PREFIX = "/api/v1";
 
 export type AnomalyQuery = {
