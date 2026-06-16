@@ -2,6 +2,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from src import models
 from src.api.v1.deps import get_current_admin, to_user_response
@@ -37,13 +38,17 @@ def _validate_locations_exist(db: Session, location_ids: list[str]) -> None:
 
 
 def _can_manage_user(current_user: UserResponse, target_user: models.User) -> bool:
-    # Admin users can manage all accounts regardless of scope.
-    # The admin RBAC gate (get_current_admin) already restricts this endpoint
-    # to users with the Admin role.
-    if current_user.role == "Admin":
+    # Global admins can manage any account.
+    if current_user.is_global_admin:
         return True
+    # Users can always manage their own account.
     if str(target_user.id) == current_user.id:
         return True
+    # Site-scoped admins cannot manage any other admin user.
+    if target_user.role == "Admin":
+        return False
+    # Site-scoped admins can manage operators who share at least one
+    # assigned site with them.
     return bool(
         set(current_user.assigned_site_ids) & set(target_user.assigned_site_ids or [])
     )
@@ -100,11 +105,30 @@ def list_users(
     current_user: Annotated[UserResponse, Depends(get_current_admin)],
 ) -> list[UserResponse]:
     """
-    List all users. Admin users see every account regardless of scope;
-    site-based access control is enforced on mutating endpoints (update/delete)
-    to prevent cross-site modifications.
+    List users visible to the current admin.
+
+    * **Global admins** see every account in the system.
+    * **Site-scoped admins** see only users who share at least one
+      assigned site with them (including themselves).
     """
-    users = db.query(models.User).order_by(models.User.email).all()
+    query = db.query(models.User)
+    if not current_user.is_global_admin:
+        # A site-scoped admin can only see users whose assigned_site_ids
+        # JSONB array contains at least one of the admin's own sites.
+        # Uses PostgreSQL `@>` (contains) operator on the JSONB column.
+        site_conditions = [
+            models.User.assigned_site_ids.contains([site_id])
+            for site_id in current_user.assigned_site_ids
+        ]
+        if site_conditions:
+            query = query.filter(
+                (or_(*site_conditions) & (models.User.role != "Admin"))
+                | (models.User.id == current_user.id)
+            )
+        else:
+            # Site admin with no assigned sites can only see themselves.
+            query = query.filter(models.User.id == current_user.id)
+    users = query.order_by(models.User.email).all()
     return [to_user_response(user) for user in users]
 
 
@@ -190,6 +214,24 @@ def update_user_role(
         assigned_site_ids=assigned_site_ids,
         is_global_admin=is_global_admin,
     )
+
+    if payload.email is not None:
+        normalized_email = str(payload.email).strip().lower()
+        if normalized_email != user.email:
+            existing = (
+                db.query(models.User)
+                .filter(models.User.email == normalized_email)
+                .one_or_none()
+            )
+            if existing is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A user with this email already exists.",
+                )
+            user.email = normalized_email
+
+    if payload.full_name is not None:
+        user.full_name = payload.full_name.strip()
 
     user.role = role
     if payload.status is not None:
