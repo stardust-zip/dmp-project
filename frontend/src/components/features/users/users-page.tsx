@@ -258,7 +258,7 @@ export function UsersPage() {
   const emailIssue = emailValidationIssue(form.email);
   const phoneIssue = phoneValidationIssue(form.contact_number ?? "");
   const passwordMismatch = form.password.length > 0 && passwordConfirm.length > 0 && form.password !== passwordConfirm;
-  const requiresSites = form.role !== "AI_Engineer" && !(form.role === "Admin" && form.is_global_admin) && !skipLocations;
+  const requiresSites = (form.role === "Operator" || (form.role === "Admin" && !form.is_global_admin)) && !skipLocations;
   const missingFields = collectMissingFields(form, passwordConfirm, requiresSites);
   const canSubmit = Boolean(
     form.email.trim() &&
@@ -272,7 +272,7 @@ export function UsersPage() {
   );
 
   function roleDescription(role: ManagedUserRole) {
-    if (role === "Admin") return "Full platform access. Can manage users, models, and system configuration.";
+    if (role === "Admin") return "Manage users and assets. Enable global admin below for cross-site access, or assign specific locations for site-scoped management.";
     if (role === "AI_Engineer") return "Read-only global access for model training and data analysis. Cannot perform operational actions.";
     return "Day-to-day operational access. Assigned to specific locations for monitoring and maintenance.";
   }
@@ -315,8 +315,8 @@ export function UsersPage() {
   }
 
   function scopeLabel(user: ManagedUser) {
+    if (user.role === "Admin" && user.is_global_admin) return "All locations";
     if (user.role === "AI_Engineer") return "Global read";
-    if (user.role === "Admin" && user.is_global_admin) return "Global admin";
     if (!user.assigned_site_ids.length) return "No sites assigned";
     return user.assigned_site_ids.map((siteId) => displayLocationName(siteById.get(siteId)?.name, siteId)).join(", ");
   }
@@ -340,7 +340,7 @@ export function UsersPage() {
         role: form.role,
         status: form.status,
         contact_number: form.contact_number?.trim() || null,
-        assigned_site_ids: form.role === "AI_Engineer" || form.is_global_admin || skipLocations ? [] : form.assigned_site_ids,
+        assigned_site_ids: ((form.role === "Operator" || (form.role === "Admin" && !form.is_global_admin)) && !skipLocations) ? form.assigned_site_ids : [],
         is_global_admin: form.role === "Admin" && form.is_global_admin,
       });
       setUsers((current) => [...current, created].sort((a, b) => a.email.localeCompare(b.email)));
@@ -381,6 +381,8 @@ export function UsersPage() {
   function openEditUser(user: ManagedUser) {
     setEditingUser(user);
     setEditingUserForm({
+      full_name: user.full_name,
+      email: user.email,
       role: user.role,
       status: user.status,
       contact_number: user.contact_number ?? "",
@@ -398,11 +400,13 @@ export function UsersPage() {
     const resolvedRole = editingUserForm.role ?? editingUser.role;
     const resolvedIsGlobalAdmin = resolvedRole === "Admin" && (editingUserForm.is_global_admin ?? editingUser.is_global_admin);
     const resolvedAssignedSiteIds =
-      resolvedRole === "AI_Engineer" || resolvedIsGlobalAdmin
-        ? []
-        : (editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids);
+      (resolvedRole === "Operator" || (resolvedRole === "Admin" && !resolvedIsGlobalAdmin))
+        ? (editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids)
+        : [];
 
     const payload: UpdateUserRolePayload = {
+      full_name: editingUserForm.full_name?.trim() || undefined,
+      email: editingUserForm.email?.trim().toLowerCase() || undefined,
       role: resolvedRole,
       status: editingUserForm.status,
       contact_number: editingUserForm.contact_number?.trim() || null,
@@ -655,8 +659,8 @@ export function UsersPage() {
                     setForm((current) => ({
                       ...current,
                       role,
-                      assigned_site_ids: role === "AI_Engineer" ? [] : current.assigned_site_ids,
                       is_global_admin: role === "Admin" ? current.is_global_admin : false,
+                      assigned_site_ids: role !== "Operator" ? [] : current.assigned_site_ids,
                     }))
                   }
                   options={USER_ROLES.map((role) => ({ value: role, label: managedRoleLabel(role) }))}
@@ -687,7 +691,7 @@ export function UsersPage() {
                   />
                   <span>
                     <b>Global admin</b>
-                    <small>City-level access to all properties and user management.</small>
+                    <small>Access to all locations, users, and system configuration across every site.</small>
                   </span>
                 </label>
               )}
@@ -696,7 +700,11 @@ export function UsersPage() {
                 <div className="user-scope-note">
                   AI Engineers receive global read access for model training, but remain functionally restricted from operational actions.
                 </div>
-              ) : form.is_global_admin ? null : (
+              ) : (form.role === "Admin" && form.is_global_admin) ? (
+                <div className="user-scope-note">
+                  Global admins have access to all locations, users, and system configuration.
+                </div>
+              ) : (
                 <>
                   {!skipLocations && (
                     <Field label="Assigned locations">
@@ -723,12 +731,14 @@ export function UsersPage() {
                     />
                     <span>
                       <b>Assign locations later</b>
-                      <small>Skip location assignment during creation. You can assign locations from the user table afterward.</small>
+                      <small>Skip location assignment during creation. You can assign locations later from the edit panel.</small>
                     </span>
                   </label>
                   {skipLocations && (
                     <div className="user-scope-note user-scope-note-warn">
-                      This user will have no data access until locations are assigned. Use the scope column in the table to add locations after creation.
+                      {form.role === "Admin"
+                        ? "This site admin will only manage assigned locations."
+                        : "This operator will have no data access until locations are assigned."}
                     </div>
                   )}
                 </>
@@ -818,20 +828,40 @@ export function UsersPage() {
             <form className="user-form user-modal-body" onSubmit={handleEditUser}>
               <Field label="Full name">
                 <input
-                  className="input input-disabled"
-                  value={editingUser.full_name}
-                  disabled
-                  readOnly
+                  className="input"
+                  value={editingUserForm.full_name ?? editingUser.full_name}
+                  onChange={(event) =>
+                    setEditingUserForm((current) => ({ ...current, full_name: event.target.value }))
+                  }
+                  autoComplete="name"
+                  placeholder="Jane Smith"
+                  required
                 />
               </Field>
 
               <Field label="Email">
                 <input
-                  className="input input-disabled"
-                  value={editingUser.email}
-                  disabled
-                  readOnly
+                  className="input"
+                  type="email"
+                  value={editingUserForm.email ?? editingUser.email}
+                  onChange={(event) =>
+                    setEditingUserForm((current) => ({ ...current, email: event.target.value }))
+                  }
+                  autoComplete="email"
+                  placeholder="jane@example.com"
+                  required
                 />
+                {(() => {
+                  const editEmail = editingUserForm.email ?? editingUser.email;
+                  const editEmailIssue = emailValidationIssue(editEmail);
+                  if (editEmail.trim() && editEmailIssue) {
+                    return <span className="user-field-help">{editEmailIssue}</span>;
+                  }
+                  if (editEmail.trim() && !editEmailIssue) {
+                    return <span className="user-field-ok">Email format looks good.</span>;
+                  }
+                  return null;
+                })()}
               </Field>
 
               <Field label="Role">
@@ -842,7 +872,7 @@ export function UsersPage() {
                       ...current,
                       role,
                       is_global_admin: role === "Admin" ? current.is_global_admin : false,
-                      assigned_site_ids: role === "AI_Engineer" ? [] : current.assigned_site_ids,
+                      assigned_site_ids: role !== "Operator" ? [] : current.assigned_site_ids,
                     }))
                   }
                   options={USER_ROLES.map((role) => ({ value: role, label: managedRoleLabel(role) }))}
@@ -872,22 +902,7 @@ export function UsersPage() {
                 />
               </Field>
 
-              {/* ── Location assignments ── */}
-              {(editingUserForm.role ?? editingUser.role) !== "AI_Engineer" && !(editingUserForm.is_global_admin ?? editingUser.is_global_admin) && (
-                <Field label="Assigned locations">
-                  <UserLocationPicker
-                    selectedIds={editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids}
-                    selectedLocations={(editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids)
-                      .map((siteId) => siteById.get(siteId) ?? { id: siteId, name: siteId })
-                      .filter(Boolean) as LocationOption[]}
-                    siteById={siteById}
-                    onAdd={editingAddAssignedLocation}
-                    onRemove={editingRemoveAssignedLocation}
-                    recentLocationEntries={recentLocationEntries}
-                  />
-                </Field>
-              )}
-
+              {/* ── Global admin toggle ── */}
               {(editingUserForm.role ?? editingUser.role) === "Admin" && session?.user.isGlobalAdmin && (
                 <label className="user-check-row">
                   <input
@@ -903,10 +918,39 @@ export function UsersPage() {
                   />
                   <span>
                     <b>Global admin</b>
-                    <small>City-level access to all properties and user management.</small>
+                    <small>Access to all locations, users, and system configuration across every site.</small>
                   </span>
                 </label>
               )}
+
+              {/* ── Location assignments ── */}
+              {(() => {
+                const resolvedRole = editingUserForm.role ?? editingUser.role;
+                const resolvedIsGlobal = editingUserForm.is_global_admin ?? editingUser.is_global_admin;
+                if (resolvedRole === "AI_Engineer" || (resolvedRole === "Admin" && resolvedIsGlobal)) {
+                  return (
+                    <div className="user-scope-note">
+                      {resolvedRole === "AI_Engineer"
+                        ? "AI Engineers have global read-only access."
+                        : "Global admins have access to all locations."}
+                    </div>
+                  );
+                }
+                return (
+                  <Field label="Assigned locations">
+                    <UserLocationPicker
+                      selectedIds={editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids}
+                      selectedLocations={(editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids)
+                        .map((siteId) => siteById.get(siteId) ?? { id: siteId, name: siteId })
+                        .filter(Boolean) as LocationOption[]}
+                      siteById={siteById}
+                      onAdd={editingAddAssignedLocation}
+                      onRemove={editingRemoveAssignedLocation}
+                      recentLocationEntries={recentLocationEntries}
+                    />
+                  </Field>
+                );
+              })()}
 
               {/* ── Danger zone ── */}
               <div className="user-delete-zone">
@@ -956,16 +1000,19 @@ export function UsersPage() {
               <div className="user-modal-foot">
                 <div className="user-submit-summary">
                   <span className="user-submit-hint">
-                    {(editingUserForm.role ?? editingUser.role) === "AI_Engineer"
-                      ? "AI Engineers have global read-only access."
-                      : (editingUserForm.is_global_admin ?? editingUser.is_global_admin)
-                        ? "Global admin — access to all locations."
-                        : (() => {
-                            const count = (editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids).length;
-                            return count > 0
-                              ? `${count} location${count !== 1 ? "s" : ""} assigned`
-                              : "No locations assigned";
-                          })()}
+                    {(() => {
+                      const resolvedRole = editingUserForm.role ?? editingUser.role;
+                      const resolvedIsGlobal = editingUserForm.is_global_admin ?? editingUser.is_global_admin;
+                      if (resolvedRole === "Admin" && resolvedIsGlobal) return "Global admin — all locations.";
+                      if (resolvedRole === "AI_Engineer") return "Global read-only access.";
+                      if (resolvedRole === "Admin" || resolvedRole === "Operator") {
+                        const count = (editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids).length;
+                        return count > 0
+                          ? `${count} location${count !== 1 ? "s" : ""} assigned`
+                          : "No locations assigned";
+                      }
+                      return null;
+                    })()}
                   </span>
                 </div>
                 <div className="user-modal-foot-actions">
