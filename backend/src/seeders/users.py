@@ -122,10 +122,8 @@ def _build_seed_users(site_ids: list[str]) -> tuple[SeedUser, ...]:
     S3 = _id_tuple(3)
 
     S01 = _id_tuple(0, 1)
-    S02 = _id_tuple(0, 2)
     S03 = _id_tuple(0, 2, 3)
     S14 = _id_tuple(1, 4)
-    S134 = _id_tuple(1, 3, 4)
 
     return (
         # ── Global Admins (2) ──────────────────────────────────────
@@ -271,21 +269,22 @@ def _build_seed_users(site_ids: list[str]) -> tuple[SeedUser, ...]:
             contact_number="+1 555 300 8888",
             assigned_site_ids=S3,
         ),
-        # ── Operators — multi-site (2) ─────────────────────────────
+        # ── Operators — multi-site → single-site (model now enforces
+        # one site per operator; these were split to individual sites)
         SeedUser(
             email="op-multi-kai@dmp.com",
             full_name="Kai Nakamura",
             role="Operator",
             status="Available",
             contact_number="+1 555 300 0010",
-            assigned_site_ids=S02,
+            assigned_site_ids=S0,
         ),
         SeedUser(
             email="op-multi-fatima@dmp.com",
             full_name="Fatima Al-Rashid",
             role="Operator",
             status="In_Shift",
-            assigned_site_ids=S134,
+            assigned_site_ids=S1,
         ),
         # ── Operators — edge cases (2) ─────────────────────────────
         SeedUser(
@@ -308,7 +307,7 @@ def _build_seed_users(site_ids: list[str]) -> tuple[SeedUser, ...]:
             full_name="Demo Operator",
             role="Operator",
             status="Available",
-            assigned_site_ids=S02,
+            assigned_site_ids=S0,
         ),
         # ── AI Engineers (3) — global read-only ────────────────────
         SeedUser(

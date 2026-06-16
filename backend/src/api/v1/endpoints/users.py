@@ -37,6 +37,61 @@ def _validate_locations_exist(db: Session, location_ids: list[str]) -> None:
         )
 
 
+def _resolve_single_site(db: Session, location_ids: list[str]) -> str | None:
+    """
+    Return the single site that all *location_ids* belong to.
+
+    Walks the parent chain of each location until a ``location_type_id ==
+    "site"`` row is found.  If the locations span more than one site a
+    422 error is raised — operators may be assigned to multiple buildings
+    but they must all live under the same site.
+    """
+    if not location_ids:
+        return None
+
+    # Load all referenced locations (and their immediate parents if needed).
+    loc_map: dict[str, models.Location] = {
+        loc.id: loc
+        for loc in db.query(models.Location)
+        .filter(models.Location.id.in_(location_ids))
+        .all()
+    }
+    missing_parents = {
+        loc.parent_id
+        for loc in loc_map.values()
+        if loc.parent_id and loc.parent_id not in loc_map
+    }
+    if missing_parents:
+        for ploc in db.query(models.Location).filter(
+            models.Location.id.in_(missing_parents)
+        ).all():
+            loc_map[ploc.id] = ploc
+
+    site_ids: set[str] = set()
+    site_names: list[str] = []
+
+    for loc_id in location_ids:
+        current = loc_map.get(loc_id)
+        while current:
+            if current.location_type_id == "site":
+                site_ids.add(current.id)
+                if current.id not in {s for s in site_ids if s == current.id}:
+                    site_names.append(current.name)
+                break
+            current = loc_map.get(current.parent_id) if current.parent_id else None
+
+    if len(site_ids) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Operators can only be assigned to locations within a single site. "
+                f"These locations span multiple sites: {', '.join(site_names)}."
+            ),
+        )
+
+    return site_ids.pop() if site_ids else None
+
+
 def _can_manage_user(current_user: UserResponse, target_user: models.User) -> bool:
     # Global admins can manage any account.
     if current_user.is_global_admin:
@@ -48,7 +103,9 @@ def _can_manage_user(current_user: UserResponse, target_user: models.User) -> bo
     if target_user.role == "Admin":
         return False
     # Site-scoped admins can manage operators who share at least one
-    # assigned site with them.
+    # assigned site.  Because operators are restricted to a single site
+    # (enforced by _resolve_single_site), there is no cross-admin
+    # ownership conflict.
     return bool(
         set(current_user.assigned_site_ids) & set(target_user.assigned_site_ids or [])
     )
@@ -152,6 +209,10 @@ def create_user(
         role, _site_ids(payload.assigned_site_ids), payload.is_global_admin
     )
     _validate_locations_exist(db, assigned_site_ids)
+    # Operators must belong to a single site (multiple buildings within
+    # that site are fine).
+    if role == UserRole.Operator.value:
+        _resolve_single_site(db, assigned_site_ids)
     _assert_can_assign_scope(
         current_user,
         role=role,
@@ -208,6 +269,8 @@ def update_user_role(
         role, assigned_site_ids, is_global_admin
     )
     _validate_locations_exist(db, assigned_site_ids)
+    if role == UserRole.Operator.value:
+        _resolve_single_site(db, assigned_site_ids)
     _assert_can_assign_scope(
         current_user,
         role=role,
