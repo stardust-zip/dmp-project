@@ -41,6 +41,8 @@ const RECENT_LOCATIONS_KEY = "dmp.recent-location-ids";
 interface RecentLocationEntry {
   id: string;
   name: string;
+  parent_id?: string | null;
+  location_type?: string | null;
 }
 
 function loadRecentLocationEntries(): RecentLocationEntry[] {
@@ -63,7 +65,12 @@ function saveRecentLocationEntries(locations: LocationOption[]) {
   if (typeof window === "undefined") return;
   const current = loadRecentLocationEntries();
   const updated = [
-    ...locations.map((loc) => ({ id: loc.id, name: loc.name ?? loc.id })),
+    ...locations.map((loc) => ({
+      id: loc.id,
+      name: loc.name ?? loc.id,
+      parent_id: loc.parent_id ?? null,
+      location_type: loc.location_type ?? null,
+    })),
     ...current.filter((entry) => !locations.some((loc) => loc.id === entry.id)),
   ].slice(0, 10);
   window.localStorage.setItem(RECENT_LOCATIONS_KEY, JSON.stringify(updated));
@@ -111,7 +118,7 @@ function emailValidationIssue(email: string): string | null {
 function phoneValidationIssue(phone: string): string | null {
   const trimmed = phone.trim();
   if (!trimmed) return null;
-  const numericOnly = trimmed.replace(/[\s\-\(\)\.]+/g, "");
+  const numericOnly = trimmed.replace(/[\s().-]+/g, "");
   if (numericOnly.length < 7) return "Number is too short.";
   if (numericOnly.length > 15) return "Number is too long.";
   if (!/^\+?\d+$/.test(numericOnly)) return "Use only digits, spaces, dashes, and an optional leading +.";
@@ -167,11 +174,12 @@ export function UsersPage() {
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
   const [form, setForm] = useState<CreateUserPayload>(EMPTY_FORM);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [passwordConfirm, setPasswordConfirm] = useState("");
-  const [skipLocations, setSkipLocations] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
   const [editingUserForm, setEditingUserForm] = useState<UpdateUserRolePayload>({});
+  const [editError, setEditError] = useState<string | null>(null);
   const [editingUserSubmitting, setEditingUserSubmitting] = useState(false);
   const [editingUserDeleteConfirm, setEditingUserDeleteConfirm] = useState(false);
 
@@ -182,7 +190,7 @@ export function UsersPage() {
     [form.assigned_site_ids, siteById],
   );
 
-  const recentLocationEntries = useMemo<RecentLocationEntry[]>(() => loadRecentLocationEntries(), [createOpen, editingUser]);
+  const recentLocationEntries = loadRecentLocationEntries();
 
   async function refresh(signal?: AbortSignal) {
     setLoading(true);
@@ -258,7 +266,7 @@ export function UsersPage() {
   const emailIssue = emailValidationIssue(form.email);
   const phoneIssue = phoneValidationIssue(form.contact_number ?? "");
   const passwordMismatch = form.password.length > 0 && passwordConfirm.length > 0 && form.password !== passwordConfirm;
-  const requiresSites = (form.role === "Operator" || (form.role === "Admin" && !form.is_global_admin)) && !skipLocations;
+  const requiresSites = form.role === "Operator" || (form.role === "Admin" && !form.is_global_admin);
   const missingFields = collectMissingFields(form, passwordConfirm, requiresSites);
   const canSubmit = Boolean(
     form.email.trim() &&
@@ -280,6 +288,14 @@ export function UsersPage() {
   function addAssignedLocation(location: LocationOption) {
     setSites((current) => (current.some((site) => site.id === location.id) ? current : [...current, location]));
     setForm((current) => {
+      if (current.role === "Operator") {
+        const selectedSiteId = current.assigned_site_ids
+          .map((siteId) => siteById.get(siteId) ?? { id: siteId, name: siteId })
+          .map((site) => (site.location_type === "site" ? site.id : site.parent_id ?? site.id))
+          .find(Boolean);
+        const nextSiteId = location.location_type === "site" ? location.id : location.parent_id ?? location.id;
+        if (selectedSiteId && nextSiteId !== selectedSiteId) return current;
+      }
       const selected = new Set(current.assigned_site_ids);
       selected.add(location.id);
       const nextIds = [...selected].sort();
@@ -298,7 +314,16 @@ export function UsersPage() {
   function editingAddAssignedLocation(location: LocationOption) {
     setSites((current) => (current.some((site) => site.id === location.id) ? current : [...current, location]));
     setEditingUserForm((current) => {
+      const resolvedRole = current.role ?? editingUser?.role;
       const prev = current.assigned_site_ids ?? [];
+      if (resolvedRole === "Operator") {
+        const selectedSiteId = prev
+          .map((siteId) => siteById.get(siteId) ?? { id: siteId, name: siteId })
+          .map((site) => (site.location_type === "site" ? site.id : site.parent_id ?? site.id))
+          .find(Boolean);
+        const nextSiteId = location.location_type === "site" ? location.id : location.parent_id ?? location.id;
+        if (selectedSiteId && nextSiteId !== selectedSiteId) return current;
+      }
       const selected = new Set(prev);
       selected.add(location.id);
       const nextIds = [...selected].sort();
@@ -330,7 +355,7 @@ export function UsersPage() {
     if (!canSubmit) return;
 
     setSubmitting("create");
-    setError(null);
+    setCreateError(null);
     setMessage(null);
     try {
       const created = await createUser({
@@ -340,11 +365,11 @@ export function UsersPage() {
         role: form.role,
         status: form.status,
         contact_number: form.contact_number?.trim() || null,
-        assigned_site_ids: ((form.role === "Operator" || (form.role === "Admin" && !form.is_global_admin)) && !skipLocations) ? form.assigned_site_ids : [],
+        assigned_site_ids: (form.role === "Operator" || (form.role === "Admin" && !form.is_global_admin)) ? form.assigned_site_ids : [],
         is_global_admin: form.role === "Admin" && form.is_global_admin,
       });
       setUsers((current) => [...current, created].sort((a, b) => a.email.localeCompare(b.email)));
-      if (!skipLocations && form.assigned_site_ids.length > 0) {
+      if (form.assigned_site_ids.length > 0) {
         const createdLocations = form.assigned_site_ids
           .map((id) => siteById.get(id))
           .filter((loc): loc is LocationOption => Boolean(loc));
@@ -355,7 +380,7 @@ export function UsersPage() {
       setCreateOpen(false);
       setMessage(`${created.full_name} was created.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to create user.");
+      setCreateError(err instanceof Error ? err.message : "Unable to create user.");
     } finally {
       setSubmitting(null);
     }
@@ -380,6 +405,7 @@ export function UsersPage() {
 
   function openEditUser(user: ManagedUser) {
     setEditingUser(user);
+    setEditError(null);
     setEditingUserForm({
       full_name: user.full_name,
       email: user.email,
@@ -415,7 +441,7 @@ export function UsersPage() {
     };
 
     setEditingUserSubmitting(true);
-    setError(null);
+    setEditError(null);
     setMessage(null);
     try {
       const updated = await updateUserRole(editingUser.id, payload);
@@ -429,7 +455,7 @@ export function UsersPage() {
       setEditingUser(null);
       setMessage(`${updated.full_name} was updated.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to update user.");
+      setEditError(err instanceof Error ? err.message : "Unable to update user.");
     } finally {
       setEditingUserSubmitting(false);
     }
@@ -454,10 +480,10 @@ export function UsersPage() {
               const adminSiteIds = session?.user.assignedSiteIds ?? [];
               setForm({
                 ...EMPTY_FORM,
-                assigned_site_ids: adminSiteIds,
+                assigned_site_ids: adminSiteIds.length === 1 ? adminSiteIds : [],
               });
               setPasswordConfirm("");
-              setSkipLocations(false);
+              setCreateError(null);
               setCreateOpen(true);
             }}
           >
@@ -660,7 +686,7 @@ export function UsersPage() {
                       ...current,
                       role,
                       is_global_admin: role === "Admin" ? current.is_global_admin : false,
-                      assigned_site_ids: role !== "Operator" ? [] : current.assigned_site_ids,
+                      assigned_site_ids: role === "AI_Engineer" ? [] : current.assigned_site_ids,
                     }))
                   }
                   options={USER_ROLES.map((role) => ({ value: role, label: managedRoleLabel(role) }))}
@@ -706,41 +732,20 @@ export function UsersPage() {
                 </div>
               ) : (
                 <>
-                  {!skipLocations && (
-                    <Field label="Assigned locations">
-                      <UserLocationPicker
-                        selectedIds={form.assigned_site_ids}
-                        selectedLocations={selectedLocations}
-                        siteById={siteById}
-                        onAdd={addAssignedLocation}
-                        onRemove={removeAssignedLocation}
-                        recentLocationEntries={recentLocationEntries}
-                      />
-                    </Field>
-                  )}
-                  <label className="user-check-row user-check-row-skip">
-                    <input
-                      type="checkbox"
-                      checked={skipLocations}
-                      onChange={(event) => {
-                        setSkipLocations(event.target.checked);
-                        if (event.target.checked) {
-                          setForm((current) => ({ ...current, assigned_site_ids: [] }));
-                        }
-                      }}
+                  <Field label={form.role === "Operator" ? "Assigned buildings or site" : "Assigned locations"}>
+                    <UserLocationPicker
+                      selectedIds={form.assigned_site_ids}
+                      selectedLocations={selectedLocations}
+                      siteById={siteById}
+                      onAdd={addAssignedLocation}
+                      onRemove={removeAssignedLocation}
+                      recentLocationEntries={recentLocationEntries}
+                      enforceSingleSite={form.role === "Operator"}
                     />
-                    <span>
-                      <b>Assign locations later</b>
-                      <small>Skip location assignment during creation. You can assign locations later from the edit panel.</small>
-                    </span>
-                  </label>
-                  {skipLocations && (
-                    <div className="user-scope-note user-scope-note-warn">
-                      {form.role === "Admin"
-                        ? "This site admin will only manage assigned locations."
-                        : "This operator will have no data access until locations are assigned."}
-                    </div>
-                  )}
+                    {form.role === "Operator" && (
+                      <span className="user-role-hint">Select one site, or multiple buildings from the same site.</span>
+                    )}
+                  </Field>
                 </>
               )}
 
@@ -786,6 +791,12 @@ export function UsersPage() {
               </Field>
 
               {/* ── Footer ── */}
+              {createError && (
+                <div className="user-form-error" role="alert">
+                  <Icon name="info" />
+                  <span>{createError}</span>
+                </div>
+              )}
               <div className="user-modal-foot">
                 <div className="user-submit-summary">
                   {missingFields.length > 0 ? (
@@ -872,7 +883,7 @@ export function UsersPage() {
                       ...current,
                       role,
                       is_global_admin: role === "Admin" ? current.is_global_admin : false,
-                      assigned_site_ids: role !== "Operator" ? [] : current.assigned_site_ids,
+                      assigned_site_ids: role === "AI_Engineer" ? [] : current.assigned_site_ids,
                     }))
                   }
                   options={USER_ROLES.map((role) => ({ value: role, label: managedRoleLabel(role) }))}
@@ -947,7 +958,11 @@ export function UsersPage() {
                       onAdd={editingAddAssignedLocation}
                       onRemove={editingRemoveAssignedLocation}
                       recentLocationEntries={recentLocationEntries}
+                      enforceSingleSite={resolvedRole === "Operator"}
                     />
+                    {resolvedRole === "Operator" && (
+                      <span className="user-role-hint">Select one site, or multiple buildings from the same site.</span>
+                    )}
                   </Field>
                 );
               })()}
@@ -997,6 +1012,12 @@ export function UsersPage() {
                 })()}
               </div>
 
+              {editError && (
+                <div className="user-form-error" role="alert">
+                  <Icon name="info" />
+                  <span>{editError}</span>
+                </div>
+              )}
               <div className="user-modal-foot">
                 <div className="user-submit-summary">
                   <span className="user-submit-hint">

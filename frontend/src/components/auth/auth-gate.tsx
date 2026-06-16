@@ -15,7 +15,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
+    const timeout = window.setTimeout(() => setMounted(true), 0);
+    return () => window.clearTimeout(timeout);
   }, []);
 
   const isPublicRoute = PUBLIC_ROUTES.has(pathname);

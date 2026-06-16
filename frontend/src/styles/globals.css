@@ -3103,6 +3103,20 @@ table.tbl tbody tr:last-child td {
     background: var(--accent-softer);
 }
 
+.user-location-result.is-disabled,
+.user-location-result:disabled {
+    border-color: var(--border);
+    background: var(--surface-2);
+    color: var(--muted);
+    cursor: not-allowed;
+    opacity: .78;
+}
+
+.user-location-result.is-disabled svg,
+.user-location-result:disabled svg {
+    color: var(--muted);
+}
+
 .user-location-result svg {
     width: 16px;
     height: 16px;
@@ -3223,6 +3237,27 @@ table.tbl tbody tr:last-child td {
 }
 
 .user-form-missing svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+    margin-top: 1px;
+}
+
+.user-form-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--red-border);
+    border-radius: 8px;
+    background: var(--red-soft);
+    color: var(--red);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.4;
+}
+
+.user-form-error svg {
     width: 15px;
     height: 15px;
     flex: 0 0 auto;
