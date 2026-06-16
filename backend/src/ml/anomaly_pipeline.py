@@ -13,6 +13,7 @@ Calibration: early_stop_model predictions on val_window (out-of-sample).
 """
 from __future__ import annotations
 
+import gc
 import logging
 from collections.abc import Callable
 from datetime import timedelta
@@ -78,6 +79,11 @@ SEV_THRESHOLDS = [(10.0, "Critical"), (6.0, "High"), (4.0, "Medium"), (3.0, "Low
 
 # Weather CSV fallback location (mirrors the raw data layout used in tasks.py).
 RAW_DATA_DIR = "/app/data/raw/data"
+
+CHUNK_TRAINING_THRESHOLD_DAYS = 365
+DEFAULT_CHUNK_MONTHS = 3
+CHUNK_N_ESTIMATORS = 1000
+CHUNK_VAL_WEEKS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +463,19 @@ def _split_by_dates(df: pd.DataFrame, start, end) -> pd.DataFrame:
     return df[(df["timestamp"] >= start) & (df["timestamp"] <= end)].copy()
 
 
+def _date_chunks(
+    start: pd.Timestamp, end: pd.Timestamp, months: int
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Split [start, end] into non-overlapping [chunk_start, chunk_end] pairs."""
+    chunks = []
+    cur = start
+    while cur < end:
+        nxt = pd.Timestamp(cur + pd.DateOffset(months=months))
+        chunks.append((cur, min(nxt, end)))
+        cur = nxt
+    return chunks
+
+
 def train_lgbm(
     df: pd.DataFrame,
     feature_cols: list[str],
@@ -557,6 +576,183 @@ def train_lgbm(
     }
 
     return final_model, early_stop_model, val_df, metrics
+
+
+def train_lgbm_chunked(
+    db: Session,
+    request: ModelTrainingRequest,
+    train_end: pd.Timestamp,
+    test_start: pd.Timestamp,
+    use_weather: bool,
+    weather_df: pd.DataFrame,
+    weather_feature_cols: list[str],
+    chunk_months: int = DEFAULT_CHUNK_MONTHS,
+    append_log: Callable[[str], None] = lambda _: None,
+) -> tuple[lgb.LGBMRegressor, lgb.LGBMRegressor, pd.DataFrame, dict, list[str], list[str]]:
+    """
+    Continual-learning variant of train_lgbm for long date ranges.
+
+    Loads one chunk at a time to stay within memory limits. Each chunk trains up to
+    CHUNK_N_ESTIMATORS trees with a 2-week holdout for per-chunk early stopping, then
+    warm-starts the next chunk via init_model. Val and test windows are loaded separately
+    after all training chunks are freed.
+
+    Returns the same shape as train_lgbm plus (feature_cols, cat_features).
+    """
+    start = pd.Timestamp(request.time_range_start)
+    end = pd.Timestamp(request.time_range_end)
+
+    train_chunks = _date_chunks(start, train_end, chunk_months)
+    n_chunks = len(train_chunks)
+    append_log(
+        f"Chunked training: {n_chunks} chunk(s) × {chunk_months} months, "
+        f"up to {CHUNK_N_ESTIMATORS} trees/chunk with per-chunk early stopping."
+    )
+
+    feature_cols: list[str] = []
+    cat_features: list[str] = []
+    prev_booster: lgb.Booster | None = None
+    chunk_model: lgb.LGBMRegressor | None = None
+
+    for i, (chunk_start, chunk_end) in enumerate(train_chunks):
+        append_log(f"  Chunk {i + 1}/{n_chunks}: {chunk_start.date()} → {chunk_end.date()}")
+
+        chunk_request = request.model_copy(update={
+            "time_range_start": chunk_start,
+            "time_range_end": chunk_end,
+        })
+        chunk_raw = load_telemetry_for_training(db, chunk_request)
+        if chunk_raw.empty:
+            append_log(f"  Chunk {i + 1}: no telemetry, skipping.")
+            continue
+        downcast_telemetry_dtypes(chunk_raw)
+
+        cw_df = pd.DataFrame()
+        cw_cols: list[str] = []
+        if use_weather and not weather_df.empty:
+            mask = (
+                (weather_df["timestamp"] >= chunk_start - timedelta(hours=168))
+                & (weather_df["timestamp"] <= chunk_end)
+            )
+            cw_df = weather_df.loc[mask].copy()
+            cw_cols = weather_feature_cols
+
+        feat_df, f_cols, c_feats = build_feature_matrix(
+            chunk_raw, use_weather and not cw_df.empty, cw_df, cw_cols
+        )
+        del chunk_raw, cw_df
+        gc.collect()
+
+        if not feature_cols:
+            feature_cols, cat_features = f_cols, c_feats
+
+        # 2-week holdout at the tail of the chunk for per-chunk early stopping
+        chunk_val_cutoff = chunk_end - timedelta(weeks=CHUNK_VAL_WEEKS)
+        chunk_tr = feat_df[
+            (feat_df["timestamp"] >= chunk_start) & (feat_df["timestamp"] <= chunk_val_cutoff)
+        ].dropna(subset=[TARGET_COL])
+        chunk_va = feat_df[
+            (feat_df["timestamp"] > chunk_val_cutoff) & (feat_df["timestamp"] <= chunk_end)
+        ].dropna(subset=[TARGET_COL])
+        del feat_df
+        gc.collect()
+
+        if chunk_tr.empty:
+            append_log(f"  Chunk {i + 1}: empty training split, skipping.")
+            continue
+
+        new_model = lgb.LGBMRegressor(**{**LGB_PARAMS, "n_estimators": CHUNK_N_ESTIMATORS})
+        fit_kwargs: dict = {"categorical_feature": cat_features}
+        if prev_booster is not None:
+            fit_kwargs["init_model"] = prev_booster
+        if not chunk_va.empty:
+            fit_kwargs["eval_set"] = [(chunk_va[feature_cols], chunk_va[TARGET_COL])]
+            fit_kwargs["eval_metric"] = "rmse"
+            fit_kwargs["callbacks"] = [
+                lgb.early_stopping(EARLY_STOPPING_ROUNDS, first_metric_only=True, verbose=False),
+                lgb.log_evaluation(200),
+            ]
+
+        new_model.fit(chunk_tr[feature_cols], chunk_tr[TARGET_COL], **fit_kwargs)
+        best_iter = new_model.best_iteration_ or CHUNK_N_ESTIMATORS
+        append_log(f"  Chunk {i + 1}: best_iteration={best_iter} (absolute tree count)")
+
+        prev_booster = new_model.booster_
+        del chunk_tr, chunk_va
+        if chunk_model is not None:
+            del chunk_model
+        chunk_model = new_model
+        gc.collect()
+
+    if chunk_model is None:
+        raise ValueError("No training data found across all chunks.")
+
+    # Use chunk_model directly as final_model. best_iteration_ is already the correct
+    # absolute tree count (LightGBM counts from tree 0 across all init_model iterations
+    # and truncates the booster to best_iteration on early stop).
+    final_model = chunk_model
+    total_trees = final_model.booster_.num_trees()
+
+    # --- Val window: load separately for residual calibration ---
+    val_start = train_end + timedelta(hours=1)
+    val_end = test_start - timedelta(hours=1)
+    val_request = request.model_copy(update={"time_range_start": val_start, "time_range_end": val_end})
+    val_raw = load_telemetry_for_training(db, val_request)
+    downcast_telemetry_dtypes(val_raw)
+
+    vw_df = pd.DataFrame()
+    if use_weather and not weather_df.empty:
+        mask = (
+            (weather_df["timestamp"] >= val_start - timedelta(hours=168))
+            & (weather_df["timestamp"] <= val_end)
+        )
+        vw_df = weather_df.loc[mask].copy()
+
+    val_feat, _, _ = build_feature_matrix(
+        val_raw, use_weather and not vw_df.empty, vw_df, weather_feature_cols
+    )
+    del val_raw, vw_df
+    gc.collect()
+
+    val_df = val_feat[
+        (val_feat["timestamp"] >= val_start) & (val_feat["timestamp"] <= val_end)
+    ].dropna(subset=[TARGET_COL])
+
+    # --- Test window: load separately for final metrics ---
+    test_request = request.model_copy(update={"time_range_start": test_start, "time_range_end": end})
+    test_raw = load_telemetry_for_training(db, test_request)
+    downcast_telemetry_dtypes(test_raw)
+
+    tw_df = pd.DataFrame()
+    if use_weather and not weather_df.empty:
+        mask = (
+            (weather_df["timestamp"] >= test_start - timedelta(hours=168))
+            & (weather_df["timestamp"] <= end)
+        )
+        tw_df = weather_df.loc[mask].copy()
+
+    test_feat, _, _ = build_feature_matrix(test_raw, use_weather and not tw_df.empty, tw_df, weather_feature_cols)
+    del test_raw, tw_df
+    gc.collect()
+
+    test_df = test_feat[test_feat["timestamp"] >= test_start].dropna(subset=[TARGET_COL])
+    test_pred = np.array(final_model.predict(test_df[feature_cols])).clip(min=0)
+    test_rmse = _rmse(test_df[TARGET_COL], test_pred)
+    test_mae = float(mean_absolute_error(test_df[TARGET_COL], test_pred))
+    logger.info(
+        "Chunked — Test RMSE=%.3f MAE=%.3f total_trees=%d",
+        test_rmse, test_mae, total_trees,
+    )
+
+    metrics = {
+        "test_rmse": test_rmse,
+        "test_mae": test_mae,
+        "best_iteration": total_trees,
+        "cv_folds": [],
+    }
+
+    # final_model is out-of-sample on val_df (trained only on [start, train_end] chunks)
+    return final_model, final_model, val_df, metrics, feature_cols, cat_features
 
 
 def compute_residual_stats(

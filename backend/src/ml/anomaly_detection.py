@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from src.ml.anomaly_inference import run_rule_based_checks
 from src.ml.anomaly_pipeline import (
+    CHUNK_TRAINING_THRESHOLD_DAYS,
+    DEFAULT_CHUNK_MONTHS,
     build_feature_matrix,
     compute_residual_stats,
     downcast_telemetry_dtypes,
@@ -20,6 +22,7 @@ from src.ml.anomaly_pipeline import (
     load_weather_for_range,
     score_anomalies,
     train_lgbm,
+    train_lgbm_chunked,
 )
 from src.models import AIPipelineLog, AnomalyDetectedEvent
 from src.schemas import ModelTrainingRequest
@@ -143,18 +146,37 @@ def train_anomaly_detection_model(
         else:
             append_log(f"Weather loaded: {weather_feature_cols}")
 
-    # --- Feature matrix ---
-    append_log("Building feature matrix...")
-    feature_df, feature_cols, cat_features = build_feature_matrix(df, use_weather, weather_df, weather_feature_cols)
-    del df, weather_df
-    gc.collect()
-    append_log(f"Feature matrix: {len(feature_df):,} rows × {len(feature_cols)} features.")
+    # --- Feature matrix & training ---
+    use_chunked = (end - start).days > CHUNK_TRAINING_THRESHOLD_DAYS
 
-    # --- Train ---
-    append_log("Training LightGBM (4-fold CV + final model)...")
-    final_model, early_stop_model, val_df, train_metrics = train_lgbm(
-        feature_df, feature_cols, cat_features, train_end, test_start
-    )
+    if use_chunked:
+        append_log(
+            f"Training range is {(end - start).days} days — using chunked continual learning "
+            f"({DEFAULT_CHUNK_MONTHS}-month segments)."
+        )
+        del df
+        gc.collect()
+        final_model, early_stop_model, val_df, train_metrics, feature_cols, cat_features = train_lgbm_chunked(
+            db, request, train_end, test_start,
+            use_weather, weather_df, weather_feature_cols,
+            chunk_months=DEFAULT_CHUNK_MONTHS,
+            append_log=append_log,
+        )
+        del weather_df
+        gc.collect()
+        feature_df = None
+    else:
+        append_log("Building feature matrix...")
+        feature_df, feature_cols, cat_features = build_feature_matrix(df, use_weather, weather_df, weather_feature_cols)
+        del df, weather_df
+        gc.collect()
+        append_log(f"Feature matrix: {len(feature_df):,} rows × {len(feature_cols)} features.")
+
+        append_log("Training LightGBM (4-fold CV + final model)...")
+        final_model, early_stop_model, val_df, train_metrics = train_lgbm(
+            feature_df, feature_cols, cat_features, train_end, test_start
+        )
+
     for fold in train_metrics.get("cv_folds", []):
         append_log(
             f"  Fold {fold['fold']}: RMSE={fold['val_rmse']:.3f} MAE={fold['val_mae']:.3f} "
@@ -206,21 +228,22 @@ def train_anomaly_detection_model(
 
     append_log("Model registered as dmp_energy_anomaly_detection.")
 
-    # Anomaly rate on full training window (scored with final model)
-    train_window = feature_df[
-        (feature_df["timestamp"] >= start) & (feature_df["timestamp"] <= end)
-    ].dropna(subset=["consumption"])
+    # Anomaly rate on full training window (skipped for chunked path — feature_df not retained)
     anomaly_rate = 0.0
-    if not train_window.empty:
-        scored = score_anomalies(final_model, resid_stats, train_window, feature_cols)
-        anomaly_rate = float(scored["is_anomaly"].mean())
+    if feature_df is not None:
+        train_window = feature_df[
+            (feature_df["timestamp"] >= start) & (feature_df["timestamp"] <= end)
+        ].dropna(subset=["consumption"])
+        if not train_window.empty:
+            scored = score_anomalies(final_model, resid_stats, train_window, feature_cols)
+            anomaly_rate = float(scored["is_anomaly"].mean())
 
     return {
         "rmse": train_metrics["test_rmse"],
         "mae": train_metrics["test_mae"],
         "anomaly_rate": anomaly_rate,
-        "training_rows": len(feature_df),
-        "n_buildings": feature_df["building_id"].nunique(),
+        "training_rows": len(feature_df) if feature_df is not None else 0,
+        "n_buildings": feature_df["building_id"].nunique() if feature_df is not None else n_buildings,
         "n_rule_based_events": len(rule_events),
         "cv_folds": train_metrics.get("cv_folds", []),
     }
