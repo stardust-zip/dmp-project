@@ -135,7 +135,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 }
 
 export function useSettings() {
+  const store = useSettingsStore();
   const context = useContext(SettingsContext);
-  if (!context) return useSettingsStore();
-  return useSettingsStore();
+  return context ? { ...store, settings: context } : store;
 }
