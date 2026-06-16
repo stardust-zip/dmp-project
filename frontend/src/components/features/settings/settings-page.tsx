@@ -64,7 +64,6 @@ export function SettingsPage() {
                   >
                     <span className="swatch-dot" style={{ background: color }} />
                     <span className="swatch-label">{ACCENT_LABELS[key]}</span>
-                    {selected && <Icon name="check" className="swatch-check" />}
                   </button>
                 );
               })}

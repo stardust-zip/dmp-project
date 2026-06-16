@@ -35,6 +35,17 @@ function cssVar(name: string) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+function withAlpha(color: string, alpha: number) {
+  const hex = color.trim().replace("#", "");
+  if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+  return color;
+}
+
 function chartTheme(): ChartTheme {
   return {
     ink: cssVar("--ink") || "#0f172a",
@@ -173,7 +184,7 @@ export function buildTrend(range: string, areaStyle: boolean): ChartBuilder {
           lineStyle: { width: 2.4, color: theme.accent },
           itemStyle: { color: theme.accent },
           areaStyle: areaStyle
-            ? { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: theme.dark ? "rgba(37,99,235,.36)" : "rgba(37,99,235,.20)" }, { offset: 1, color: "rgba(37,99,235,0)" }]) }
+            ? { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: withAlpha(theme.accent, theme.dark ? 0.36 : 0.2) }, { offset: 1, color: withAlpha(theme.accent, 0) }]) }
             : undefined,
           z: 3,
         },
@@ -230,8 +241,8 @@ export function buildByBuilding(): ChartBuilder {
             color: (param: { value: number }) => {
               const ratio = param.value / max;
               return new echarts.graphic.LinearGradient(0, 0, 1, 0, [
-                { offset: 0, color: theme.dark ? "#1e3a8a" : "#93c5fd" },
-                { offset: 1, color: ratio > 0.85 ? theme.accent : ratio > 0.6 ? "#3b82f6" : "#60a5fa" },
+                { offset: 0, color: withAlpha(theme.accent, theme.dark ? 0.26 : 0.32) },
+                { offset: 1, color: ratio > 0.85 ? theme.accent : withAlpha(theme.accent, ratio > 0.6 ? 0.78 : 0.58) },
               ]);
             },
           },
@@ -269,7 +280,7 @@ export function buildAnomalyTimeline(): ChartBuilder {
       },
       dataZoom: [
         { type: "inside", start: 40, end: 100 },
-        { type: "slider", start: 40, end: 100, height: 18, bottom: 14, borderColor: theme.grid, fillerColor: theme.dark ? "rgba(37,99,235,.18)" : "rgba(37,99,235,.10)", textStyle: { color: theme.muted, fontSize: 10 } },
+        { type: "slider", start: 40, end: 100, height: 18, bottom: 14, borderColor: theme.grid, fillerColor: withAlpha(theme.accent, theme.dark ? 0.18 : 0.1), textStyle: { color: theme.muted, fontSize: 10 } },
       ],
       series: [
         { name: "Expected Baseline", type: "line", smooth: 0.2, showSymbol: false, data: baseline, lineStyle: { width: 1.5, color: theme.muted, type: [5, 4] }, z: 2 },
@@ -281,7 +292,7 @@ export function buildAnomalyTimeline(): ChartBuilder {
           data: actual,
           lineStyle: { width: 2.2, color: theme.accent },
           itemStyle: { color: theme.accent },
-          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: theme.dark ? "rgba(37,99,235,.28)" : "rgba(37,99,235,.14)" }, { offset: 1, color: "rgba(37,99,235,0)" }]) },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: withAlpha(theme.accent, theme.dark ? 0.28 : 0.14) }, { offset: 1, color: withAlpha(theme.accent, 0) }]) },
           markPoint: { data: marks, symbol: "circle", label: { show: false } },
           z: 3,
         },
@@ -424,7 +435,7 @@ export function buildUnifiedAnomalyTimeline(
       },
       dataZoom: [
         { type: "inside", start: 0, end: 100, filterMode: "weakFilter" },
-        { type: "slider", start: 0, end: 100, height: 18, bottom: 14, filterMode: "weakFilter", borderColor: theme.grid, fillerColor: theme.dark ? "rgba(37,99,235,.18)" : "rgba(37,99,235,.10)", textStyle: { color: theme.muted, fontSize: 10 } },
+        { type: "slider", start: 0, end: 100, height: 18, bottom: 14, filterMode: "weakFilter", borderColor: theme.grid, fillerColor: withAlpha(theme.accent, theme.dark ? 0.18 : 0.1), textStyle: { color: theme.muted, fontSize: 10 } },
       ],
       series: [
         {
@@ -522,7 +533,7 @@ export function buildForecastChart(horizon: "day" | "week" | "month"): ChartBuil
           data: actual,
           lineStyle: { width: 2.2, color: theme.accent },
           itemStyle: { color: theme.accent },
-          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: theme.dark ? "rgba(37,99,235,.22)" : "rgba(37,99,235,.12)" }, { offset: 1, color: "rgba(37,99,235,0)" }]) },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: withAlpha(theme.accent, theme.dark ? 0.22 : 0.12) }, { offset: 1, color: withAlpha(theme.accent, 0) }]) },
           markArea: { silent: true, itemStyle: { color: theme.dark ? "rgba(124,58,237,.07)" : "rgba(124,58,237,.05)" }, data: [[{ xAxis: splitT }, { xAxis: forecast[forecast.length - 1].t }]] },
           z: 3,
         },
