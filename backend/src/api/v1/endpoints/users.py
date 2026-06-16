@@ -21,6 +21,34 @@ def _site_ids(value: list[str] | None) -> list[str]:
     return sorted(set(value or []))
 
 
+def _normalized_contact_number(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = "".join(char for char in value.strip() if char.isdigit() or char == "+")
+    return normalized or None
+
+
+def _validate_contact_number_available(
+    db: Session,
+    contact_number: str | None,
+    *,
+    exclude_user_id: UUID | None = None,
+) -> None:
+    normalized_contact = _normalized_contact_number(contact_number)
+    if normalized_contact is None:
+        return
+
+    users = db.query(models.User).filter(models.User.contact_number.isnot(None)).all()
+    for user in users:
+        if exclude_user_id is not None and user.id == exclude_user_id:
+            continue
+        if _normalized_contact_number(user.contact_number) == normalized_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A user with this contact number already exists.",
+            )
+
+
 def _validate_locations_exist(db: Session, location_ids: list[str]) -> None:
     if not location_ids:
         return
@@ -74,9 +102,9 @@ def _resolve_single_site(db: Session, location_ids: list[str]) -> str | None:
         current = loc_map.get(loc_id)
         while current:
             if current.location_type_id == "site":
-                site_ids.add(current.id)
-                if current.id not in {s for s in site_ids if s == current.id}:
+                if current.id not in site_ids:
                     site_names.append(current.name)
+                site_ids.add(current.id)
                 break
             current = loc_map.get(current.parent_id) if current.parent_id else None
 
@@ -203,6 +231,7 @@ def create_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="A user with this email already exists.",
         )
+    _validate_contact_number_available(db, payload.contact_number)
 
     role = _role_value(payload.role)
     assigned_site_ids, is_global_admin = _normalized_scope(
@@ -293,13 +322,18 @@ def update_user_role(
                 )
             user.email = normalized_email
 
+    if "contact_number" in payload.model_fields_set:
+        _validate_contact_number_available(
+            db, payload.contact_number, exclude_user_id=user.id
+        )
+
     if payload.full_name is not None:
         user.full_name = payload.full_name.strip()
 
     user.role = role
     if payload.status is not None:
         user.status = _role_value(payload.status)
-    if payload.contact_number is not None:
+    if "contact_number" in payload.model_fields_set:
         user.contact_number = payload.contact_number
     user.assigned_site_ids = assigned_site_ids
     user.is_global_admin = is_global_admin

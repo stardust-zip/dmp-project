@@ -530,6 +530,113 @@ def test_create_user_rejects_duplicate_email(db_session):
     assert response.status_code == 409
 
 
+def test_create_user_rejects_duplicate_contact_number(db_session):
+    _make_site(db_session)
+    db_session.add(
+        models.User(
+            email="existing@example.com",
+            full_name="Existing User",
+            password_hash="hash",
+            role="Operator",
+            contact_number="+1 555 123 4567",
+            assigned_site_ids=["site-a"],
+        )
+    )
+    db_session.commit()
+    app.dependency_overrides[get_db] = override_db(db_session)
+    app.dependency_overrides[get_current_admin] = override_admin(
+        UserResponse(
+            id="admin-id",
+            email="admin@example.com",
+            full_name="Admin User",
+            role="Admin",
+            is_global_admin=True,
+        )
+    )
+    client = TestClient(app)
+
+    try:
+        response = client.post(
+            "/api/v1/users",
+            json={
+                "email": "operator@example.com",
+                "full_name": "Operator User",
+                "password": "secret-password",
+                "role": "Operator",
+                "contact_number": "+15551234567",
+                "assigned_site_ids": ["site-a"],
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert "contact number" in response.json()["detail"].lower()
+
+
+def test_update_user_rejects_duplicate_contact_number(db_session):
+    _make_site(db_session)
+    db_session.add_all(
+        [
+            models.User(
+                email="existing@example.com",
+                full_name="Existing",
+                password_hash="h",
+                role="Operator",
+                contact_number="+1 555 123 4567",
+                assigned_site_ids=["site-a"],
+            ),
+            models.User(
+                email="target@example.com",
+                full_name="Target",
+                password_hash="h",
+                role="Operator",
+                assigned_site_ids=["site-a"],
+            ),
+        ]
+    )
+    db_session.commit()
+    target = db_session.query(models.User).filter(models.User.email == "target@example.com").one()
+    client = _client(db_session, _global_admin())
+
+    try:
+        response = client.patch(
+            f"/api/v1/users/{target.id}",
+            json={"contact_number": "+15551234567"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert "contact number" in response.json()["detail"].lower()
+
+
+def test_update_user_can_clear_contact_number(db_session):
+    _make_site(db_session)
+    user = models.User(
+        email="operator@example.com",
+        full_name="Operator",
+        password_hash="h",
+        role="Operator",
+        contact_number="+1 555 123 4567",
+        assigned_site_ids=["site-a"],
+    )
+    db_session.add(user)
+    db_session.commit()
+    client = _client(db_session, _global_admin())
+
+    try:
+        response = client.patch(
+            f"/api/v1/users/{user.id}",
+            json={"contact_number": None},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["contact_number"] is None
+
+
 @pytest.mark.parametrize("role", ["PO", "Developer"])
 def test_create_user_rejects_removed_roles(db_session, role):
     app.dependency_overrides[get_db] = override_db(db_session)
