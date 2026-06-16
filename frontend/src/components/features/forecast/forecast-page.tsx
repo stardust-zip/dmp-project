@@ -100,7 +100,7 @@ export function ForecastPage() {
         </div>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "repeat(4, minmax(0,1fr))", marginBottom: "var(--gap)" }}>
+      <div className="grid forecast-kpi-grid" style={{ marginBottom: "var(--gap)" }}>
         {FC_KPIS.map((kpi) => <FcKpiCard key={kpi.key} c={kpi} />)}
       </div>
 
@@ -121,9 +121,9 @@ export function ForecastPage() {
         <EChart build={buildForecastChart(horizon)} deps={[horizon]} themeKey={horizon} height={324} />
       </Card>
 
-      <div className="grid" style={{ gridTemplateColumns: "minmax(0,1.3fr) minmax(0,1fr)", marginBottom: "var(--gap)" }}>
+      <div className="grid forecast-detail-grid" style={{ marginBottom: "var(--gap)" }}>
         <Card title="Forecast Detail" icon="table" sub={`${rows.length}-day projection with confidence bounds`} actions={<span className="tag-cap">{horizon === "day" ? "Next Day" : horizon === "week" ? "Next 7 Days" : "Next 30 Days"}</span>} noBody>
-          <div style={{ maxHeight: 320, overflowY: "auto" }}>
+          <div className="table-scroll" style={{ maxHeight: 320 }}>
             <table className="tbl">
               <thead>
                 <tr>

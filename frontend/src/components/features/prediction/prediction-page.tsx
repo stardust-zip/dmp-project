@@ -351,7 +351,7 @@ export function PredictionPage() {
       </Card>
 
       {tab === "scenario" ? (
-        <div className="grid" style={{ gridTemplateColumns: "minmax(320px, .75fr) minmax(0, 1.25fr)" }}>
+        <div className="grid prediction-results-grid">
           <Card title="Scenario Planner" icon="sliders" sub="What-if operating load">
             <div className="grid" style={{ gap: 12 }}>
               <Field label="Date">
@@ -379,13 +379,13 @@ export function PredictionPage() {
           </Card>
 
           <div className="grid" style={{ gap: "var(--gap)" }}>
-            <div className="grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+            <div className="grid prediction-metric-grid">
               <ResultMetric label="Estimated Usage" value={scenario ? fmt(scenario.estimated_value) : "-"} unit={scenario?.unit ?? selectedMetricUnit} />
               <ResultMetric label="Estimated Cost" value={money(scenario?.estimated_cost)} />
               <ResultMetric label="Model Version" value={scenario ? `v${scenario.model_version}` : "-"} />
             </div>
             <Card title="Hourly Estimate" icon="table" noBody>
-              <div style={{ maxHeight: 360, overflow: "auto" }}>
+              <div className="table-scroll" style={{ maxHeight: 360 }}>
                 <table className="tbl">
                   <thead>
                     <tr>
@@ -412,7 +412,7 @@ export function PredictionPage() {
           </div>
         </div>
       ) : (
-        <div className="grid" style={{ gridTemplateColumns: "minmax(320px, .75fr) minmax(0, 1.25fr)" }}>
+        <div className="grid prediction-results-grid">
           <Card title="Report Range" icon="calendar" sub="Expected usage against actual telemetry">
             <div className="grid" style={{ gap: 12 }}>
               <Field label="Start Date">
@@ -434,7 +434,7 @@ export function PredictionPage() {
           </Card>
 
           <div className="grid" style={{ gap: "var(--gap)" }}>
-            <div className="grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+            <div className="grid prediction-metric-grid">
               <ResultMetric label="Expected" value={report ? fmt(report.expected_total) : "-"} unit={report?.unit ?? selectedMetricUnit} />
               <ResultMetric label="Actual" value={report?.actual_total != null ? fmt(report.actual_total) : "-"} unit={report?.unit ?? selectedMetricUnit} />
               <ResultMetric label="Variance" value={report?.variance_total != null ? fmt(report.variance_total) : "-"} unit={report?.unit ?? selectedMetricUnit} />
