@@ -31,6 +31,8 @@ grafana_data/
 
 # Claude Code Plugins
 */.omc/
+.omx/
+*/.omx/
 .omc/
 .claude/
 */.codegraph/

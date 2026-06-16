@@ -277,7 +277,7 @@ def train_model_task(
                 )
                 message_prefix = "Prediction"
             elif ModelTask(request.model_task) == ModelTask.AnomalyDetection:
-                from src.ml.anomaly_detection import train_anomaly_detection_model
+                from src.ml.anomaly.detection import train_anomaly_detection_model
 
                 anomaly_result = train_anomaly_detection_model(
                     request=request,
@@ -782,6 +782,8 @@ def _load_anomaly_backfill_telemetry_from_csv(
     end: datetime,
 ) -> pd.DataFrame:
     """Load cleaned meter CSV rows with 168h lookback and DB location metadata."""
+    from src.ml.anomaly.types import LOOKBACK_HOURS
+
     empty = pd.DataFrame(
         columns=[
             "timestamp",
@@ -794,7 +796,7 @@ def _load_anomaly_backfill_telemetry_from_csv(
             "timezone",
         ]
     )
-    lookback_start = _utc_timestamp(start - timedelta(hours=168))
+    lookback_start = _utc_timestamp(start - timedelta(hours=LOOKBACK_HOURS))
     range_end = _utc_timestamp(end)
 
     frames = []
@@ -869,7 +871,7 @@ def _load_anomaly_backfill_telemetry_from_csv(
 def run_anomaly_inference_task(self):
     from datetime import datetime, timezone
 
-    from src.ml.anomaly_inference import run_hourly_inference
+    from src.ml.anomaly.inference import run_hourly_inference
 
     db = SessionLocal()
     try:
@@ -894,19 +896,17 @@ def run_anomaly_backfill_task(
     from datetime import datetime, timezone
 
     import pandas as pd
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    from src.ml.anomaly_inference import (
+    from src.ml.anomaly.inference import (
         load_production_anomaly_model,
         run_rule_based_checks,
     )
-    from src.ml.anomaly_pipeline import (
-        build_feature_matrix,
-        downcast_telemetry_dtypes,
-        load_weather_for_range,
-        score_anomalies,
-    )
-    from src.models import AnomalyDetectedEvent, Location
+    from src.ml.anomaly.feature_engineering import build_feature_matrix
+    from src.ml.anomaly.scoring import classify_severity, score_anomalies
+    from src.ml.anomaly.store import AnomalyEventStore
+    from src.ml.anomaly.telemetry_loaders import downcast_telemetry_dtypes
+    from src.ml.anomaly.types import DEFAULT_METRIC_TYPE, LOOKBACK_HOURS
+    from src.ml.anomaly.weather_loaders import load_weather_for_range
+    from src.models import Location
 
     start = datetime.fromisoformat(start_iso).replace(tzinfo=timezone.utc)
     end = datetime.fromisoformat(end_iso).replace(tzinfo=timezone.utc)
@@ -945,7 +945,7 @@ def run_anomaly_backfill_task(
         )
 
         mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
-        model_result = load_production_anomaly_model(MlflowClient())
+        model_result = load_production_anomaly_model()
         if model_result is None:
             raise ValueError("No production anomaly model found for backfill inference.")
 
@@ -998,28 +998,14 @@ def run_anomaly_backfill_task(
         existing_loc_ids = {
             str(row[0])
             for row in db.query(Location.id)
-            .filter(Location.id.in_(sorted({e.building_id for e in rule_events})))
+            .filter(Location.id.in_(sorted({finding.building_id for finding in rule_events})))
             .all()
         }
-        persisted = [e for e in rule_events if e.building_id in existing_loc_ids]
+        persisted = [finding for finding in rule_events if finding.building_id in existing_loc_ids]
         skipped = len(rule_events) - len(persisted)
 
         if persisted:
-            records = [
-                {
-                    c.key: getattr(event, c.key)
-                    for c in AnomalyDetectedEvent.__table__.columns
-                    if c.key not in {"id", "created_at"}
-                }
-                for event in persisted
-            ]
-            chunk_size = 500
-            for offset_idx in range(0, len(records), chunk_size):
-                chunk = records[offset_idx: offset_idx + chunk_size]
-                stmt = pg_insert(AnomalyDetectedEvent.__table__).values(chunk)
-                stmt = stmt.on_conflict_do_nothing(constraint="uq_anomaly_detected_event")
-                db.execute(stmt)
-            db.commit()
+            AnomalyEventStore(db).insert_findings(persisted)
 
         _append_terminal_log(
             db, pipeline_log,
@@ -1054,7 +1040,7 @@ def run_anomaly_backfill_task(
             weather_df, weather_feature_cols = load_weather_for_range(
                 db,
                 site_ids,
-                target_start - pd.Timedelta(hours=168),
+                target_start - pd.Timedelta(hours=LOOKBACK_HOURS),
                 target_end,
             )
             _append_terminal_log(
@@ -1121,12 +1107,14 @@ def run_anomaly_backfill_task(
                     ),
                 )
                 scored_chunks.append(
-                    score_anomalies(
-                        model,
-                        resid_stats,
-                        chunk,
-                        feature_cols,
-                        diagnostic_cb=append_lgbm_diagnostic_once,
+                    classify_severity(
+                        score_anomalies(
+                            model,
+                            resid_stats,
+                            chunk,
+                            feature_cols,
+                            diagnostic_cb=append_lgbm_diagnostic_once,
+                        )
                     )
                 )
             scored = pd.concat(scored_chunks, ignore_index=True)
@@ -1142,7 +1130,7 @@ def run_anomaly_backfill_task(
                     "building_id": str(row["building_id"]),
                     "site_id": str(row.get("site_id", "")),
                     "timestamp": row["timestamp"],
-                    "metric_type_id": str(row.get("metric_type_id", "energy")),
+                    "metric_type_id": str(row.get("metric_type_id", DEFAULT_METRIC_TYPE)),
                     "primary_space_usage": row.get("primaryspaceusage"),
                     "actual_value": float(row["consumption"]) if pd.notna(row.get("consumption")) else None,
                     "predicted_value": float(row["predicted_value"]) if pd.notna(row.get("predicted_value")) else None,
@@ -1156,23 +1144,11 @@ def run_anomaly_backfill_task(
                     "mlflow_run_id": None,
                 })
 
+            store = AnomalyEventStore(db)
             chunk_size = 50_000
             for offset_idx in range(0, len(records), chunk_size):
                 chunk = records[offset_idx: offset_idx + chunk_size]
-                stmt = pg_insert(AnomalyDetectedEvent.__table__).values(chunk)
-                stmt = stmt.on_conflict_do_update(
-                    constraint="uq_anomaly_detected_event",
-                    set_={
-                        "predicted_value": stmt.excluded.predicted_value,
-                        "residual": stmt.excluded.residual,
-                        "residual_z": stmt.excluded.residual_z,
-                        "anomaly_score": stmt.excluded.anomaly_score,
-                        "is_anomaly": stmt.excluded.is_anomaly,
-                        "direction": stmt.excluded.direction,
-                        "severity": stmt.excluded.severity,
-                    },
-                )
-                db.execute(stmt)
+                store.upsert(chunk, commit=False)
                 if offset_idx == 0 or (offset_idx + len(chunk)) % 5_000 == 0 or offset_idx + len(chunk) == len(records):
                     _append_terminal_log(
                         db,

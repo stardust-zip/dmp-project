@@ -5,14 +5,14 @@ import pandas as pd
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from src.database import get_db
-from src.ml.anomaly_events import (
-    SEVERITIES,
+from src.ml.anomaly.events import (
     event_records,
     filter_events,
     filter_series,
     load_anomaly_facets,
     sort_events,
 )
+from src.ml.anomaly.types import SEVERITIES
 from loguru import logger
 from src.schemas import (
     AnomalyEventsResponse,
