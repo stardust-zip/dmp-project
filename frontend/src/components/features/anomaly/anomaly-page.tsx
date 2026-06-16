@@ -568,6 +568,12 @@ export function AnomalyPage() {
                   themeKey="unified-anomaly"
                   height={312}
                   preserveDataZoom
+                  onChartClick={(params) => {
+                    const p = params as { seriesName?: string; data?: { event?: AnomalyEvent } };
+                    if (p.seriesName === "Anomaly" && p.data?.event) {
+                      setSelected(p.data.event);
+                    }
+                  }}
                 />
               )}
             </Card>

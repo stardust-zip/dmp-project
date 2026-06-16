@@ -72,6 +72,7 @@ export function EChart({
   themeKey,
   style,
   preserveDataZoom = false,
+  onChartClick,
 }: {
   build: ChartBuilder;
   deps?: unknown[];
@@ -79,18 +80,23 @@ export function EChart({
   themeKey?: string;
   style?: CSSProperties;
   preserveDataZoom?: boolean;
+  onChartClick?: (params: unknown) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const instance = useRef<ECharts | null>(null);
+  const onChartClickRef = useRef(onChartClick);
+  useEffect(() => { onChartClickRef.current = onChartClick; });
 
   useEffect(() => {
     if (!ref.current) return;
-    instance.current = echarts.init(ref.current, null, { renderer: "canvas" });
-    const ro = new ResizeObserver(() => instance.current?.resize());
+    const chart = echarts.init(ref.current, null, { renderer: "canvas" });
+    instance.current = chart;
+    chart.on("click", (params) => onChartClickRef.current?.(params));
+    const ro = new ResizeObserver(() => chart.resize());
     ro.observe(ref.current);
     return () => {
       ro.disconnect();
-      instance.current?.dispose();
+      chart.dispose();
       instance.current = null;
     };
   }, []);
@@ -468,7 +474,9 @@ export function buildUnifiedAnomalyTimeline(
           type: "scatter",
           data: markerData,
           z: 4,
+          cursor: "pointer",
           tooltip: { show: false },
+          emphasis: { scale: 1.5 },
         },
       ],
     };
