@@ -469,10 +469,6 @@ export function UsersPage() {
           <p className="page-sub">Admin workspace for accounts, platform roles, and operational access.</p>
         </div>
         <div className="page-head-actions user-primary-actions">
-          <button className="btn" type="button" onClick={() => refresh()} disabled={loading}>
-            <Icon name="refresh" className={loading ? "spin" : undefined} />
-            <span>{loading ? "Loading..." : "Refresh"}</span>
-          </button>
           <button
             className="btn btn-primary"
             type="button"

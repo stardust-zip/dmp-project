@@ -27,9 +27,6 @@ export function DashboardPage() {
           </p>
         </div>
         <div className="page-head-actions">
-          <button className="btn">
-            <Icon name="refresh" /> Refresh
-          </button>
           <button className="btn btn-primary">
             <Icon name="download" /> Export
           </button>
