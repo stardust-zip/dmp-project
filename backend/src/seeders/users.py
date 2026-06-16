@@ -120,7 +120,7 @@ def _build_seed_users(site_ids: list[str]) -> tuple[SeedUser, ...]:
     S1 = _id_tuple(1)
     S2 = _id_tuple(2)
     S3 = _id_tuple(3)
-    S4 = _id_tuple(4)
+
     S01 = _id_tuple(0, 1)
     S02 = _id_tuple(0, 2)
     S03 = _id_tuple(0, 2, 3)
