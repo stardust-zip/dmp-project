@@ -98,6 +98,8 @@ class UserCreate(BaseSchema):
 
 
 class UserRoleUpdate(BaseSchema):
+    full_name: str | None = Field(default=None, min_length=1)
+    email: EmailStr | None = None
     role: UserRole | None = None
     status: UserStatus | None = None
     contact_number: str | None = Field(default=None, min_length=1)
