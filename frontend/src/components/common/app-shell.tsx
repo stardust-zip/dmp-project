@@ -1,25 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { MAIN_NAV, hasAnyRole } from "@/lib/rbac";
-
-const ACCENTS = {
-  blue: { "--accent": "#2563eb", "--accent-600": "#2563eb", "--accent-700": "#1d4ed8", "--accent-soft": "#eff6ff", "--accent-softer": "#f5f9ff", "--accent-border": "#bfdbfe" },
-  indigo: { "--accent": "#4f46e5", "--accent-600": "#4f46e5", "--accent-700": "#4338ca", "--accent-soft": "#eef2ff", "--accent-softer": "#f5f5ff", "--accent-border": "#c7d2fe" },
-  teal: { "--accent": "#0d9488", "--accent-600": "#0d9488", "--accent-700": "#0f766e", "--accent-soft": "#effdfa", "--accent-softer": "#f3fffd", "--accent-border": "#99f6e4" },
-  slate: { "--accent": "#475569", "--accent-600": "#475569", "--accent-700": "#334155", "--accent-soft": "#f1f5f9", "--accent-softer": "#f8fafc", "--accent-border": "#cbd5e1" },
-};
-
-const ACCENT_DARK = {
-  blue: { "--accent-soft": "#16223c", "--accent-softer": "#131d33", "--accent-border": "#1e3a6b" },
-  indigo: { "--accent-soft": "#1e1b4b", "--accent-softer": "#191636", "--accent-border": "#3730a3" },
-  teal: { "--accent-soft": "#0c2a27", "--accent-softer": "#0a201e", "--accent-border": "#115e56" },
-  slate: { "--accent-soft": "#1e293b", "--accent-softer": "#172033", "--accent-border": "#38465f" },
-};
+import { useSettingsStore } from "@/lib/settings-store";
 
 const DATE_RANGES = ["Last 24 hours", "Last 7 days", "Last 30 days", "This month", "Quarter to date", "Custom range..."];
 
@@ -30,11 +17,13 @@ function routeLabel(pathname: string) {
   if (pathname.startsWith("/models")) return "AI Engineering";
   if (pathname.startsWith("/assets")) return "Assets";
   if (pathname.startsWith("/users")) return "User Management";
+  if (pathname.startsWith("/settings")) return "Settings";
   return "Dashboard";
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { session, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [dateRange, setDateRange] = useState("Last 24 hours");
@@ -53,13 +42,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       .join("");
   }, [user]);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    root.setAttribute("data-theme", "light");
-    root.setAttribute("data-density", "compact");
-    Object.entries(ACCENTS.blue).forEach(([key, value]) => root.style.setProperty(key, value));
-    Object.entries(ACCENT_DARK.blue).forEach(([key]) => root.style.removeProperty(key));
-  }, []);
+  // Settings are applied to <html> automatically by useSettingsStore on mount
+  useSettingsStore();
 
   useEffect(() => {
     const close = () => {
@@ -106,10 +90,10 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <div className="sb-section">Workspace</div>
         <nav className="sb-nav">
-          <button className="sb-item" title="Settings">
+          <Link className={`sb-item${pathname === "/settings" ? " active" : ""}`} href="/settings" title="Settings">
             <Icon name="settings" />
             <span>Settings</span>
-          </button>
+          </Link>
         </nav>
 
         <div className="sb-foot">
@@ -199,11 +183,19 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{user?.roleLabel}</div>
                 </div>
                 {[
-                  ["users", "Account"],
-                  ["settings", "Preferences"],
-                  ["help", "Help & docs"],
-                ].map(([icon, label]) => (
-                  <button key={label} className="sb-item" style={{ height: 32, fontSize: 12.5 }}>
+                  ["users", "Account", "/settings"],
+                  ["settings", "Preferences", "/settings"],
+                  ["help", "Help & docs", "#"],
+                ].map(([icon, label, href]) => (
+                  <button
+                    key={label}
+                    className="sb-item"
+                    style={{ height: 32, fontSize: 12.5 }}
+                    onClick={() => {
+                      if (href !== "#") router.push(href);
+                      setProfileOpen(false);
+                    }}
+                  >
                     <Icon name={icon as "users" | "settings" | "help"} />
                     <span>{label}</span>
                   </button>
