@@ -8,6 +8,8 @@ import { getLocationOptions, type LocationOption } from "@/lib/models-api";
 interface RecentLocationEntry {
   id: string;
   name: string;
+  parent_id?: string | null;
+  location_type?: string | null;
 }
 
 export interface UserLocationPickerProps {
@@ -17,6 +19,7 @@ export interface UserLocationPickerProps {
   onAdd: (location: LocationOption) => void;
   onRemove: (locationId: string) => void;
   recentLocationEntries?: RecentLocationEntry[];
+  enforceSingleSite?: boolean;
 }
 
 function locationTypeLabel(location: LocationOption) {
@@ -30,16 +33,16 @@ export function UserLocationPicker({
   onAdd,
   onRemove,
   recentLocationEntries = [],
+  enforceSingleSite = false,
 }: UserLocationPickerProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<LocationOption[]>([]);
   const [searching, setSearching] = useState(false);
+  const [scopeIssue, setScopeIssue] = useState<string | null>(null);
 
   useEffect(() => {
     const queryText = query.trim();
     if (queryText.length < 2) {
-      setResults([]);
-      setSearching(false);
       return;
     }
 
@@ -65,7 +68,31 @@ export function UserLocationPicker({
     };
   }, [query]);
 
-  const unassignedResults = results.filter((loc) => !selectedIds.includes(loc.id));
+  function rootSiteId(location: LocationOption) {
+    return location.location_type === "site" ? location.id : location.parent_id ?? location.id;
+  }
+
+  const queryText = query.trim();
+  const selectedSiteIds = new Set(selectedLocations.map(rootSiteId).filter(Boolean));
+  const selectedSiteId = selectedSiteIds.size === 1 ? [...selectedSiteIds][0] : null;
+  const visibleResults = queryText.length >= 2 ? results : [];
+  const unassignedResults = visibleResults.filter((loc) => !selectedIds.includes(loc.id));
+  const isSearching = queryText.length >= 2 && searching;
+
+  function canAddLocation(location: LocationOption) {
+    if (!enforceSingleSite || !selectedSiteId) return true;
+    return rootSiteId(location) === selectedSiteId;
+  }
+
+  function addLocation(location: LocationOption) {
+    if (!canAddLocation(location)) {
+      setScopeIssue("Operators can be assigned to multiple buildings, but they must all belong to one site.");
+      return;
+    }
+    setScopeIssue(null);
+    onAdd(location);
+    setQuery("");
+  }
 
   return (
     <div className="user-location-picker">
@@ -87,7 +114,12 @@ export function UserLocationPicker({
                     if (existing) {
                       onRemove(entry.id);
                     } else {
-                      onAdd({ id: entry.id, name: entry.name } as LocationOption);
+                      addLocation({
+                        id: entry.id,
+                        name: entry.name,
+                        parent_id: entry.parent_id ?? null,
+                        location_type: entry.location_type ?? null,
+                      } as LocationOption);
                     }
                   }}
                 >
@@ -111,39 +143,40 @@ export function UserLocationPicker({
 
       {/* ── Results ── */}
       <div className="user-location-results">
-        {searching ? (
+        {isSearching ? (
           <div className="user-location-empty">Searching locations...</div>
         ) : (
-          unassignedResults.slice(0, 8).map((loc) => (
-            <button
-              key={loc.id}
-              className="user-location-result"
-              type="button"
-              onClick={() => {
-                onAdd(loc);
-                setQuery("");
-              }}
-            >
-              <span>
-                <b>{displayLocationName(loc.name, loc.id)}</b>
-                <small>
-                  {locationTypeLabel(loc)}
-                  {loc.parent_id
-                    ? ` in ${displayLocationName(siteById.get(loc.parent_id)?.name, loc.parent_id)}`
-                    : ""}
-                </small>
-              </span>
-              <Icon name="plus" />
-            </button>
-          ))
+          unassignedResults.slice(0, 8).map((loc) => {
+            const allowed = canAddLocation(loc);
+            return (
+              <button
+                key={loc.id}
+                className={`user-location-result ${allowed ? "" : "is-disabled"}`}
+                type="button"
+                disabled={!allowed}
+                onClick={() => addLocation(loc)}
+              >
+                <span>
+                  <b>{displayLocationName(loc.name, loc.id)}</b>
+                  <small>
+                    {allowed
+                      ? `${locationTypeLabel(loc)}${loc.parent_id ? ` in ${displayLocationName(siteById.get(loc.parent_id)?.name, loc.parent_id)}` : ""}`
+                      : "Different site from the current operator assignment"}
+                  </small>
+                </span>
+                <Icon name={allowed ? "plus" : "x"} />
+              </button>
+            );
+          })
         )}
-        {!searching && query.trim().length < 2 && (
+        {!isSearching && queryText.length < 2 && (
           <div className="user-location-empty">Type at least 2 characters to search locations.</div>
         )}
-        {!searching && query.trim().length >= 2 && !unassignedResults.length && (
+        {!isSearching && queryText.length >= 2 && !unassignedResults.length && (
           <div className="user-location-empty">No matching unassigned locations.</div>
         )}
       </div>
+      {scopeIssue && <span className="user-field-help">{scopeIssue}</span>}
 
       {/* ── Selected chips ── */}
       <div className="user-location-chips">
