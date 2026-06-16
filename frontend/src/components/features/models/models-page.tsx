@@ -831,10 +831,6 @@ export function ModelsPage() {
           <p className="page-sub">Registered models, production status, and recent pipeline activity.</p>
         </div>
         <div className="page-head-actions model-primary-actions">
-          <button className="btn" type="button" onClick={refreshWorkspace} disabled={loading}>
-            <Icon name="refresh" className={loading ? "spin" : undefined} />
-            <span>{loading ? "Loading..." : "Refresh"}</span>
-          </button>
           <button className="btn" type="button" onClick={() => setPipelineModalOpen(true)}>
             <Icon name="table" />
             <span>Pipeline</span>

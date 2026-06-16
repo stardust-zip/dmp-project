@@ -106,10 +106,6 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <div className="sb-section">Workspace</div>
         <nav className="sb-nav">
-          <button className="sb-item" title="Reports">
-            <Icon name="doc" />
-            <span>Reports</span>
-          </button>
           <button className="sb-item" title="Settings">
             <Icon name="settings" />
             <span>Settings</span>
