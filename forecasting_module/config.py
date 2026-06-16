@@ -8,13 +8,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Source data (BDG2 subset cloned into repo)
-DATA_SOURCE = PROJECT_ROOT / "building-data-genome-project-2" / "data"
-ELECTRICITY_PATH = DATA_SOURCE / "meters" / "cleaned" / "electricity_cleaned.csv"
-METADATA_PATH = DATA_SOURCE / "metadata" / "metadata.csv"
-WEATHER_PATH = DATA_SOURCE / "weather" / "weather.csv"
+DATA_SOURCE = PROJECT_ROOT / "building-data-genome-project-2"
+ELECTRICITY_PATH = DATA_SOURCE / "electricity_cleaned.csv"
+METADATA_PATH = DATA_SOURCE / "metadata.csv"
+WEATHER_PATH = DATA_SOURCE / "weather.csv"
 
 # Output layers (Bronze → Silver → Gold)
-OUTPUT_BASE = PROJECT_ROOT / "data3" / "processed" / "forecasting"
+OUTPUT_BASE = PROJECT_ROOT / "data2" / "processed" / "forecasting"
 BRONZE_DIR = OUTPUT_BASE / "bronze"
 SILVER_DIR = OUTPUT_BASE / "silver"
 GOLD_DIR = OUTPUT_BASE / "gold"

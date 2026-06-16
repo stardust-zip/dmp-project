@@ -150,6 +150,10 @@ class Preprocessor:
     def clean_weather(self, weather: pl.DataFrame) -> pl.DataFrame:
         """Gap-based weather cleaning: interpolate ≤6h, seasonal 6h-24h,
         median by (site_id, month, hour) for >24h.
+
+        When weather_mode='none' the weather DataFrame only has timestamp
+        and site_id — there are no numeric columns to clean, so we return
+        immediately.
         """
         weather = weather.sort(["site_id", "timestamp"])
         numeric_cols = [
@@ -157,6 +161,10 @@ class Preprocessor:
             if c not in ("timestamp", "site_id")
             and weather[c].dtype.is_numeric()
         ]
+
+        if not numeric_cols:
+            print("    No numeric weather columns to clean — skipping.")
+            return weather
 
         total_before = weather.select(
             [pl.col(c).is_null().sum().alias(c) for c in numeric_cols]

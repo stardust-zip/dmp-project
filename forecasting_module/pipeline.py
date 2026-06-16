@@ -1,4 +1,26 @@
-"""Pipeline orchestrator — ties Ingestion → Preprocessing → Validation → Outlier → Feature Engineering → Dataset Builder."""
+"""Pipeline orchestrator — Ingestion → Preprocessing → Validation → Outlier
+→ Feature Engineering → Dataset Builder.
+
+Memory strategy
+---------------
+25M-row Silver is the largest object in RAM. The pipeline is structured to
+hold at most ONE large DataFrame at a time:
+
+  Stage 1 (Ingestion)   : bronze dict built; ID Series extracted immediately
+                          for the validator so full bronze can be freed early.
+  Stage 2 (Preprocessing): silver built from bronze; bronze freed right after.
+  Stage 3 (Validation)  : validator receives silver + tiny ID Series only.
+                          silver freed after Gold is written to disk.
+  Stage 4 (Outlier)     : Gold reloaded from disk (compact parquet).
+  Stage 5 (Feature Eng) : Gold v2 reloaded; features written to disk.
+  Stage 6 (Dataset Bld) : features reloaded; splits written to disk.
+
+CLI:
+  uv run pipeline.py --horizon 24  --weather-mode none
+  uv run pipeline.py --horizon 24  --weather-mode forecast
+  uv run pipeline.py --horizon 168 --weather-mode none
+  uv run pipeline.py --horizon 168 --weather-mode forecast
+"""
 
 from __future__ import annotations
 
@@ -22,11 +44,7 @@ from forecasting_module.dataset_builder import DatasetBuilder
 
 
 class ForecastingPipeline:
-    """End-to-end data processing pipeline for the forecasting module.
-
-    Bronze (raw Parquet) → Silver (cleaned + merged) → Gold (validated)
-    → Gold v2 (outlier handled + missing re-handled).
-    """
+    """End-to-end data processing pipeline for the forecasting module."""
 
     def __init__(self) -> None:
         self.ingestion = DataIngestion()
@@ -36,50 +54,58 @@ class ForecastingPipeline:
 
     @staticmethod
     def _force_gc(stage_name: str) -> None:
-        """Release Python references and ask Polars/Python to return memory."""
         gc.collect()
-        print(f"  Memory cleanup after {stage_name} done.")
+        print(f"  Memory freed after {stage_name}.")
 
+    # ------------------------------------------------------------------
+    # Weather gating — applied immediately after ingestion
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _apply_weather_mode(
+        bronze: dict[str, pl.DataFrame],
+        weather_mode: str,
+    ) -> dict[str, pl.DataFrame]:
+        """Replace weather table at ingestion time based on weather_mode.
+
+        none     → weather replaced with timestamp/site_id stub so that
+                   Preprocessor.merge() joins nothing useful and no weather
+                   columns enter Silver/Gold.
+        forecast → weather kept; Feature Engineering shifts columns later.
+        """
+        if weather_mode == "none":
+            stub = bronze["weather"].select(["timestamp", "site_id"])
+            return {**bronze, "weather": stub}
+        if weather_mode == "forecast":
+            return bronze
+        raise ValueError(
+            f"Unsupported weather_mode '{weather_mode}'. "
+            "Choose 'none' or 'forecast'."
+        )
+
+    # ------------------------------------------------------------------
+    # Pipeline runner
+    # ------------------------------------------------------------------
     def run(
         self,
+        forecast_horizon_hours: int = 24,
+        weather_mode: str = "none",
         skip_outlier: bool = False,
         reload_gold_before_outlier: bool = True,
         skip_feature_engineering: bool = False,
         skip_dataset_builder: bool = False,
-        forecast_horizon_hours: int = 24,
-        weather_mode: str = "none",
-    ) -> pl.DataFrame:
-        """Run the full forecasting data pipeline.
-
-        Parameters
-        ----------
-        skip_outlier:
-            If True, stop after Stage 3 and return Gold.
-        reload_gold_before_outlier:
-            If True, release Bronze/Silver/Gold objects after validation, then
-            re-read Gold from disk before Stage 4. This is safer for large data
-            because it avoids keeping Bronze + Silver + Gold in RAM while the
-            outlier stage performs group_by/join operations.
-        skip_feature_engineering:
-            If True, stop after Stage 4 and return Gold v2.
-        skip_dataset_builder:
-            If True, stop after Stage 5 and return None.
-        forecast_horizon_hours:
-            Forecast horizon for feature engineering (24 or 168).
-        weather_mode:
-            Weather feature mode: "none", "historical", or "forecast".
-        """
+    ) -> pl.DataFrame | None:
         t0 = time.perf_counter()
+        run_tag = f"h{forecast_horizon_hours}_{weather_mode}"
 
         print("=" * 60)
-        print("FORECASTING DATA PIPELINE")
+        print(f"FORECASTING DATA PIPELINE  [{run_tag}]")
         print("=" * 60)
+        print(f"  horizon={forecast_horizon_hours}h  |  weather_mode={weather_mode}")
 
-        # ── Bronze ──────────────────────────────────────────────────
+        # ── Stage 1: Ingestion ──────────────────────────────────────
         print("\nStage 1 — Ingestion (Bronze)")
         bronze = self.ingestion.run()
 
-        # Bronze null summary
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
         for name, df in bronze.items():
             null_summary = df.select(
@@ -89,66 +115,108 @@ class ForecastingPipeline:
                 header_name="column",
                 column_names=["null_rate"],
             )
-            null_summary.write_csv(REPORT_DIR / f"bronze_{name}_null_summary.csv")
+            null_summary.write_csv(
+                REPORT_DIR / f"bronze_{name}_null_summary.csv"
+            )
+
+        # Apply weather mode at ingestion
+        print(f"\n  Applying weather_mode='{weather_mode}' at ingestion ...")
+        bronze = self._apply_weather_mode(bronze, weather_mode)
+        if weather_mode == "none":
+            print("  Weather table replaced with stub — "
+                  "no weather columns will enter Silver.")
+        else:
+            print(f"  Weather table kept ({bronze['weather'].shape[0]:,} rows).")
+
+        # Extract lightweight ID Series for the validator NOW,
+        # before bronze is freed — avoids keeping 27M-row electricity
+        # DataFrame alive through Stages 2 and 3.
+        elec_building_ids = bronze["electricity"]["building_id"].unique()
+        meta_building_ids = bronze["metadata"]["building_id"].unique()
+        weather_site_ids = (
+            bronze["weather"]["site_id"].unique()
+            if weather_mode != "none"
+            else None
+        )
+        print(f"  Extracted validator ID Series "
+              f"({len(elec_building_ids)} elec buildings, "
+              f"{len(meta_building_ids)} meta buildings).")
 
         print("\nIngestion done.")
 
-        # ── Silver ──────────────────────────────────────────────────
+        # ── Stage 2: Preprocessing ─────────────────────────────────
         print("\nStage 2 — Preprocessing (Silver)")
         silver = self.preprocessor.run(bronze)
+
+        # Free bronze immediately — electricity (27M rows) no longer needed
+        del bronze
+        self._force_gc("Stage 2 (bronze freed)")
+
         print("\nPreprocessing done.")
 
-        # ── Gold ────────────────────────────────────────────────────
+        # ── Stage 3: Validation ────────────────────────────────────
         print("\nStage 3 — Validation (Gold)")
         gold = self.validator.run(
             silver,
-            electricity=bronze["electricity"],
-            metadata=bronze["metadata"],
-            weather=bronze["weather"],
+            elec_building_ids=elec_building_ids,
+            meta_building_ids=meta_building_ids,
+            weather_site_ids=weather_site_ids,
+            weather_mode=weather_mode,
+            run_tag=run_tag,
         )
+
+        # Free silver and ID Series — Gold has been written to disk
+        del silver, elec_building_ids, meta_building_ids, weather_site_ids
+        self._force_gc("Stage 3 (silver + IDs freed)")
+
         print("\nValidation done.")
 
         if skip_outlier:
-            final = gold
-        else:
-            # Critical for large datasets: do not keep Bronze + Silver in RAM
-            # while Stage 4 performs expensive IQR group_by/join operations.
-            del silver
-            del bronze
-            self._force_gc("Stage 3")
+            elapsed = time.perf_counter() - t0
+            print(f"\n{'='*60}")
+            print(f"DONE (stopped after Stage 3) in {elapsed:.1f}s")
+            print(f"{'='*60}")
+            return gold
 
-            if reload_gold_before_outlier:
-                # The validator already writes validated.parquet. Re-reading it
-                # creates a compact DataFrame and lets the previous in-memory
-                # Gold object be released before Stage 4.
-                gold_path = GOLD_DIR / "validated.parquet"
-                if not gold_path.exists():
-                    raise FileNotFoundError(
-                        f"Gold file not found: {gold_path}. Validation did not save Gold."
-                    )
-                del gold
-                self._force_gc("Gold release")
-                print(f"  Reloading Gold from disk before Stage 4: {gold_path}")
-                gold = pl.read_parquet(gold_path)
-                print(f"  Reloaded Gold: {gold.shape[0]:,} rows × {gold.shape[1]} cols")
+        del gold
+        self._force_gc("Gold in-memory (reloading from disk)")
 
-            # ── Outlier ─────────────────────────────────────────────
-            print("\nStage 4 — Outlier Detection (Gold v2)")
-            final = self.outlier_detector.run(gold, self.preprocessor)
-            print("\nOutlier detection done.")
+        gold_path = GOLD_DIR / f"validated_{run_tag}.parquet"
+        if not gold_path.exists():
+            raise FileNotFoundError(
+                f"Gold file not found: {gold_path}. "
+                "Validation did not save Gold."
+            )
+        print(f"  Reloading Gold from disk: {gold_path}")
+        gold = pl.read_parquet(gold_path)
+        print(f"  Reloaded: {gold.shape[0]:,} rows × {gold.shape[1]} cols")
+
+        # ── Stage 4: Outlier ───────────────────────────────────────
+        print("\nStage 4 — Outlier Detection (Gold v2)")
+        final = self.outlier_detector.run(
+            gold,
+            self.preprocessor,
+            run_tag=run_tag,
+            weather_mode=weather_mode,
+        )
+        del gold
+        self._force_gc("Stage 4 (gold freed)")
+
+        print("\nOutlier detection done.")
 
         if skip_feature_engineering:
             elapsed = time.perf_counter() - t0
-            print("\n" + "=" * 60)
-            print(f"DONE in {elapsed:.1f}s  —  {final.shape[0]:,} rows × {final.shape[1]} cols")
-            print("=" * 60)
+            print(f"\n{'='*60}")
+            print(f"DONE (stopped after Stage 4) in {elapsed:.1f}s  "
+                  f"— {final.shape[0]:,} rows × {final.shape[1]} cols")
+            print(f"{'='*60}")
             return final
 
-        # ── Feature Engineering ────────────────────────────────────────
+        # ── Stage 5: Feature Engineering ──────────────────────────
         del final
-        self._force_gc("Stage 4")
+        self._force_gc("Stage 5 prep (final freed)")
 
-        gold_v2_path = GOLD_DIR / "validated_v2.parquet"
+        gold_v2_path = GOLD_DIR / f"validated_v2_{run_tag}.parquet"
         if not gold_v2_path.exists():
             raise FileNotFoundError(
                 f"Gold v2 file not found: {gold_v2_path}. "
@@ -156,7 +224,7 @@ class ForecastingPipeline:
             )
         print(f"\n  Reloading Gold v2 from disk: {gold_v2_path}")
         gold_v2 = pl.read_parquet(gold_v2_path)
-        print(f"  Loaded Gold v2: {gold_v2.shape[0]:,} rows × {gold_v2.shape[1]} cols")
+        print(f"  Loaded: {gold_v2.shape[0]:,} rows × {gold_v2.shape[1]} cols")
 
         print("\nStage 5 — Feature Engineering (Feature Store)")
         fe = FeatureEngineer(
@@ -168,70 +236,66 @@ class ForecastingPipeline:
 
         if skip_dataset_builder:
             elapsed = time.perf_counter() - t0
-            print("\n" + "=" * 60)
-            print(f"DONE in {elapsed:.1f}s")
-            print("=" * 60)
+            print(f"\n{'='*60}")
+            print(f"DONE (stopped after Stage 5) in {elapsed:.1f}s")
+            print(f"{'='*60}")
             return None
 
-        # ── Dataset Builder ─────────────────────────────────────────────
+        # ── Stage 6: Dataset Builder ───────────────────────────────
         del gold_v2
-        self._force_gc("Stage 5")
+        self._force_gc("Stage 5 (gold_v2 freed)")
 
         print(f"\n  Reloading features from disk: {feature_path}")
         features = pl.read_parquet(feature_path)
-        print(f"  Loaded features: {features.shape[0]:,} rows × {features.shape[1]} cols")
+        print(f"  Loaded: {features.shape[0]:,} rows × {features.shape[1]} cols")
 
         print("\nStage 6 — Dataset Builder (Train / Val / Test)")
-        # Derive subfolder from feature filename: features_h24_energy → h24_energy
         subfolder = feature_path.stem.replace("features_", "")
         DatasetBuilder(subfolder=subfolder).run(features)
 
         elapsed = time.perf_counter() - t0
-        print("\n" + "=" * 60)
-        print(f"DONE in {elapsed:.1f}s")
-        print("=" * 60)
+        print(f"\n{'='*60}")
+        print(f"DONE [{run_tag}] in {elapsed:.1f}s")
+        print(f"{'='*60}")
         return None
 
 
 # -----------------------------------------------------------------------
-# CLI entry-point:
-#   uv run forecasting_module/pipeline.py
-#   uv run forecasting_module/pipeline.py --skip-outlier
+# CLI
 # -----------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run forecasting data pipeline.")
+    parser = argparse.ArgumentParser(
+        description="Run forecasting data pipeline.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=24,
+        choices=[24, 168],
+        help="Forecast horizon in hours.",
+    )
+    parser.add_argument(
+        "--weather-mode",
+        type=str,
+        default="none",
+        choices=["none", "forecast"],
+        help="Weather feature mode — resolved at ingestion time.",
+    )
     parser.add_argument(
         "--skip-outlier",
         action="store_true",
         help="Stop after Stage 3 Gold validation.",
     )
     parser.add_argument(
-        "--no-reload-gold",
-        action="store_true",
-        help="Do not reload Gold from disk before Stage 4. Uses more RAM.",
-    )
-    parser.add_argument(
         "--skip-feature-engineering",
         action="store_true",
-        help="Stop after Stage 4 (Outlier) and skip Feature Engineering.",
+        help="Stop after Stage 4 (Outlier).",
     )
     parser.add_argument(
         "--skip-dataset-builder",
         action="store_true",
-        help="Stop after Stage 5 (Feature Engineering) and skip Dataset Builder.",
-    )
-    parser.add_argument(
-        "--horizon",
-        type=int,
-        default=24,
-        help="Forecast horizon in hours for feature engineering (default: 24).",
-    )
-    parser.add_argument(
-        "--weather-mode",
-        type=str,
-        default="none",
-        choices=["none", "historical", "forecast"],
-        help="Weather feature mode (default: none).",
+        help="Stop after Stage 5 (Feature Engineering).",
     )
     return parser.parse_args()
 
@@ -239,10 +303,9 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     ForecastingPipeline().run(
-        skip_outlier=args.skip_outlier,
-        reload_gold_before_outlier=not args.no_reload_gold,
-        skip_feature_engineering=args.skip_feature_engineering,
-        skip_dataset_builder=args.skip_dataset_builder,
         forecast_horizon_hours=args.horizon,
         weather_mode=args.weather_mode,
+        skip_outlier=args.skip_outlier,
+        skip_feature_engineering=args.skip_feature_engineering,
+        skip_dataset_builder=args.skip_dataset_builder,
     )
