@@ -2,7 +2,8 @@ import lightgbm as lgb
 import pandas as pd
 import pytest
 
-from src.ml.anomaly_pipeline import build_feature_matrix, score_anomalies
+from src.ml.anomaly.feature_engineering import build_feature_matrix
+from src.ml.anomaly.scoring import score_anomalies
 
 
 def test_build_feature_matrix_normalizes_weather_timestamp_timezone_before_merge():

@@ -1,4 +1,4 @@
-from src.ml.anomaly_events import (
+from src.ml.anomaly.events import (
     event_records,
     filter_events,
     filter_series,
@@ -6,8 +6,8 @@ from src.ml.anomaly_events import (
     load_anomaly_series,
     sort_events,
 )
-from src.ml.anomaly_detection import _anomaly_event_insert_records
-from src.ml.anomaly_detection import _filter_events_with_existing_locations
+from src.ml.anomaly.store import AnomalyEventStore
+from src.ml.anomaly.types import RuleFinding
 from src.models import AnomalyDetectedEvent
 
 
@@ -132,7 +132,6 @@ def test_load_anomaly_events_normalizes_user_facing_types():
 
 
 def test_filter_sort_and_serialize_anomaly_events():
-    # The fake ignores filters, so pre-select only the rows that would match.
     db = _FakeSession([_sample_rows()[1]])
 
     events = filter_events(db, site_id="S2", severity="Critical")
@@ -166,10 +165,10 @@ def test_load_anomaly_series_filters_to_lgbm_source():
     assert set(series["building_id"]) == {"B2"}
 
 
-def test_anomaly_event_insert_records_omits_default_managed_columns():
+def test_anomaly_event_store_records_omit_default_managed_columns():
     event = _sample_rows()[0]
 
-    records = _anomaly_event_insert_records([event])
+    records = AnomalyEventStore.event_records([event])
 
     assert len(records) == 1
     assert "id" not in records[0]
@@ -178,18 +177,45 @@ def test_anomaly_event_insert_records_omits_default_managed_columns():
     assert records[0]["source"] == "rule_based"
 
 
-def test_filter_events_with_existing_locations_skips_orphan_events():
-    events = _sample_rows()
-    logs = []
+def test_anomaly_event_store_serializes_rule_findings():
+    import datetime as dt
 
-    filtered = _filter_events_with_existing_locations(
-        events,
-        _FakeLocationSession({"B1"}),
-        logs.append,
+    finding = RuleFinding(
+        building_id="B1",
+        site_id="S1",
+        timestamp=dt.datetime(2017, 1, 1, 3, 0, 0),
+        metric_type_id="electricity",
+        primary_space_usage="Office",
+        actual_value=None,
+        is_anomaly=True,
+        direction=None,
+        severity="High",
+        source="rule_based",
+        anomaly_type="long_missing_run",
+        reason="Missing for 3h",
+        mlflow_run_id="run-1",
     )
 
-    assert len(filtered) == 1
-    assert filtered[0].building_id == "B1"
-    assert logs == [
-        "Skipped 1 rule-based events for 1 buildings missing from location metadata."
+    records = AnomalyEventStore.finding_records([finding])
+
+    assert records == [
+        {
+            "building_id": "B1",
+            "site_id": "S1",
+            "timestamp": dt.datetime(2017, 1, 1, 3, 0, 0),
+            "metric_type_id": "electricity",
+            "primary_space_usage": "Office",
+            "actual_value": None,
+            "predicted_value": None,
+            "residual": None,
+            "residual_z": None,
+            "anomaly_score": None,
+            "is_anomaly": True,
+            "direction": None,
+            "severity": "High",
+            "source": "rule_based",
+            "anomaly_type": "long_missing_run",
+            "reason": "Missing for 3h",
+            "mlflow_run_id": "run-1",
+        }
     ]

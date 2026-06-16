@@ -6,22 +6,35 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
-SEVERITY_ORDER = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
-SEVERITIES = ["Critical", "High", "Medium", "Low"]
+from src.ml.anomaly.types import DIRECTION_TYPE_LABELS, SEVERITIES, SEVERITY_ORDER, STAGE1_TYPE_LABELS
 
-STAGE1_TYPE_LABELS = {
-    "missing_reading": "Missing meter data",
-    "long_missing_run": "Missing meter data",
-    "no_data_building": "No usable meter data",
-    "flatline": "Flatline reading",
-    "near_zero_flatline": "Near-zero flatline",
-    "spike_extreme_reading": "Extreme spike",
-}
+_EVENT_FIELDS = [
+    "id",
+    "site_id",
+    "building_id",
+    "primary_space_usage",
+    "timestamp",
+    "start_time",
+    "end_time",
+    "duration_hours",
+    "severity",
+    "type",
+    "actual_value",
+    "expected_value",
+    "deviation_percent",
+    "reason",
+]
 
-_DIRECTION_TYPE_LABELS = {
-    "under": "Unusual low consumption",
-    "over": "Unusual high consumption",
-}
+_SERIES_FIELDS = [
+    "site_id",
+    "building_id",
+    "primary_space_usage",
+    "timestamp",
+    "actual_value",
+    "expected_value",
+    "severity",
+    "is_anomaly",
+]
 
 
 def _safe_float(value) -> float | None:
@@ -43,29 +56,14 @@ def _safe_datetime(value):
 
 
 def _event_columns() -> list[str]:
-    return [
-        "id",
-        "site_id",
-        "building_id",
-        "primary_space_usage",
-        "timestamp",
-        "start_time",
-        "end_time",
-        "duration_hours",
-        "severity",
-        "type",
-        "actual_value",
-        "expected_value",
-        "deviation_percent",
-        "reason",
-    ]
+    return list(_EVENT_FIELDS)
 
 
 def _event_type(row) -> str:
     if row["source"] == "rule_based" and row["anomaly_type"]:
         return STAGE1_TYPE_LABELS.get(row["anomaly_type"], "Meter data anomaly")
     direction = str(row["direction"]).lower() if row["direction"] is not None else ""
-    return _DIRECTION_TYPE_LABELS.get(direction, "Unusual consumption")
+    return DIRECTION_TYPE_LABELS.get(direction, "Unusual consumption")
 
 
 def load_anomaly_facets(db: Session, site_id: str | None = None) -> dict:
@@ -117,7 +115,7 @@ def load_anomaly_facets(db: Session, site_id: str | None = None) -> dict:
 
 def _rows_to_events_df(rows) -> pd.DataFrame:
     if not rows:
-        events = pd.DataFrame(columns=_event_columns())
+        events = pd.DataFrame(columns=_EVENT_FIELDS)
         events["severity_rank"] = pd.Series(dtype=int)
         return events
 
@@ -145,7 +143,7 @@ def _rows_to_events_df(rows) -> pd.DataFrame:
             }
         )
 
-    events = pd.DataFrame(records, columns=_event_columns())
+    events = pd.DataFrame(records, columns=_EVENT_FIELDS)
     for col in ["timestamp", "start_time", "end_time"]:
         events[col] = pd.to_datetime(events[col], errors="coerce")
     events["severity_rank"] = events["severity"].map(SEVERITY_ORDER).fillna(0).astype(int)
@@ -163,25 +161,17 @@ def load_anomaly_events(db: Session) -> pd.DataFrame:
 def load_anomaly_series(db: Session) -> pd.DataFrame:
     from src.models import AnomalyDetectedEvent
 
-    columns = [
-        "site_id",
-        "building_id",
-        "primary_space_usage",
-        "timestamp",
-        "actual_value",
-        "expected_value",
-        "severity",
-        "is_anomaly",
-    ]
-
     rows = (
         db.query(AnomalyDetectedEvent)
         .filter(AnomalyDetectedEvent.source == "lgbm")
         .all()
     )
+    return _rows_to_series_df(rows)
 
+
+def _rows_to_series_df(rows) -> pd.DataFrame:
     if not rows:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=_SERIES_FIELDS)
 
     series = pd.DataFrame(
         [
@@ -197,7 +187,7 @@ def load_anomaly_series(db: Session) -> pd.DataFrame:
             }
             for row in rows
         ],
-        columns=columns,
+        columns=_SERIES_FIELDS,
     )
     series["timestamp"] = pd.to_datetime(series["timestamp"], errors="coerce")
     return series.sort_values(["building_id", "timestamp"]).reset_index(drop=True)
@@ -245,8 +235,6 @@ def filter_series(
 ) -> pd.DataFrame:
     from src.models import AnomalyDetectedEvent
 
-    columns = ["site_id", "building_id", "primary_space_usage", "timestamp", "actual_value", "expected_value", "severity", "is_anomaly"]
-
     q = db.query(AnomalyDetectedEvent).filter(AnomalyDetectedEvent.source == "lgbm")
     if site_id:
         q = q.filter(AnomalyDetectedEvent.site_id == site_id)
@@ -257,34 +245,12 @@ def filter_series(
     if end is not None:
         q = q.filter(AnomalyDetectedEvent.timestamp <= end)
 
-    rows = q.all()
-    if not rows:
-        return pd.DataFrame(columns=columns)
-
-    series = pd.DataFrame(
-        [
-            {
-                "site_id": _safe_str(row.site_id),
-                "building_id": _safe_str(row.building_id),
-                "primary_space_usage": row.primary_space_usage,
-                "timestamp": row.timestamp,
-                "actual_value": row.actual_value,
-                "expected_value": row.predicted_value,
-                "severity": _safe_str(row.severity),
-                "is_anomaly": bool(row.is_anomaly),
-            }
-            for row in rows
-        ],
-        columns=columns,
-    )
-    series["timestamp"] = pd.to_datetime(series["timestamp"], errors="coerce")
-    return series.sort_values(["building_id", "timestamp"]).reset_index(drop=True)
+    return _rows_to_series_df(q.all())
 
 
 def event_records(events: pd.DataFrame) -> list[dict]:
     records: list[dict] = []
-    public_cols = _event_columns()
-    for row in events[public_cols].itertuples(index=False):
+    for row in events[_EVENT_FIELDS].itertuples(index=False):
         record = {
             "id": _safe_str(row.id),
             "site_id": _safe_str(row.site_id),

@@ -1,10 +1,10 @@
 import tempfile
 from types import SimpleNamespace
 
-import mlflow.lightgbm as mlflow_lightgbm
 import pandas as pd
 
-from src.ml import anomaly_inference
+from src.ml.anomaly import inference as anomaly_inference
+from src.ml.anomaly import model_registry
 
 
 class _Client:
@@ -41,7 +41,7 @@ class _TempDir:
 
 def test_load_production_anomaly_model_reads_model_version_feature_tags(monkeypatch):
     model = _Model()
-    monkeypatch.setattr(mlflow_lightgbm, "load_model", lambda uri: model)
+    monkeypatch.setattr(model_registry.mlflow.lightgbm, "load_model", lambda uri: model)
     monkeypatch.setattr(tempfile, "TemporaryDirectory", lambda: _TempDir())
     monkeypatch.setattr(
         anomaly_inference.pd,
@@ -69,7 +69,7 @@ def test_load_production_anomaly_model_reads_model_version_feature_tags(monkeypa
 
 def test_load_production_anomaly_model_falls_back_to_model_feature_names(monkeypatch):
     model = _Model(["hour", "building_id", "airTemperature"])
-    monkeypatch.setattr(mlflow_lightgbm, "load_model", lambda uri: model)
+    monkeypatch.setattr(model_registry.mlflow.lightgbm, "load_model", lambda uri: model)
     monkeypatch.setattr(tempfile, "TemporaryDirectory", lambda: _TempDir())
     monkeypatch.setattr(
         anomaly_inference.pd,

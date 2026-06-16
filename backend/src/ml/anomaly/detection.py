@@ -1,58 +1,39 @@
 import gc
 import logging
-import tempfile
 from collections.abc import Callable, Sequence
 from datetime import timedelta
-from pathlib import Path
 
-import mlflow
-import mlflow.lightgbm
 import pandas as pd
-from mlflow.tracking import MlflowClient
 from sqlalchemy.orm import Session
 
-from src.ml.anomaly_inference import run_rule_based_checks
-from src.ml.anomaly_pipeline import (
+from src.ml.anomaly.feature_engineering import build_feature_matrix
+from src.ml.anomaly.inference import run_rule_based_checks
+from src.ml.anomaly.model_registry import MlflowModelRegistry
+from src.ml.anomaly.scoring import classify_severity, score_anomalies
+from src.ml.anomaly.store import AnomalyEventStore
+from src.ml.anomaly.telemetry_loaders import downcast_telemetry_dtypes, load_telemetry_for_training
+from src.ml.anomaly.training import (
     CHUNK_TRAINING_THRESHOLD_DAYS,
     DEFAULT_CHUNK_MONTHS,
-    build_feature_matrix,
     compute_residual_stats,
-    downcast_telemetry_dtypes,
-    load_telemetry_for_training,
-    load_weather_for_range,
-    score_anomalies,
     train_lgbm,
     train_lgbm_chunked,
 )
-from src.models import AIPipelineLog, AnomalyDetectedEvent
+from src.ml.anomaly.types import RuleFinding, WEATHER_COVERAGE_END_YEAR, WEATHER_COVERAGE_START_YEAR
+from src.ml.anomaly.weather_loaders import load_weather_for_range
+from src.models import AIPipelineLog
 from src.schemas import ModelTrainingRequest
 
 logger = logging.getLogger(__name__)
 
 
-_ANOMALY_EVENT_DEFAULT_COLUMNS = {"id", "created_at"}
-
-
-def _anomaly_event_insert_records(
-    events: Sequence[AnomalyDetectedEvent],
-) -> list[dict[str, object]]:
-    return [
-        {
-            c.key: getattr(event, c.key)
-            for c in AnomalyDetectedEvent.__table__.columns
-            if c.key not in _ANOMALY_EVENT_DEFAULT_COLUMNS
-        }
-        for event in events
-    ]
-
-
-def _existing_location_ids_for_events(
-    events: Sequence[AnomalyDetectedEvent],
+def _existing_location_ids_for_findings(
+    findings: Sequence[RuleFinding],
     db: Session,
 ) -> set[str]:
     from src.models import Location
 
-    building_ids = sorted({event.building_id for event in events})
+    building_ids = sorted({finding.building_id for finding in findings})
     if not building_ids:
         return set()
 
@@ -68,23 +49,33 @@ def _existing_location_ids_for_events(
     return existing_ids
 
 
-def _filter_events_with_existing_locations(
-    events: Sequence[AnomalyDetectedEvent],
+def _filter_findings_with_existing_locations(
+    findings: Sequence[RuleFinding],
     db: Session,
     append_log: Callable[[str], None],
-) -> list[AnomalyDetectedEvent]:
-    existing_ids = _existing_location_ids_for_events(events, db)
-    filtered = [event for event in events if event.building_id in existing_ids]
-    skipped = len(events) - len(filtered)
+) -> list[RuleFinding]:
+    existing_ids = _existing_location_ids_for_findings(findings, db)
+    filtered = [finding for finding in findings if finding.building_id in existing_ids]
+    skipped = len(findings) - len(filtered)
     if skipped:
         missing_buildings = {
-            event.building_id for event in events if event.building_id not in existing_ids
+            finding.building_id for finding in findings if finding.building_id not in existing_ids
         }
         append_log(
             f"Skipped {skipped:,} rule-based events for "
             f"{len(missing_buildings):,} buildings missing from location metadata."
         )
     return filtered
+
+
+def _make_chunk_source(db: Session, request: ModelTrainingRequest):
+    def _load(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        chunk_request = request.model_copy(
+            update={"time_range_start": start, "time_range_end": end}
+        )
+        return load_telemetry_for_training(db, chunk_request)
+
+    return _load
 
 
 def train_anomaly_detection_model(
@@ -102,7 +93,10 @@ def train_anomaly_detection_model(
     test_start = end - total * 0.10
 
     # --- Weather auto-detection ---
-    use_weather = (start.year >= 2016 and end.year <= 2017)
+    use_weather = (
+        start.year >= WEATHER_COVERAGE_START_YEAR
+        and end.year <= WEATHER_COVERAGE_END_YEAR
+    )
     if not use_weather:
         append_log("Weather features disabled: training range outside 2016–2017 weather data coverage.")
 
@@ -118,17 +112,9 @@ def train_anomaly_detection_model(
     n_buildings = df["building_id"].nunique()
     append_log(f"Running rule-based checks across {n_buildings} buildings...")
     rule_events = run_rule_based_checks(df, mlflow_run_id=mlflow_run.info.run_id, progress_cb=append_log)
-    persisted_rule_events = _filter_events_with_existing_locations(rule_events, db, append_log)
+    persisted_rule_events = _filter_findings_with_existing_locations(rule_events, db, append_log)
     if persisted_rule_events:
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-        records = _anomaly_event_insert_records(persisted_rule_events)
-        chunk_size = 500
-        for offset in range(0, len(records), chunk_size):
-            chunk = records[offset: offset + chunk_size]
-            stmt = pg_insert(AnomalyDetectedEvent.__table__).values(chunk)
-            stmt = stmt.on_conflict_do_nothing(constraint="uq_anomaly_detected_event")
-            db.execute(stmt)
-        db.commit()
+        AnomalyEventStore(db).insert_findings(persisted_rule_events)
     append_log(
         f"Rule-based checks complete: {len(rule_events)} events, "
         f"{len(persisted_rule_events)} persisted."
@@ -156,15 +142,20 @@ def train_anomaly_detection_model(
         )
         del df
         gc.collect()
-        final_model, early_stop_model, val_df, train_metrics, feature_cols, cat_features = train_lgbm_chunked(
-            db, request, train_end, test_start,
-            use_weather, weather_df, weather_feature_cols,
+        result = train_lgbm_chunked(
+            _make_chunk_source(db, request),
+            start,
+            end,
+            train_end,
+            test_start,
+            use_weather,
+            weather_df,
+            weather_feature_cols,
             chunk_months=DEFAULT_CHUNK_MONTHS,
             append_log=append_log,
         )
         del weather_df
         gc.collect()
-        feature_df = None
     else:
         append_log("Building feature matrix...")
         feature_df, feature_cols, cat_features = build_feature_matrix(df, use_weather, weather_df, weather_feature_cols)
@@ -173,9 +164,16 @@ def train_anomaly_detection_model(
         append_log(f"Feature matrix: {len(feature_df):,} rows × {len(feature_cols)} features.")
 
         append_log("Training LightGBM (4-fold CV + final model)...")
-        final_model, early_stop_model, val_df, train_metrics = train_lgbm(
+        result = train_lgbm(
             feature_df, feature_cols, cat_features, train_end, test_start
         )
+
+    final_model = result.final_model
+    early_stop_model = result.early_stop_model
+    val_df = result.val_df
+    train_metrics = result.metrics
+    feature_cols = result.feature_cols
+    feature_df = result.feature_df
 
     for fold in train_metrics.get("cv_folds", []):
         append_log(
@@ -191,40 +189,10 @@ def train_anomaly_detection_model(
     append_log("Computing residual calibration stats...")
     resid_stats = compute_residual_stats(early_stop_model, val_df, feature_cols)
 
-    # --- MLflow logging ---
     append_log("Logging model to MLflow...")
-    mlflow.log_params({
-        "use_weather": use_weather,
-        "n_features": len(feature_cols),
-        "best_iteration": train_metrics["best_iteration"],
-        "train_end": str(train_end.date()),
-        "test_start": str(test_start.date()),
-    })
-    mlflow.log_metrics({
-        "test_rmse": train_metrics["test_rmse"],
-        "test_mae": train_metrics["test_mae"],
-    })
-
-    mlflow.lightgbm.log_model(
-        final_model,
-        artifact_path="model",
-        registered_model_name="dmp_energy_anomaly_detection",
-    )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        stats_path = Path(tmp) / "resid_stats.parquet"
-        resid_stats.to_parquet(stats_path, index=False)
-        mlflow.log_artifact(str(stats_path))
-
-    # Tag the registered version
-    client = MlflowClient()
-    versions = client.get_latest_versions("dmp_energy_anomaly_detection", stages=["None"])
-    if versions:
-        v = versions[-1]
-        client.set_model_version_tag(v.name, v.version, "model_task", "anomaly_detection")
-        client.set_model_version_tag(v.name, v.version, "weather_features", str(use_weather).lower())
-        client.set_model_version_tag(v.name, v.version, "feature_set", ",".join(feature_cols))
-        client.set_model_version_tag(v.name, v.version, "metrics", ",".join(request.metrics))
+    registry = MlflowModelRegistry()
+    registry.log_model(final_model, feature_cols, train_metrics, request, use_weather=use_weather)
+    registry.log_artifact("resid_stats.parquet", resid_stats)
 
     append_log("Model registered as dmp_energy_anomaly_detection.")
 
@@ -235,7 +203,9 @@ def train_anomaly_detection_model(
             (feature_df["timestamp"] >= start) & (feature_df["timestamp"] <= end)
         ].dropna(subset=["consumption"])
         if not train_window.empty:
-            scored = score_anomalies(final_model, resid_stats, train_window, feature_cols)
+            scored = classify_severity(
+                score_anomalies(final_model, resid_stats, train_window, feature_cols)
+            )
             anomaly_rate = float(scored["is_anomaly"].mean())
 
     return {

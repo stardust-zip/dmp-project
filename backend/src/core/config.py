@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://dmp_user:dmp_password@localhost:5432/dmp_db"
     REDIS_URL: str = "redis://localhost:6379/0"
     MLFLOW_TRACKING_URI: str = "http://mlflow:5000"
+    DATA_DIR: str = "/app/data/raw/data"
 
     # Security
     BACKEND_CORS_ORIGINS: List[str] = [
