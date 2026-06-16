@@ -2071,7 +2071,7 @@ table.tbl tbody tr:last-child td {
 
 .assets-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+    grid-template-columns: 1fr;
     align-items: start;
     gap: 24px;
 }

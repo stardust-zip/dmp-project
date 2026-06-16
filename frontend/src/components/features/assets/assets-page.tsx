@@ -6,15 +6,11 @@ import { Card, Field } from "@/components/common/primitives";
 import { displayLocationName, displayModelName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
 import {
   createBuilding,
-  createMetric,
   createSite,
   getLocationOptions,
-  getMetricOptions,
   getRegisteredModels,
   updateLocation,
-  updateMetric,
   type LocationOption,
-  type MetricOption,
   type RegisteredModel,
 } from "@/lib/models-api";
 
@@ -55,7 +51,7 @@ function modelMatches(model: RegisteredModel, terms: string[]) {
 
 export function AssetsPage() {
   const [locations, setLocations] = useState<LocationOption[]>([]);
-  const [metrics, setMetrics] = useState<MetricOption[]>([]);
+
   const [models, setModels] = useState<RegisteredModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState<string | null>(null);
@@ -77,13 +73,6 @@ export function AssetsPage() {
   const [locationQuery, setLocationQuery] = useState("");
   const [searchedLocations, setSearchedLocations] = useState<LocationOption[] | null>(null);
   const [locationSearchLoading, setLocationSearchLoading] = useState(false);
-
-  const [metricId, setMetricId] = useState("");
-  const [metricUnit, setMetricUnit] = useState("");
-  const [metricDescription, setMetricDescription] = useState("");
-  const [editMetricId, setEditMetricId] = useState("");
-  const [editMetricUnit, setEditMetricUnit] = useState("");
-  const [editMetricDescription, setEditMetricDescription] = useState("");
 
   const [locationStatusFilter, setLocationStatusFilter] = useState<LocationFilter>("all");
   const [locationPage, setLocationPage] = useState(1);
@@ -116,13 +105,11 @@ export function AssetsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [locationData, metricData, modelData] = await Promise.all([
+      const [locationData, modelData] = await Promise.all([
         getLocationOptions({ includeArchived: true, limit: LOCATION_INDEX_LIMIT }),
-        getMetricOptions(),
         getRegisteredModels(),
       ]);
       setLocations(locationData.locations);
-      setMetrics(metricData.metrics);
       setModels(modelData.models);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load asset data.");
@@ -195,12 +182,6 @@ export function AssetsPage() {
     setBuildingMetadata("");
   }
 
-  function resetMetricForm() {
-    setMetricId("");
-    setMetricUnit("");
-    setMetricDescription("");
-  }
-
   async function toggleLocationArchive(location: LocationOption) {
     const nextArchived = !location.archived;
     const action = `archive-${location.id}`;
@@ -238,10 +219,6 @@ export function AssetsPage() {
           <p className="page-sub">Admin workspace for site hierarchy, building inventory, metadata, and model coverage.</p>
         </div>
         <div className="page-head-actions asset-primary-actions">
-          <button className="btn" type="button" onClick={refresh} disabled={loading}>
-            <Icon name="refresh" className={loading ? "spin" : undefined} />
-            <span>{loading ? "Loading..." : "Refresh"}</span>
-          </button>
           <button className="btn btn-primary" type="button" onClick={() => setActiveModal("site")}>
             <Icon name="map" />
             <span>Create Site</span>
@@ -277,11 +254,7 @@ export function AssetsPage() {
           <b className="asset-summary-value">{modelCoveredLocationCount}</b>
           <small className="asset-summary-foot">Matched to production models</small>
         </div>
-        <div className="asset-summary-card">
-          <span className="asset-summary-label">Metric catalog</span>
-          <b className="asset-summary-value">{metrics.length}</b>
-          <small className="asset-summary-foot">{models.length} models indexed</small>
-        </div>
+
       </section>
 
       <div className="assets-layout">
@@ -377,71 +350,6 @@ export function AssetsPage() {
           )}
         </Card>
 
-        <Card title="Metric Catalog" sub="Create and update trainable signals" icon="sliders">
-          <div className="asset-form compact">
-            <Field label="Metric ID">
-              <input className="input" value={metricId} onChange={(event) => setMetricId(event.target.value)} placeholder="temperature" />
-            </Field>
-            <Field label="Unit">
-              <input className="input" value={metricUnit} onChange={(event) => setMetricUnit(event.target.value)} placeholder="degC" />
-            </Field>
-            <Field label="Description">
-              <input className="input" value={metricDescription} onChange={(event) => setMetricDescription(event.target.value)} />
-            </Field>
-            <button
-              className="btn btn-primary"
-              type="button"
-              disabled={submitting === "metric"}
-              onClick={() =>
-                run("metric", async () => {
-                  await createMetric({ id: metricId, unit: metricUnit || null, description: metricDescription || null });
-                  resetMetricForm();
-                  return `Metric ${metricId} created.`;
-                })
-              }
-            >
-              <Icon name={submitting === "metric" ? "refresh" : "plus"} className={submitting === "metric" ? "spin" : undefined} />
-              <span>Create Metric</span>
-            </button>
-            <Field label="Edit Metric">
-              <select
-                className="input"
-                value={editMetricId}
-                onChange={(event) => {
-                  const metric = metrics.find((item) => item.id === event.target.value);
-                  setEditMetricId(event.target.value);
-                  setEditMetricUnit(metric?.unit ?? "");
-                  setEditMetricDescription(metric?.description ?? "");
-                }}
-              >
-                <option value="">Select metric</option>
-                {metrics.map((metric) => (
-                  <option value={metric.id} key={metric.id}>{metric.id}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Updated Unit">
-              <input className="input" value={editMetricUnit} onChange={(event) => setEditMetricUnit(event.target.value)} />
-            </Field>
-            <Field label="Updated Description">
-              <input className="input" value={editMetricDescription} onChange={(event) => setEditMetricDescription(event.target.value)} />
-            </Field>
-            <button
-              className="btn"
-              type="button"
-              disabled={!editMetricId || submitting === "metric-update"}
-              onClick={() =>
-                run("metric-update", async () => {
-                  await updateMetric(editMetricId, { unit: editMetricUnit || null, description: editMetricDescription || null });
-                  return `Metric ${editMetricId} updated.`;
-                })
-              }
-            >
-              <Icon name={submitting === "metric-update" ? "refresh" : "check"} className={submitting === "metric-update" ? "spin" : undefined} />
-              <span>Update Metric</span>
-            </button>
-          </div>
-        </Card>
       </div>
 
       {activeModal && (
