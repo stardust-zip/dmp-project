@@ -59,6 +59,17 @@ function wholeHour(value: string) {
   return value.length === 5 ? value : `${value}:00`;
 }
 
+function withAlpha(color: string, alpha: number) {
+  const hex = color.trim().replace("#", "");
+  if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+  return color;
+}
+
 function locationSubtitle(location: LocationOption, parent?: LocationOption | null) {
   const parts = [
     location.location_type ? humanizeIdentifier(location.location_type) : null,
@@ -102,7 +113,7 @@ function buildExpectedActualChart(report: ExpectedActualResponse | null) {
           showSymbol: false,
           data: points.map((point) => [point.timestamp, point.actual_value ?? null]),
           lineStyle: { width: 2, color: theme.accent },
-          areaStyle: { color: "rgba(37,99,235,.08)" },
+          areaStyle: { color: withAlpha(theme.accent, 0.1) },
         },
       ],
     };
