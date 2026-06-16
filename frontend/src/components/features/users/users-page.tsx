@@ -634,7 +634,7 @@ export function UsersPage() {
                   <span className="user-field-help">{emailIssue}</span>
                 )}
                 {form.email.trim() && !emailIssue && (
-                  <span className="user-field-ok">Email format looks good.</span>
+                  <span className="user-field-ok">Email format accepted.</span>
                 )}
               </Field>
 
@@ -858,7 +858,7 @@ export function UsersPage() {
                     return <span className="user-field-help">{editEmailIssue}</span>;
                   }
                   if (editEmail.trim() && !editEmailIssue) {
-                    return <span className="user-field-ok">Email format looks good.</span>;
+                    return <span className="user-field-ok">Email format accepted.</span>;
                   }
                   return null;
                 })()}
