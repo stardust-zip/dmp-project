@@ -31,6 +31,8 @@ export interface CreateUserPayload {
 }
 
 export interface UpdateUserRolePayload {
+  full_name?: string;
+  email?: string;
   role?: ManagedUserRole;
   status?: ManagedUserStatus;
   contact_number?: string | null;
