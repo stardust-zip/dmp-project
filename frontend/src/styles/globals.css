@@ -1353,6 +1353,119 @@ table.tbl tbody tr:last-child td {
     color: var(--muted);
 }
 
+.form-message {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font-size: 12px;
+    font-weight: 620;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.form-message svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+    margin-top: 1px;
+}
+
+.form-message-error {
+    border-color: var(--red-border);
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+.form-message-success {
+    border-color: var(--green-border);
+    background: var(--green-soft);
+    color: var(--green);
+}
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, .34);
+}
+
+.app-modal {
+    width: min(620px, 100%);
+    max-height: min(720px, calc(100dvh - 48px));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    animation: popin .14s cubic-bezier(.22, 1, .36, 1);
+}
+
+.app-modal-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    min-width: 0;
+    padding: 20px 22px 18px;
+    border-bottom: 1px solid var(--border);
+}
+
+.app-modal-head>div {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.app-modal-head h2 {
+    margin: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    color: var(--ink);
+    font-size: 18px;
+    font-weight: 720;
+    line-height: 1.25;
+    letter-spacing: 0;
+}
+
+.app-modal-head span {
+    display: block;
+    max-width: 68ch;
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.app-modal-body {
+    display: grid;
+    gap: 18px;
+    min-width: 0;
+    padding: 22px;
+    overflow-y: auto;
+}
+
+.app-modal-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 9px;
+    padding: 13px 18px;
+    border-top: 1px solid var(--border);
+    background: var(--surface-2);
+}
+
 .input {
     height: 34px;
     border: 1px solid var(--border);
@@ -2511,20 +2624,7 @@ table.tbl tbody tr:last-child td {
 }
 
 .asset-modal {
-    position: fixed;
-    z-index: 51;
-    top: 50%;
-    left: 50%;
     width: min(620px, calc(100vw - 32px));
-    max-height: min(720px, calc(100dvh - 32px));
-    transform: translate(-50%, -50%);
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface);
-    box-shadow: var(--shadow-lg);
-    animation: popin .14s cubic-bezier(.22, 1, .36, 1);
 }
 
 .asset-detail .drawer-head h3 {

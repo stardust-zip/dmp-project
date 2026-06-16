@@ -627,34 +627,6 @@ export function ModelsPage() {
     setDescriptionDraft(model?.description ?? "");
   }
 
-  async function refreshWorkspace() {
-    setLoading(true);
-    setLogsLoading(true);
-    setError(null);
-
-    try {
-      const [modelData, logData, locationData, metricData] = await Promise.all([
-        getRegisteredModels(),
-        getPipelineLogs(),
-        getLocationOptions({ limit: LOCATION_INDEX_LIMIT }),
-        getMetricOptions(),
-      ]);
-      setModels(modelData.models);
-      setLogs(logData.logs);
-      registryRefreshRunIdsRef.current = new Set(
-        logData.logs.filter(isSuccessfulPipelineLog).map((log) => log.mlflow_run_id as string),
-      );
-      setSelectedModelName((current) => current || modelData.models[0]?.name || "");
-      setLocationOptions(locationData.locations);
-      setMetricOptions(metricData.metrics);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load AI engineering data.");
-    } finally {
-      setLoading(false);
-      setLogsLoading(false);
-    }
-  }
-
   async function onTrainModel() {
     if (!trainingTaskImplemented) {
       setError(`${selectedTaskLabel} training pipeline is not implemented yet.`);
