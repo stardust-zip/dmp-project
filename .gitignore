@@ -28,7 +28,7 @@ redis_data/
 prom_data/
 grafana_data/
 /data
-
+data2/
 # Claude Code Plugins
 */.omc/
 .omx/
@@ -36,6 +36,10 @@ grafana_data/
 .omc/
 .claude/
 */.codegraph/
-
+result/
 # Jetbrains
 .idea
+
+building-data-genome-project-2/
+data1/
+raw-data/
