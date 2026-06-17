@@ -1,5 +1,5 @@
-import { DashboardPage } from "@/components/features/dashboard/dashboard-page";
+import { AssetsPage } from "@/components/features/assets/assets-page";
 
 export default function DashboardRoute() {
-  return <DashboardPage />;
+  return <AssetsPage />;
 }

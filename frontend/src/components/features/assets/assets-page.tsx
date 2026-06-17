@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, FormMessage, Modal } from "@/components/common/primitives";
 import { displayLocationName, displayModelName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
@@ -98,6 +99,10 @@ function modelMatches(model: RegisteredModel, terms: string[]) {
 }
 
 export function AssetsPage() {
+  const { session } = useAuth();
+  const currentUser = session?.user;
+  const canManageAssets = currentUser?.role === "Admin";
+  const canViewModelCoverage = currentUser?.role === "Admin" || currentUser?.role === "AI_Engineer";
   const mapSearchRef = useRef<HTMLDivElement | null>(null);
   const mapStatsRef = useRef<HTMLDivElement | null>(null);
   const [locations, setLocations] = useState<LocationOption[]>([]);
@@ -197,14 +202,13 @@ export function AssetsPage() {
   const selectedMapPoint = selectedMapLocation ? locationPoint(selectedMapLocation) : null;
   const locationRangeStart = filteredLocations.length ? (safeLocationPage - 1) * LOCATIONS_PER_PAGE + 1 : 0;
   const locationRangeEnd = Math.min(safeLocationPage * LOCATIONS_PER_PAGE, filteredLocations.length);
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [locationData, modelData] = await Promise.all([
-        getLocationOptions({ includeArchived: true, limit: LOCATION_INDEX_LIMIT }),
-        getRegisteredModels(),
-      ]);
+      const locationRequest = getLocationOptions({ includeArchived: true, limit: LOCATION_INDEX_LIMIT });
+      const modelRequest = canViewModelCoverage ? getRegisteredModels() : Promise.resolve({ models: [] });
+      const [locationData, modelData] = await Promise.all([locationRequest, modelRequest]);
       setLocations(locationData.locations);
       setModels(modelData.models);
     } catch (err) {
@@ -212,7 +216,7 @@ export function AssetsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [canViewModelCoverage]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -220,7 +224,7 @@ export function AssetsPage() {
     }, 0);
 
     return () => window.clearTimeout(timeout);
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     const query = locationQuery.trim();
@@ -440,19 +444,25 @@ export function AssetsPage() {
     <main className="page assets-page">
       <div className="page-head assets-head">
         <div>
-          <h1 className="page-title">Assets Management</h1>
-          <p className="page-sub">Admin workspace for site hierarchy, building inventory, metadata, and model coverage.</p>
+          <h1 className="page-title">Dashboard</h1>
+          <p className="page-sub">
+            {canManageAssets
+              ? "Asset dashboard for site hierarchy, building inventory, metadata, and model coverage."
+              : "Asset dashboard for your accessible site hierarchy, building inventory, and metadata."}
+          </p>
         </div>
-        <div className="page-head-actions asset-primary-actions">
-          <button className="btn btn-primary" type="button" onClick={() => openAssetModal("site")}>
-            <Icon name="map" />
-            <span>Create Site</span>
-          </button>
-          <button className="btn btn-primary" type="button" onClick={() => openAssetModal("building")}>
-            <Icon name="building" />
-            <span>Create Building</span>
-          </button>
-        </div>
+        {canManageAssets && (
+          <div className="page-head-actions asset-primary-actions">
+            <button className="btn btn-primary" type="button" onClick={() => openAssetModal("site")}>
+              <Icon name="map" />
+              <span>Create Site</span>
+            </button>
+            <button className="btn btn-primary" type="button" onClick={() => openAssetModal("building")}>
+              <Icon name="building" />
+              <span>Create Building</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {error && <div className="anomaly-error">{error}</div>}
@@ -506,11 +516,13 @@ export function AssetsPage() {
                         <b>{Math.round((mappedLocations.length / Math.max(locations.length, 1)) * 100)}%</b>
                         <small>{locations.length - mappedLocations.length} missing coords</small>
                       </div>
-                      <div className="asset-stat-card">
-                        <span>Model-covered</span>
-                        <b>{modelCoveredLocationCount}</b>
-                        <small>Production model match</small>
-                      </div>
+                      {canViewModelCoverage && (
+                        <div className="asset-stat-card">
+                          <span>Model-covered</span>
+                          <b>{modelCoveredLocationCount}</b>
+                          <small>Production model match</small>
+                        </div>
+                      )}
                     </div>
                     <div className="asset-map-stats-foot">
                       <span>Map center</span>
@@ -600,7 +612,7 @@ export function AssetsPage() {
                       <div><span>Site</span><b>{isSiteLocation(selectedMapLocation) ? selectedMapLocation.id : selectedMapLocation.parent_id ?? "No site assigned"}</b></div>
                       <div><span>Status</span><b>{selectedMapLocation.archived ? "Archived" : "Active"}</b></div>
                       <div><span>Coordinates</span><b>{selectedMapPoint ? `${formatCoordinate(selectedMapPoint.lat)}, ${formatCoordinate(selectedMapPoint.lon)}` : "No coordinates"}</b></div>
-                      <div><span>Models</span><b>{selectedMapModels.length}</b></div>
+                      {canViewModelCoverage && <div><span>Models</span><b>{selectedMapModels.length}</b></div>}
                       <div><span>Child assets</span><b>{selectedMapChildren.length}</b></div>
                     </div>
                     {selectedMapPoint && (
@@ -609,15 +621,17 @@ export function AssetsPage() {
                         <span>Open in OSM</span>
                       </a>
                     )}
-                    <button
-                      className="btn btn-primary btn-small asset-map-archive-action"
-                      type="button"
-                      disabled={submitting === `archive-${selectedMapLocation.id}`}
-                      onClick={() => void toggleLocationArchive(selectedMapLocation)}
-                    >
-                      <Icon name="flag" />
-                      <span>{selectedMapLocation.archived ? "Restore Location" : "Archive Location"}</span>
-                    </button>
+                    {canManageAssets && (
+                      <button
+                        className="btn btn-primary btn-small asset-map-archive-action"
+                        type="button"
+                        disabled={submitting === `archive-${selectedMapLocation.id}`}
+                        onClick={() => void toggleLocationArchive(selectedMapLocation)}
+                      >
+                        <Icon name="flag" />
+                        <span>{selectedMapLocation.archived ? "Restore Location" : "Archive Location"}</span>
+                      </button>
+                    )}
                     <div className="asset-map-detail-section">
                       <span className="asset-summary-label">Related assets</span>
                       <div className="asset-detail-list compact">
@@ -625,13 +639,15 @@ export function AssetsPage() {
                         {selectedMapChildren.length === 0 && <span>No direct child locations</span>}
                       </div>
                     </div>
-                    <div className="asset-map-detail-section">
-                      <span className="asset-summary-label">Model usage</span>
-                      <div className="asset-detail-list compact">
-                        {selectedMapModels.map((model) => <span key={model.name} title={model.name}>{displayModelName(model.name)}</span>)}
-                        {selectedMapModels.length === 0 && <span>No matching model tags or names found</span>}
+                    {canViewModelCoverage && (
+                      <div className="asset-map-detail-section">
+                        <span className="asset-summary-label">Model usage</span>
+                        <div className="asset-detail-list compact">
+                          {selectedMapModels.map((model) => <span key={model.name} title={model.name}>{displayModelName(model.name)}</span>)}
+                          {selectedMapModels.length === 0 && <span>No matching model tags or names found</span>}
+                        </div>
                       </div>
-                    </div>
+                    )}
                     <div className="asset-map-detail-section">
                       <span className="asset-summary-label">Metadata JSON</span>
                       <pre className="asset-json in-panel">{shortJson(selectedMapLocation.metadata)}</pre>
@@ -726,7 +742,7 @@ export function AssetsPage() {
                   </small>
                 </div>
                 <div className="asset-tile-stats">
-                  <span>{modelsForLocation(location).length} models</span>
+                  {canViewModelCoverage && <span>{modelsForLocation(location).length} models</span>}
                   <span>{mappedLocationById.has(location.id) ? "Mapped" : "No coords"}</span>
                 </div>
               </button>
@@ -761,7 +777,7 @@ export function AssetsPage() {
         </Modal>
       )}
 
-      {activeModal && (
+      {canManageAssets && activeModal && (
         <Modal
           title={activeModal === "site" ? "Create Site" : "Create Building"}
           description={activeModal === "site" ? "Add a top-level location." : "Attach a building to a site."}
@@ -871,16 +887,20 @@ export function AssetsPage() {
                     {locations.filter((item) => item.parent_id === selectedLocation.id).map((item) => <span key={item.id} title={item.id}>{displayLocationName(item.name, item.id)}</span>)}
                     {locations.filter((item) => item.parent_id === selectedLocation.id).length === 0 && <span>No direct child locations</span>}
                   </div>
-                  <div className="sec-label">Model Usage</div>
-                  <div className="asset-detail-list">
-                    {modelsForLocation(selectedLocation).map((model) => <span key={model.name} title={model.name}>{displayModelName(model.name)}</span>)}
-                    {modelsForLocation(selectedLocation).length === 0 && <span>No matching model tags or names found</span>}
-                  </div>
+                  {canViewModelCoverage && (
+                    <>
+                      <div className="sec-label">Model Usage</div>
+                      <div className="asset-detail-list">
+                        {modelsForLocation(selectedLocation).map((model) => <span key={model.name} title={model.name}>{displayModelName(model.name)}</span>)}
+                        {modelsForLocation(selectedLocation).length === 0 && <span>No matching model tags or names found</span>}
+                      </div>
+                    </>
+                  )}
                 </>
               )}
             </div>
             <div className="drawer-foot">
-              {selectedLocation && (
+              {canManageAssets && selectedLocation && (
                 <button className="btn btn-primary" type="button" disabled={submitting === `archive-${selectedLocation.id}`} onClick={() => void toggleLocationArchive(selectedLocation)}>
                   <Icon name="flag" />
                   <span>{selectedLocation.archived ? "Restore Location" : "Archive Location"}</span>

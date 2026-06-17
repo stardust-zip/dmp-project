@@ -271,6 +271,16 @@ async def list_devices(
     query = db.query(Device)
     if building_id:
         query = query.filter(Device.location_id == building_id)
+    if not user_has_global_read_access(current_user):
+        assigned_sites = set(current_user.assigned_site_ids)
+        if not assigned_sites:
+            return {"devices": []}
+        query = query.join(Location, Device.location_id == Location.id).filter(
+            or_(
+                Location.id.in_(assigned_sites),
+                Location.parent_id.in_(assigned_sites),
+            )
+        )
     if status_filter:
         query = query.filter(Device.status == status_filter)
     if metric_type_id:
