@@ -283,19 +283,36 @@ export function AssetsPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const errors: string[] = [];
+    const errorMessage = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
+    const locationRequest = getLocationOptions({ includeArchived: true, limit: LOCATION_INDEX_LIMIT });
+    const modelRequest = canViewModelCoverage ? getRegisteredModels() : Promise.resolve({ models: [] });
+    const usersRequest = canManageAssets ? getUsers() : Promise.resolve([]);
+
     try {
-      const locationRequest = getLocationOptions({ includeArchived: true, limit: LOCATION_INDEX_LIMIT });
-      const modelRequest = canViewModelCoverage ? getRegisteredModels() : Promise.resolve({ models: [] });
-      const usersRequest = canManageAssets ? getUsers() : Promise.resolve([]);
-      const [locationData, modelData, userData] = await Promise.all([locationRequest, modelRequest, usersRequest]);
+      const locationData = await locationRequest;
       setLocations(locationData.locations);
-      setModels(modelData.models);
-      setUsers(userData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load asset data.");
-    } finally {
-      setLoading(false);
+      errors.push(errorMessage(err, "Unable to load locations."));
     }
+
+    const [modelResult, userResult] = await Promise.allSettled([modelRequest, usersRequest]);
+    if (modelResult.status === "fulfilled") {
+      setModels(modelResult.value.models);
+    } else {
+      errors.push(errorMessage(modelResult.reason, "Unable to load model coverage."));
+    }
+    if (userResult.status === "fulfilled") {
+      setUsers(userResult.value);
+    } else {
+      errors.push(errorMessage(userResult.reason, "Unable to load operator assignments."));
+    }
+
+    if (errors.length > 0) {
+      setError(errors.join(" "));
+    }
+
+    setLoading(false);
   }, [canManageAssets, canViewModelCoverage]);
 
   useEffect(() => {
