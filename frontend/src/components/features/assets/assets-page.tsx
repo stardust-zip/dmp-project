@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, FormMessage, Modal } from "@/components/common/primitives";
+import { ModelDetailModal } from "@/components/features/models/model-detail-modal";
 import { UserEditModal } from "@/components/features/users/user-edit-modal";
 import { displayLocationName, displayModelName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
 import {
@@ -108,12 +109,38 @@ function modelMatches(model: RegisteredModel, terms: string[]) {
     model.name,
     model.description ?? "",
     model.production_version?.run_id ?? "",
+    model.production_version?.model_task ?? "",
+    ...Object.entries(model.production_version?.tags ?? {}).flatMap(([key, value]) => [key, value]),
     ...Object.entries(model.tags ?? {}).flatMap(([key, value]) => [key, value]),
   ]
     .join(" ")
     .toLowerCase();
 
   return terms.some((term) => term && haystack.includes(term.toLowerCase()));
+}
+
+function modelTask(model: RegisteredModel) {
+  const taggedTask = model.production_version?.model_task
+    ?? model.production_version?.tags?.model_task
+    ?? model.tags?.model_task
+    ?? model.tags?.task
+    ?? model.tags?.type;
+  if (taggedTask === "prediction" || taggedTask === "forecasting" || taggedTask === "anomaly_detection") return taggedTask;
+
+  const text = `${model.name} ${model.description ?? ""}`.toLowerCase();
+  if (text.includes("anomaly")) return "anomaly_detection";
+  if (text.includes("forecast")) return "forecasting";
+  if (text.includes("prediction") || text.includes("energy_prediction")) return "prediction";
+  return "unknown";
+}
+
+function modelHasSpecificLocationScope(model: RegisteredModel) {
+  const tags = { ...(model.tags ?? {}), ...(model.production_version?.tags ?? {}) };
+  return Boolean(tags.site_id || tags.building_id || tags.location_id);
+}
+
+function modelAppliesGlobally(model: RegisteredModel) {
+  return Boolean(model.production_version) && modelTask(model) === "anomaly_detection" && !modelHasSpecificLocationScope(model);
 }
 
 export function AssetsPage() {
@@ -134,6 +161,7 @@ export function AssetsPage() {
 
   const [activeModal, setActiveModal] = useState<AssetModal>(null);
   const [editingOperator, setEditingOperator] = useState<ManagedUser | null>(null);
+  const [detailModel, setDetailModel] = useState<RegisteredModel | null>(null);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [mapStatsOpen, setMapStatsOpen] = useState(false);
   const [assetFormError, setAssetFormError] = useState<string | null>(null);
@@ -449,7 +477,7 @@ export function AssetsPage() {
 
   const modelsForLocation = useCallback((location: LocationOption) => {
     const childIds = locations.filter((item) => item.parent_id === location.id).map((item) => item.id);
-    return models.filter((model) => modelMatches(model, [location.id, location.name, location.parent_id ?? "", ...childIds]));
+    return models.filter((model) => modelAppliesGlobally(model) || modelMatches(model, [location.id, location.name, location.parent_id ?? "", ...childIds]));
   }, [locations, models]);
 
   const modelCoveredLocationCount = useMemo(
@@ -717,7 +745,11 @@ export function AssetsPage() {
                       <div className="asset-map-detail-section">
                         <span className="asset-summary-label">Model usage</span>
                         <div className="asset-detail-list compact">
-                          {selectedMapModels.map((model) => <span key={model.name} title={model.name}>{displayModelName(model.name)}</span>)}
+                          {selectedMapModels.map((model) => (
+                            <button className="asset-detail-list-action" key={model.name} title={model.name} type="button" onClick={() => setDetailModel(model)}>
+                              {displayModelName(model.name)}
+                            </button>
+                          ))}
                           {selectedMapModels.length === 0 && <span>No matching model tags or names found</span>}
                         </div>
                       </div>
@@ -986,7 +1018,11 @@ export function AssetsPage() {
                     <>
                       <div className="sec-label">Model Usage</div>
                       <div className="asset-detail-list">
-                        {modelsForLocation(selectedLocation).map((model) => <span key={model.name} title={model.name}>{displayModelName(model.name)}</span>)}
+                        {modelsForLocation(selectedLocation).map((model) => (
+                          <button className="asset-detail-list-action" key={model.name} title={model.name} type="button" onClick={() => setDetailModel(model)}>
+                            {displayModelName(model.name)}
+                          </button>
+                        ))}
                         {modelsForLocation(selectedLocation).length === 0 && <span>No matching model tags or names found</span>}
                       </div>
                     </>
@@ -1025,6 +1061,19 @@ export function AssetsPage() {
             setUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
             setMessage(`${updated.full_name} was updated.`);
           }}
+        />
+      )}
+
+      {detailModel && (
+        <ModelDetailModal
+          model={detailModel}
+          onClose={() => setDetailModel(null)}
+          onModelsChanged={(nextModels) => {
+            setModels(nextModels);
+            setDetailModel((current) => current ? nextModels.find((model) => model.name === current.name) ?? current : current);
+          }}
+          onMessage={setMessage}
+          onError={setError}
         />
       )}
     </main>

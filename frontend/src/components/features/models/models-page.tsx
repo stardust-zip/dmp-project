@@ -3,26 +3,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
+import { ModelDetailModal } from "@/components/features/models/model-detail-modal";
 import { displayLocationName, displayModelName, humanizeIdentifier, locationSearchText } from "@/lib/format";
 import {
   backfillAnomalyInference,
   cancelPipelineLog,
-  demoteModel,
-  downloadModelFile,
   getLocationOptions,
   getMetricOptions,
-  getModelVersions,
   getPipelineLogs,
   getRegisteredModels,
-  rollbackModel,
   trainModel,
-  updateModelDescription,
   validateTrainingRequest,
   type AnomalyBackfillPayload,
   type LocationOption,
   type MetricOption,
   type ModelTask,
-  type ModelVersion,
   type PipelineLog,
   type RegisteredModel,
   type TrainModelPayload,
@@ -75,10 +70,6 @@ function formatRegistryTime(timestamp?: number | null) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(millis));
-}
-
-function formatMetric(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(4);
 }
 
 function formatRows(value: number) {
@@ -288,14 +279,7 @@ export function ModelsPage() {
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(defaultEndDate);
   const [submitting, setSubmitting] = useState(false);
-  const [rollbackSubmitting, setRollbackSubmitting] = useState(false);
-  const [demoteSubmitting, setDemoteSubmitting] = useState(false);
-  const [downloadSubmitting, setDownloadSubmitting] = useState(false);
   const [selectedModelName, setSelectedModelName] = useState("");
-  const [versions, setVersions] = useState<ModelVersion[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState("");
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versionError, setVersionError] = useState<string | null>(null);
   const [trainingValidation, setTrainingValidation] = useState<TrainingValidationResponse | null>(null);
   const [validationLoading, setValidationLoading] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -306,8 +290,6 @@ export function ModelsPage() {
   const [trainModalOpen, setTrainModalOpen] = useState(false);
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
   const [detailLog, setDetailLog] = useState<PipelineLog | null>(null);
-  const [descriptionDraft, setDescriptionDraft] = useState("");
-  const [descriptionSubmitting, setDescriptionSubmitting] = useState(false);
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
   const [modelTaskFilter, setModelTaskFilter] = useState<"all" | ModelTask | "unknown">("all");
@@ -386,17 +368,9 @@ export function ModelsPage() {
       setModels(modelData.models);
       setSelectedModelName((current) => current || modelData.models[0]?.name || "");
 
-      if (selectedModelName && modelData.models.some((model) => model.name === selectedModelName)) {
-        const versionData = await getModelVersions(selectedModelName, signal);
-        setVersions(versionData.versions);
-        setSelectedRunId((current) =>
-          versionData.versions.some((version) => version.run_id === current) ? current : versionData.versions[0]?.run_id || "",
-        );
-      }
-
       return modelData.models;
     },
-    [selectedModelName],
+    [],
   );
 
   const refreshLogs = useCallback(
@@ -438,40 +412,6 @@ export function ModelsPage() {
     };
   }, [detailLog, pipelineModalOpen, refreshLogs, submitting]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function loadVersions() {
-      if (!selectedModelName) {
-        setVersions([]);
-        setSelectedRunId("");
-        setVersionError(null);
-        return;
-      }
-
-      setVersionsLoading(true);
-      setVersionError(null);
-      try {
-        const data = await getModelVersions(selectedModelName, controller.signal);
-        setVersions(data.versions);
-        setSelectedRunId((current) => (data.versions.some((version) => version.run_id === current) ? current : data.versions[0]?.run_id || ""));
-      } catch (err) {
-        if (!controller.signal.aborted) {
-          setVersions([]);
-          setSelectedRunId("");
-          setVersionError(err instanceof Error ? err.message : "Unable to load model versions.");
-        }
-      } finally {
-        if (!controller.signal.aborted) {
-          setVersionsLoading(false);
-        }
-      }
-    }
-
-    void loadVersions();
-    return () => controller.abort();
-  }, [selectedModelName]);
-
   const filteredMetrics = metricOptions
     .filter((metric) => `${metric.id} ${metric.description ?? ""}`.toLowerCase().includes(metricQuery.toLowerCase()))
     .slice(0, 8);
@@ -499,27 +439,6 @@ export function ModelsPage() {
       return !query || modelSearchText(model).includes(query);
     });
   }, [modelMetricFilter, modelQuery, modelStageFilter, modelTaskFilter, models]);
-  const selectedVersion = versions.find((version) => version.run_id === selectedRunId) ?? null;
-  const detailVersion = detailModelName === selectedModelName ? selectedVersion : null;
-  const detailVersions = detailModelName === selectedModelName ? versions : [];
-  const detailVersionIsProduction = Boolean(
-    detailModel?.production_version?.run_id && detailVersion?.run_id && detailModel.production_version.run_id === detailVersion.run_id,
-  );
-  const detailVersionMetricEntries = Object.entries(detailVersion?.metrics ?? {}).sort(([left], [right]) => left.localeCompare(right));
-  const detailVersionTagEntries = Object.entries(detailVersion?.tags ?? {}).sort(([left], [right]) => left.localeCompare(right));
-  const pipelineLogsByRunId = useMemo(() => {
-    const byRunId = new Map<string, PipelineLog[]>();
-    logs.forEach((log) => {
-      if (!log.mlflow_run_id || log.mlflow_run_id === "pending") return;
-      const runLogs = byRunId.get(log.mlflow_run_id) ?? [];
-      runLogs.push(log);
-      byRunId.set(log.mlflow_run_id, runLogs);
-    });
-    return byRunId;
-  }, [logs]);
-  const detailVersionPipelineLogs = detailVersions.flatMap((version) =>
-    (pipelineLogsByRunId.get(version.run_id) ?? []).map((log) => ({ version, log })),
-  );
   const detailTerminalLog = detailLog ? pipelineTerminalLog(detailLog) : "";
   const selectedMetricsKey = selectedMetrics.join(",");
   const selectedTaskLabel = MODEL_TASK_OPTIONS.find((option) => option.value === modelTask)?.label ?? modelTask;
@@ -623,10 +542,8 @@ export function ModelsPage() {
   }
 
   function openModelDetails(modelName: string) {
-    const model = models.find((item) => item.name === modelName);
     setSelectedModelName(modelName);
     setDetailModelName(modelName);
-    setDescriptionDraft(model?.description ?? "");
   }
 
   async function onTrainModel() {
@@ -688,94 +605,6 @@ export function ModelsPage() {
     }
   }
 
-  async function onRollbackModel() {
-    if (!selectedModelName || !selectedRunId) {
-      setError("Select a model version before rollback.");
-      return;
-    }
-
-    setRollbackSubmitting(true);
-    setError(null);
-    setTrainMessage(null);
-
-    try {
-      const response = await rollbackModel({
-        model_name: selectedModelName,
-        mlflow_run_id: selectedRunId,
-      });
-      setTrainMessage(`${response.model_name} v${response.version} promoted to production.`);
-      const modelData = await getRegisteredModels();
-      setModels(modelData.models);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to rollback model.");
-    } finally {
-      setRollbackSubmitting(false);
-    }
-  }
-
-  async function onDemoteModel() {
-    if (!selectedModelName || !selectedRunId) {
-      setError("Select a production model version before removing it from production.");
-      return;
-    }
-
-    setDemoteSubmitting(true);
-    setError(null);
-    setTrainMessage(null);
-
-    try {
-      const response = await demoteModel({
-        model_name: selectedModelName,
-        mlflow_run_id: selectedRunId,
-      });
-      setTrainMessage(`${response.model_name} v${response.version} moved out of production.`);
-      const [modelData, versionData] = await Promise.all([
-        getRegisteredModels(),
-        getModelVersions(selectedModelName),
-      ]);
-      setModels(modelData.models);
-      setVersions(versionData.versions);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to move model out of production.");
-    } finally {
-      setDemoteSubmitting(false);
-    }
-  }
-
-  function onDownloadModel() {
-    if (!selectedModelName || !selectedRunId) {
-      setError("Select a model version before downloading.");
-      return;
-    }
-
-    const version = versions.find((v) => v.run_id === selectedRunId);
-    if (!version) {
-      setError("Selected version not found in registry.");
-      return;
-    }
-
-    setDownloadSubmitting(true);
-    setError(null);
-    downloadModelFile(selectedModelName, version.version)
-      .then(({ blob, filename }) => {
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = filename;
-        document.body.appendChild(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
-        URL.revokeObjectURL(url);
-        setTrainMessage(`${filename} downloaded.`);
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Unable to download model.");
-      })
-      .finally(() => {
-        setDownloadSubmitting(false);
-      });
-  }
-
   async function onCancelPipeline(log: PipelineLog) {
     setCancelSubmitting(true);
     setError(null);
@@ -810,24 +639,6 @@ export function ModelsPage() {
       setError(err instanceof Error ? err.message : "Unable to start backfill inference.");
     } finally {
       setBackfillSubmitting(false);
-    }
-  }
-
-  async function onSaveModelDescription() {
-    if (!detailModel) return;
-
-    setDescriptionSubmitting(true);
-    setError(null);
-    setTrainMessage(null);
-    try {
-      const response = await updateModelDescription(detailModel.name, { description: descriptionDraft });
-      setModels((current) => current.map((model) => (model.name === response.name ? { ...model, description: response.description } : model)));
-      setDescriptionDraft(response.description);
-      setTrainMessage(`${displayModelName(detailModel.name)} description updated.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to update model description.");
-    } finally {
-      setDescriptionSubmitting(false);
     }
   }
 
@@ -1250,197 +1061,14 @@ export function ModelsPage() {
       )}
 
       {detailModel && (
-        <>
-          <button className="overlay" type="button" aria-label="Close model details" onClick={() => setDetailModelName(null)} />
-          <div className="model-modal" role="dialog" aria-label={`${detailModel.name} details`}>
-            <div className="model-modal-head">
-              <div>
-                <h2 title={detailModel.name}>{displayModelName(detailModel.name)}</h2>
-                <span>{detailModel.description || detailModel.name}</span>
-              </div>
-              <button className="icon-btn" type="button" aria-label="Close model details" onClick={() => setDetailModelName(null)}>
-                <Icon name="x" />
-              </button>
-            </div>
-
-            <div className="model-modal-body">
-              <div className="model-inspector-head">
-                <div>
-                  <span>Status</span>
-                  <b>{detailModel.production_version ? "Production" : "Registered"}</b>
-                </div>
-                <div>
-                  <span>Versions</span>
-                  <b>{versionsLoading ? "Loading..." : detailVersions.length}</b>
-                </div>
-                <div>
-                  <span>Updated</span>
-                  <b>{formatRegistryTime(detailModel.last_updated_timestamp)}</b>
-                </div>
-                <div>
-                  <span>Created</span>
-                  <b>{formatRegistryTime(detailModel.creation_timestamp)}</b>
-                </div>
-              </div>
-
-              <div className="model-section-title">Description</div>
-              <div className="model-description-editor">
-                <textarea
-                  className="textarea"
-                  value={descriptionDraft}
-                  onChange={(event) => setDescriptionDraft(event.target.value)}
-                  placeholder="Add a short business-facing description for this model."
-                  maxLength={2000}
-                />
-                <div className="model-description-actions">
-                  <span>{descriptionDraft.length}/2000</span>
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    onClick={onSaveModelDescription}
-                    disabled={descriptionSubmitting || descriptionDraft.trim() === (detailModel.description ?? "").trim()}
-                  >
-                    <Icon name={descriptionSubmitting ? "refresh" : "check"} className={descriptionSubmitting ? "spin" : undefined} />
-                    <span>{descriptionSubmitting ? "Saving..." : "Save Description"}</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="model-section-title">Version control</div>
-              <div className="model-version-control">
-                <Field label="Version">
-                  <select
-                    className="input"
-                    value={selectedRunId}
-                    onChange={(event) => setSelectedRunId(event.target.value)}
-                    disabled={!selectedModelName || versionsLoading || !versions.length}
-                  >
-                    {versionsLoading ? (
-                      <option value="">Loading versions...</option>
-                    ) : versions.length ? (
-                      versions.map((version) => (
-                        <option value={version.run_id} key={version.run_id}>
-                          v{version.version} - {version.run_id.slice(0, 8)}
-                        </option>
-                      ))
-                    ) : (
-                      <option value="">No versions available</option>
-                    )}
-                  </select>
-                </Field>
-                <button className="btn btn-primary" type="button" onClick={onRollbackModel} disabled={rollbackSubmitting || versionsLoading || !selectedRunId}>
-                  <Icon name={rollbackSubmitting ? "refresh" : "arrowUp"} className={rollbackSubmitting ? "spin" : undefined} />
-                  <span>{rollbackSubmitting ? "Promoting..." : "Promote Version"}</span>
-                </button>
-                <button className="btn" type="button" onClick={onDemoteModel} disabled={demoteSubmitting || versionsLoading || !detailVersionIsProduction}>
-                  <Icon name={demoteSubmitting ? "refresh" : "arrowDown"} className={demoteSubmitting ? "spin" : undefined} />
-                  <span>{demoteSubmitting ? "Moving..." : "Move Out of Production"}</span>
-                </button>
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={onDownloadModel}
-                  disabled={downloadSubmitting || versionsLoading || !selectedRunId}
-                  title="Download model artifacts as a zip file"
-                >
-                  <Icon name={downloadSubmitting ? "refresh" : "download"} className={downloadSubmitting ? "spin" : undefined} />
-                  <span>{downloadSubmitting ? "Downloading..." : "Download Model"}</span>
-                </button>
-              </div>
-              {versionError && <div className="model-inline-error">{versionError}</div>}
-
-              {detailVersion ? (
-                <>
-                  <div className="model-section-title">Selected version</div>
-                  <div className="model-detail-grid">
-                    <div>
-                      <span>Version</span>
-                      <b>v{detailVersion.version}</b>
-                    </div>
-                    <div>
-                      <span>Stage</span>
-                      <b>{detailVersion.current_stage || detailVersion.tags.stage || "Unassigned"}</b>
-                    </div>
-                    <div>
-                      <span>Task</span>
-                      <b>{detailVersion.model_task || detailVersion.tags.model_task || "Unknown"}</b>
-                    </div>
-                    <div>
-                      <span>Run ID</span>
-                      <b className="mono" title={detailVersion.run_id}>{detailVersion.run_id}</b>
-                    </div>
-                  </div>
-
-                  <div className="model-section-title">Metrics</div>
-                  {detailVersionMetricEntries.length ? (
-                    <div className="model-kv-list">
-                      {detailVersionMetricEntries.map(([key, value]) => (
-                        <div key={key}>
-                          <span>{key}</span>
-                          <b>{formatMetric(value)}</b>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty compact">No metrics recorded for this version.</div>
-                  )}
-
-                  <div className="model-section-title">Tags</div>
-                  {detailVersionTagEntries.length ? (
-                    <div className="model-kv-list">
-                      {detailVersionTagEntries.map(([key, value]) => (
-                        <div key={key}>
-                          <span>{key}</span>
-                          <b>{value}</b>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty compact">No tags recorded for this version.</div>
-                  )}
-
-                  <div className="model-section-title">Training pipelines</div>
-                  {detailVersionPipelineLogs.length ? (
-                    <div className="model-pipeline-list">
-                      {detailVersionPipelineLogs.map(({ version, log }) => (
-                        <button
-                          className="model-pipeline-row"
-                          key={`${version.version}-${log.id}`}
-                          type="button"
-                          onClick={() => {
-                            setDetailModelName(null);
-                            setDetailLog(log);
-                          }}
-                        >
-                          <span className={`status-dot ${pipelineStatusTone(log)}`} />
-                          <div>
-                            <b>v{version.version} - {log.model_task || log.type}</b>
-                            <span>
-                              {log.datasource_used || "Unknown datasource"}
-                              {log.mlflow_run_id ? ` · ${log.mlflow_run_id.slice(0, 8)}` : ""}
-                            </span>
-                          </div>
-                          <span className={`model-pipeline-status ${log.status === "Success" ? "is-success" : log.status === "Failed" ? "is-failed" : "is-running"}`}>
-                            {pipelineStatusLabel(log)}
-                          </span>
-                          <small>{log.timestamp ? new Date(log.timestamp).toLocaleString() : "Unknown time"}</small>
-                        </button>
-                      ))}
-                    </div>
-                  ) : logsLoading ? (
-                    <div className="empty compact">Loading pipeline history...</div>
-                  ) : (
-                    <div className="empty compact">No pipeline history found for this model's versions.</div>
-                  )}
-                </>
-              ) : versionsLoading || detailModelName !== selectedModelName ? (
-                <div className="empty">Loading version information...</div>
-              ) : (
-                <div className="empty">No version information available for this model.</div>
-              )}
-            </div>
-          </div>
-        </>
+        <ModelDetailModal
+          model={detailModel}
+          onClose={() => setDetailModelName(null)}
+          onModelsChanged={setModels}
+          onMessage={setTrainMessage}
+          onError={setError}
+          onOpenPipelineLog={setDetailLog}
+        />
       )}
     </main>
   );
