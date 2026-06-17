@@ -219,6 +219,12 @@ def _production_model_version(client: MlflowClient, model_name: str):
     )
 
 
+def _string_tags(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(val) for key, val in value.items()}
+
+
 @router.get("/")
 async def list_models(current_user: UserResponse = Depends(get_current_user)):
     """
@@ -236,6 +242,38 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
     models_data = []
     for rm in registered_models:
         production_version = _production_model_version(client, rm.name)
+        production_tags = (
+            _string_tags(getattr(production_version, "tags", {}))
+            if production_version is not None
+            else {}
+        )
+        production_model_task = production_tags.get(MODEL_TASK_TAG)
+        production_run_id = (
+            getattr(production_version, "run_id", None)
+            if production_version is not None
+            else None
+        )
+        if production_model_task is None and production_run_id:
+            try:
+                run = client.get_run(production_run_id)
+                run_tags = _string_tags(getattr(getattr(run, "data", None), "tags", {}))
+                production_model_task = run_tags.get(MODEL_TASK_TAG)
+            except MlflowException:
+                production_model_task = None
+        production_payload = None
+        if production_version is not None:
+            production_payload = {
+                "version": str(production_version.version),
+                "run_id": getattr(production_version, "run_id", None),
+                "current_stage": getattr(
+                    production_version, "current_stage", None
+                ),
+                "status": getattr(production_version, "status", None),
+            }
+            if production_model_task is not None:
+                production_payload["model_task"] = production_model_task
+            if production_tags:
+                production_payload["tags"] = production_tags
         models_data.append(
             {
                 "name": rm.name,
@@ -243,18 +281,7 @@ async def list_models(current_user: UserResponse = Depends(get_current_user)):
                 "creation_timestamp": rm.creation_timestamp,
                 "last_updated_timestamp": rm.last_updated_timestamp,
                 "tags": dict(getattr(rm, "tags", {}) or {}),
-                "production_version": (
-                    {
-                        "version": str(production_version.version),
-                        "run_id": getattr(production_version, "run_id", None),
-                        "current_stage": getattr(
-                            production_version, "current_stage", None
-                        ),
-                        "status": getattr(production_version, "status", None),
-                    }
-                    if production_version is not None
-                    else None
-                ),
+                "production_version": production_payload,
                 "latest_versions": [
                     {
                         "version": str(v.version),
