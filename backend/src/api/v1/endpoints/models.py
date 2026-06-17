@@ -1,9 +1,9 @@
 import os
 import shutil
 import tempfile
-import zipfile
 from datetime import datetime, timezone
 
+import mlflow.artifacts
 from celery.result import AsyncResult
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
@@ -41,8 +41,6 @@ from src.tasks import (
     train_model_task,
 )
 from starlette.background import BackgroundTask
-
-import mlflow.artifacts
 
 from mlflow import set_tracking_uri
 
