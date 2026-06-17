@@ -1,5 +1,5 @@
-import { SettingsPage } from "@/components/features/settings/settings-page";
+import { redirect } from "next/navigation";
 
 export default function SettingsRoute() {
-  return <SettingsPage />;
+  redirect("/dashboard");
 }

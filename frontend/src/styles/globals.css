@@ -598,6 +598,95 @@ body {
     color: var(--muted);
 }
 
+.account-menu-wrap {
+    position: relative;
+}
+
+.account-menu {
+    position: absolute;
+    top: 44px;
+    right: 0;
+    width: min(260px, calc(100vw - 24px));
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    z-index: 70;
+}
+
+.account-menu-head {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+    padding: 9px 11px 10px;
+    margin-bottom: 5px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.35;
+}
+
+.account-menu-head div {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.account-menu-name {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 650;
+}
+
+.account-menu-item {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 36px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink-2);
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    font-weight: 550;
+    text-align: left;
+    cursor: pointer;
+}
+
+.account-menu-item:hover {
+    background: var(--surface-3);
+    color: var(--ink);
+}
+
+.account-menu-item svg {
+    width: 17px;
+    height: 17px;
+    color: var(--muted);
+}
+
+.account-menu-item span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.account-menu-item.danger {
+    color: var(--red);
+}
+
+.account-menu-sep {
+    margin-top: 5px;
+    padding-top: 5px;
+    border-top: 1px solid var(--border);
+}
+
 /* Scroll area / page */
 .scroll {
     flex: 1 1 auto;
@@ -5706,21 +5795,123 @@ table.tbl tbody tr:last-child td {
     max-width: 1080px;
 }
 
-.settings-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--gap);
-    align-items: start;
+.settings-content {
+    min-width: 0;
 }
 
-.settings-grid .card-body {
+.settings-layout {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: 14px;
+    min-width: 0;
+}
+
+.settings-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.settings-option {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) 16px;
+    align-items: center;
+    gap: 10px;
+    min-height: 64px;
+    padding: 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink-2);
+    font-family: var(--font-sans);
+    text-align: left;
+    cursor: pointer;
+}
+
+.settings-option:hover {
+    background: var(--surface);
+    border-color: var(--border);
+}
+
+.settings-option.active {
+    background: var(--surface);
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.settings-option-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: var(--surface-3);
+    color: var(--muted);
+}
+
+.settings-option.active .settings-option-icon {
+    background: var(--accent-soft);
+    color: var(--accent-600);
+}
+
+.settings-option svg {
+    width: 16px;
+    height: 16px;
+    color: var(--muted);
+}
+
+.settings-option-copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.settings-option-copy b {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 650;
+}
+
+.settings-option-copy span {
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.25;
+}
+
+.settings-panel {
+    display: grid;
+    align-content: start;
+    gap: 10px;
+    min-width: 0;
+}
+
+.settings-panel .card-body {
     display: flex;
     flex-direction: column;
     gap: 14px;
 }
 
+.settings-panel-head {
+    display: none;
+}
+
 .settings-page .page-head {
     margin-bottom: 4px;
+}
+
+.settings-modal {
+    width: min(920px, 100%);
+    max-height: min(760px, calc(100dvh - 48px));
+}
+
+.settings-modal .app-modal-body {
+    padding: 18px;
+    background: var(--surface-2);
+}
+
+.settings-modal .card {
+    box-shadow: none;
 }
 
 /* Accent colour palette */
@@ -5778,8 +5969,50 @@ table.tbl tbody tr:last-child td {
 }
 
 @media (max-width: 760px) {
-    .settings-grid {
+    .settings-layout {
         grid-template-columns: 1fr;
+    }
+
+    .settings-options {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(86px, 1fr));
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+
+    .settings-option {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        min-width: 86px;
+        min-height: 72px;
+        padding: 9px 8px;
+        text-align: center;
+    }
+
+    .settings-option-copy span,
+    .settings-option>svg {
+        display: none;
+    }
+
+    .settings-panel-head {
+        display: block;
+    }
+
+    .settings-panel-head h3 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 680;
+    }
+
+    .settings-panel-head p {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+    }
+
+    .settings-modal .app-modal-body {
+        padding: 12px;
     }
 }
 
