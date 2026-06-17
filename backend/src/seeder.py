@@ -1,279 +1,290 @@
+from __future__ import annotations
+
 import argparse
-import math
-import os
+import logging
+import sys
+from pathlib import Path
 
-import pandas as pd
 from sqlalchemy.orm import Session
-from src import models, schemas
 from src.database import SessionLocal, init_db
-from src.schemas import IngestionStatus
 
-DATA_DIR = "/app/data/raw/data"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("seeder")
 
+DEFAULT_META_CSV = "/app/data/raw/data/metadata/metadata.csv"
+DEFAULT_METER_DIR = "/app/data/raw/data/meters/cleaned"
+DEFAULT_CHUNK_SIZE = 10_000
+DEFAULT_BATCH_SIZE = 10_000
+DEFAULT_DEV_LIMIT = 1_000
 
-def get_or_create(db: Session, model, **kwargs):
-    instance = db.query(model).filter_by(**kwargs).first()
-    if not instance:
-        instance = model(**kwargs)
-        db.add(instance)
-    return instance
-
-
-def seed_lookups(db: Session):
-    print("Seeding Lookup Tables...")
-
-    device_types = [
-        {
-            "id": "virtual_meter",
-            "description": "Virtual meter aggregated from kaggle data. This is not a real device in the sense that we have information about them, for every metric that we don't have the real device's info, its id will be virual_meter.",
-        }
-    ]
-    for dt in device_types:
-        get_or_create(db, models.DeviceType, **dt)
-
-    metric_units = {
-        "electricity": "kWh",
-        "solar": "kWh",
-        "steam": "kg",
-        "hotwater": "m3",
-        "chilledwater": "m3",
-        "gas": "m3",
-        "water": "m3",
-        "irrigation": "m3",
-    }
-    for m, unit in metric_units.items():
-        metric = db.query(models.MetricType).filter_by(id=m).first()
-        if metric:
-            metric.unit = unit
-            metric.description = metric.description or f"{m} consumption"
-        else:
-            db.add(
-                models.MetricType(
-                    id=m,
-                    unit=unit,
-                    description=f"{m} consumption",
-                )
-            )
-
-    db.commit()
+ALL_METRICS = (
+    "electricity",
+    "chilledwater",
+    "steam",
+    "hotwater",
+    "gas",
+    "water",
+    "solar",
+    "irrigation",
+)
 
 
-def seed_metadata(db: Session):
-    print("Seeding Locations and Devices from metadata.csv...")
-    meta_path = os.path.join(DATA_DIR, "metadata", "metadata.csv")
-    if not os.path.exists(meta_path):
-        print(f"Metadata file not found at {meta_path}")
-        return
-
-    df_meta = pd.read_csv(meta_path)
-
-    # Seed Location Types
-    loc_types = df_meta["primaryspaceusage"].unique()
-
-    for lt in loc_types:
-        lt_str = "Unknown" if pd.isna(lt) else str(lt)
-        get_or_create(db, models.LocationType, id=lt_str)
-    if "site_id" in df_meta.columns:
-        get_or_create(db, models.LocationType, id="site")
-
-    db.commit()
-
-    if "site_id" in df_meta.columns:
-        for site_id in sorted(df_meta["site_id"].dropna().astype(str).unique()):
-            get_or_create(
-                db,
-                models.Location,
-                id=site_id,
-                location_type_id="site",
-                name=f"Site {site_id}",
-            )
-        db.commit()
-
-    # Seed Locations
-    for _, row in df_meta.iterrows():
-        b_id = str(row["building_id"])
-        site_id = None
-        if "site_id" in df_meta.columns:
-            raw_site_id = row.get("site_id")
-            if not pd.isna(raw_site_id):
-                site_id = str(raw_site_id)
-
-        metadata_dict = {}
-
-        sqm_val = row.get("sqm")
-        if isinstance(sqm_val, (int, float)) and not math.isnan(float(sqm_val)):
-            metadata_dict["sqm"] = float(sqm_val)
-
-        tz_val = row.get("timezone")
-        if isinstance(tz_val, str) and tz_val.strip().lower() != "nan":
-            metadata_dict["timezone"] = str(tz_val)
-
-        yb_val = row.get("yearbuilt")
-        if isinstance(yb_val, (int, float)) and not math.isnan(float(yb_val)):
-            metadata_dict["yearbuilt"] = float(yb_val)
-
-        # Safely handle primaryspaceusage for the type checker
-        psu_val = row.get("primaryspaceusage")
-        if isinstance(psu_val, str) and psu_val.strip().lower() not in ("nan", ""):
-            loc_type_id = str(psu_val)
-            metadata_dict["primaryspaceusage"] = str(psu_val)
-        else:
-            loc_type_id = "Unknown"
-
-        # Validate via Pydantic schema with explicit type casting
-        loc_payload = schemas.LocationCreate(
-            id=b_id,
-            location_type_id=loc_type_id,
-            name=f"Building {b_id}",
-            metadata=metadata_dict,
-        )
-        get_or_create(
-            db,
-            models.Location,
-            id=loc_payload.id,
-            parent_id=site_id,
-            location_type_id=loc_payload.location_type_id,
-            name=loc_payload.name,
-            metadata_=loc_payload.metadata,
-        )
-    db.commit()
-
-
-def seed_telemetry(db: Session, limit: int | None = 1000):
+def _parse_metrics(raw: str | None) -> tuple[str, ...]:
     """
-    Seeds timeseries telemetry data.
-    limit: Max rows to read from CSV for testing purposes. Set to None for full load.
+    Parse a comma-separated metric string like ``"electricity,water"``
+    into a tuple of lowercase metric IDs.
     """
-    print("Seeding Telemetry Data (Meters)...")
-    meters_dir = os.path.join(DATA_DIR, "meters", "cleaned")
+    if not raw:
+        return ALL_METRICS
 
-    if not os.path.exists(meters_dir):
-        print(f"Meters directory not found at {meters_dir}")
-        return
+    parsed = tuple(m.strip().lower() for m in raw.split(",") if m.strip())
+    if not parsed:
+        return ALL_METRICS
 
-    metrics = [
-        "electricity",
-        "chilledwater",
-        "steam",
-        "hotwater",
-        "gas",
-        "water",
-        "solar",
-        "irrigation",
-    ]
-
-    for metric in metrics:
-        csv_path = os.path.join(meters_dir, f"{metric}_cleaned.csv")
-        if not os.path.exists(csv_path):
-            continue
-
-        print(f"Processing {metric} data...")
-
-        # Read limited rows to avoid memory/time exhaustion during initial dev
-        df = pd.read_csv(csv_path, nrows=limit)
-
-        # Melt dataframe to transform building columns into rows
-        df_melted = df.melt(
-            id_vars=["timestamp"], var_name="building_id", value_name="value"
+    unknown = set(parsed).difference(ALL_METRICS)
+    if unknown:
+        logger.warning(
+            "Ignoring unknown metric(s): %s. Valid metrics: %s",
+            ", ".join(sorted(unknown)),
+            ", ".join(ALL_METRICS),
         )
-        df_melted = df_melted.dropna(subset=["value"])
+        parsed = tuple(m for m in parsed if m in ALL_METRICS)
+        if not parsed:
+            logger.error("No valid metrics remain after filtering. Aborting.")
+            sys.exit(1)
 
-        # Ensure timestamp is timezone-aware
-        df_melted["timestamp"] = pd.to_datetime(df_melted["timestamp"], utc=True)
-
-        db_records = []
-        devices_created = set()
-
-        for _, row in df_melted.iterrows():
-            # Explicitly cast to string
-            b_id = str(row["building_id"])
-            device_id = f"meter_{metric}_{b_id}"
-
-            # Ensure Device exists before inserting telemetry
-            if device_id not in devices_created:
-                dev_payload = schemas.DeviceCreate(
-                    id=device_id,
-                    location_id=b_id,
-                    device_type_id="virtual_meter",
-                    status="Active",
-                )
-                get_or_create(db, models.Device, **dev_payload.model_dump())
-                db.commit()
-                devices_created.add(device_id)
-
-            # Validate Telemetry Data via Pydantic
-            try:
-                # Bypass Pyright's strictness by casting the Series value to a native string first
-                raw_ts = str(row["timestamp"])
-                py_timestamp = pd.to_datetime(raw_ts).to_pydatetime()
-
-                # Cast value to string before float to ensure type safety for Pyright
-                raw_val = str(row["value"])
-
-                telemetry_payload = schemas.TelemetryDataPayload(
-                    timestamp=py_timestamp,
-                    device_id=device_id,
-                    metric_type_id=metric,
-                    value=float(raw_val),
-                    ingestion_status=IngestionStatus.Success,
-                )
-                db_records.append(
-                    models.TelemetryData(**telemetry_payload.model_dump())
-                )
-            except Exception as e:
-                print(f"Validation failed for {device_id} at {row['timestamp']}: {e}")
-
-            # Batch insert to avoid huge memory spikes
-            if len(db_records) >= 5000:
-                db.bulk_save_objects(db_records)
-                db.commit()
-                db_records.clear()
-
-        # Insert remaining records
-        if db_records:
-            db.bulk_save_objects(db_records)
-            db.commit()
-
-    print("Telemetry seeding completed.")
+    return parsed
 
 
-def run_seeder(limit: int | None = 1000):
+def _validate_data_paths(meta_csv: str, meter_dir: str) -> None:
+    """Warn if expected data paths don't exist, but don't abort."""
+    if not Path(meta_csv).exists():
+        logger.warning("Metadata CSV not found at: %s", meta_csv)
+    if not Path(meter_dir).is_dir():
+        logger.warning("Meter directory not found at: %s", meter_dir)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase runners
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _run_reference_phase(db: Session, meta_csv: str) -> None:
+    from src.seeders.metadata import seed_reference_data
+
+    logger.info("=" * 60)
+    logger.info("PHASE 1/1: Reference data (metadata.csv → locations, devices)")
+    logger.info("=" * 60)
+
+    summary = seed_reference_data(db, csv_path=meta_csv)
+    logger.info("Reference data summary: %s", summary)
+
+
+def _run_telemetry_phase(
+    db: Session,
+    meter_dir: str,
+    metrics: tuple[str, ...],
+    chunk_size: int,
+    batch_size: int,
+    limit: int | None,
+) -> None:
+    from src.seeders.telemetry import seed_telemetry_data
+
+    logger.info("=" * 60)
+    logger.info("PHASE 1/1: Telemetry data — metrics: %s", ", ".join(metrics))
+    logger.info(
+        "  chunk_size=%d  batch_size=%d  limit=%s",
+        chunk_size,
+        batch_size,
+        limit if limit is not None else "none (full)",
+    )
+    logger.info("=" * 60)
+
+    results = seed_telemetry_data(
+        db,
+        meter_dir=meter_dir,
+        metrics=metrics,
+        chunk_size=chunk_size,
+        batch_size=batch_size,
+        limit=limit,
+    )
+
+    total = sum(results.values())
+    logger.info(
+        "Telemetry summary: %d total rows across %d metrics.", total, len(results)
+    )
+
+
+def _run_weather_phase(db: Session) -> None:
+    from src.seeders.weather import seed_weather_data
+
+    logger.info("=" * 60)
+    logger.info("PHASE 1/1: Weather data → context_data")
+    logger.info("=" * 60)
+
+    summary = seed_weather_data(db)
+    logger.info("Weather summary: %s", summary)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Main entry point
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_seeder(
+    *,
+    phase: str = "all",
+    metrics: tuple[str, ...] = ALL_METRICS,
+    meta_csv: str = DEFAULT_META_CSV,
+    meter_dir: str = DEFAULT_METER_DIR,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    limit: int | None = DEFAULT_DEV_LIMIT,
+) -> None:
+    """Programmatic entry point for the seeder."""
+
+    _validate_data_paths(meta_csv, meter_dir)
+
     init_db()
     db = SessionLocal()
+
     try:
-        seed_lookups(db)
-        seed_metadata(db)
-        # Limiting to 1000 records per metric type for fast PoC testing
-        # Change limit=None when you want the full Kaggle dataset imported
-        seed_telemetry(db, limit=limit)
-        print("Database successfully seeded!")
-    except Exception as e:
+        if phase in ("reference", "all"):
+            _run_reference_phase(db, meta_csv)
+
+        if phase in ("telemetry", "all"):
+            _run_telemetry_phase(db, meter_dir, metrics, chunk_size, batch_size, limit)
+
+        if phase == "weather":
+            _run_weather_phase(db)
+
+        logger.info("Database seeding completed successfully.")
+
+    except Exception:
         db.rollback()
-        print(f"An error occurred during seeding: {e}")
+        logger.exception("Seeding failed with an error.")
+        raise
     finally:
         db.close()
 
 
+# ──────────────────────────────────────────────────────────────────────
+# CLI
+# ──────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Seed the DMP database with Smart City data."
+        description="Seed the DMP database with Smart City data.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python -m src.seeder --phase reference\n"
+            "  python -m src.seeder --phase telemetry --metrics electricity,water --full\n"
+            "  python -m src.seeder --phase all --chunk-size 5000 --batch-size 10000\n"
+        ),
+    )
+
+    parser.add_argument(
+        "--phase",
+        choices=["all", "reference", "telemetry", "weather"],
+        default="all",
+        help="Which data phase to seed (default: all).",
+    )
+
+    parser.add_argument(
+        "--metrics",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated metric IDs to load (e.g. 'electricity,water'). "
+            "Default: all 8 metrics."
+        ),
+    )
+
+    parser.add_argument(
+        "--data-dir",
+        default="/app/data/raw",
+        help="Root data directory containing data/ subfolder (default: /app/data/raw).",
+    )
+
+    parser.add_argument(
+        "--meta-csv",
+        default=None,
+        help=(
+            "Explicit path to metadata.csv. Overrides --data-dir for the metadata file."
+        ),
+    )
+
+    parser.add_argument(
+        "--meter-dir",
+        default=None,
+        help=(
+            "Explicit directory containing cleaned meter CSVs. "
+            "Overrides --data-dir for meter files."
+        ),
+    )
+
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=DEFAULT_CHUNK_SIZE,
+        help=f"CSV rows per pandas chunk (default: {DEFAULT_CHUNK_SIZE}).",
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help=f"TelemetryData rows per DB batch insert (default: {DEFAULT_BATCH_SIZE}).",
     )
 
     parser.add_argument(
         "--limit",
         type=int,
-        default=1000,
-        help="Max rows to seed per metric for fast testing. Default: 1000.",
+        default=DEFAULT_DEV_LIMIT,
+        help=f"Max rows to seed per metric for fast testing (default: {DEFAULT_DEV_LIMIT}).",
     )
 
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Seed the entire dataset. This overrides the --limit flag.",
+        help="Seed the entire dataset. Overrides --limit.",
     )
 
     args = parser.parse_args()
 
-    final_limit = None if args.full else args.limit
+    # Resolve paths
+    meta_csv = args.meta_csv or str(
+        Path(args.data_dir) / "data" / "metadata" / "metadata.csv"
+    )
+    meter_dir = args.meter_dir or str(
+        Path(args.data_dir) / "data" / "meters" / "cleaned"
+    )
 
-    run_seeder(limit=final_limit)
+    final_limit: int | None = None if args.full else args.limit
+    final_metrics = _parse_metrics(args.metrics)
+
+    logger.info("Configuration:")
+    logger.info("  phase      = %s", args.phase)
+    logger.info("  metrics    = %s", ", ".join(final_metrics))
+    logger.info("  meta_csv   = %s", meta_csv)
+    logger.info("  meter_dir  = %s", meter_dir)
+    logger.info("  chunk_size = %d", args.chunk_size)
+    logger.info("  batch_size = %d", args.batch_size)
+    logger.info(
+        "  limit      = %s", final_limit if final_limit is not None else "none (full)"
+    )
+
+    run_seeder(
+        phase=args.phase,
+        metrics=final_metrics,
+        meta_csv=meta_csv,
+        meter_dir=meter_dir,
+        chunk_size=args.chunk_size,
+        batch_size=args.batch_size,
+        limit=final_limit,
+    )
