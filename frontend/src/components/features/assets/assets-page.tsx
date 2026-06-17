@@ -172,8 +172,9 @@ export function AssetsPage() {
   const mapLocationById = useMemo(() => {
     const indexed = new Map(locations.map((location) => [location.id, location]));
     (mapSearchedLocations ?? []).forEach((location) => indexed.set(location.id, location));
+    (searchedLocations ?? []).forEach((location) => indexed.set(location.id, location));
     return indexed;
-  }, [locations, mapSearchedLocations]);
+  }, [locations, mapSearchedLocations, searchedLocations]);
   const mapSearchResults = useMemo<MapSearchResult[]>(() => {
     const query = mapQuery.trim().toLowerCase();
     const source = query && mapSearchedLocations ? mapSearchedLocations : locations;
@@ -186,13 +187,12 @@ export function AssetsPage() {
     return filtered.map((location) => ({ location, point: locationPoint(location) })).slice(0, 10);
   }, [locationById, locations, mapQuery, mapSearchedLocations]);
   const activeMapLocationId = useMemo(() => {
-    const query = mapQuery.trim();
     const selectedStillVisible = selectedMapLocationId
-      ? (!query && mapLocationById.has(selectedMapLocationId)) || mapSearchResults.some((item) => item.location.id === selectedMapLocationId)
+      ? mapLocationById.has(selectedMapLocationId) || mapSearchResults.some((item) => item.location.id === selectedMapLocationId)
       : false;
     if (selectedStillVisible) return selectedMapLocationId;
     return mapSearchResults.find((item) => item.point)?.location.id ?? mappedLocations[0]?.location.id ?? null;
-  }, [mapLocationById, mapQuery, mapSearchResults, mappedLocations, selectedMapLocationId]);
+  }, [mapLocationById, mapSearchResults, mappedLocations, selectedMapLocationId]);
   const selectedMapLocation = activeMapLocationId ? mapLocationById.get(activeMapLocationId) ?? null : null;
   const selectedMapPoint = selectedMapLocation ? locationPoint(selectedMapLocation) : null;
   const locationRangeStart = filteredLocations.length ? (safeLocationPage - 1) * LOCATIONS_PER_PAGE + 1 : 0;
@@ -701,6 +701,9 @@ export function AssetsPage() {
                 onClick={() => {
                   setGalleryOpen(false);
                   setSelectedMapLocationId(location.id);
+                  setMapQuery("");
+                  setMapSearchedLocations(null);
+                  setMapDropdownOpen(false);
                 }}
               >
                 <div className="asset-tile-head">
