@@ -410,6 +410,9 @@ export function AssetsPage() {
     try {
       const updated = await updateLocation(location.id, { archived: nextArchived });
       setLocations((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setSearchedLocations((current) => current?.map((item) => (item.id === updated.id ? updated : item)) ?? null);
+      setMapSearchedLocations((current) => current?.map((item) => (item.id === updated.id ? updated : item)) ?? null);
+      setDetailTarget((current) => current?.kind === "location" && current.item.id === updated.id ? { kind: "location", item: updated } : current);
       setMessage(`Location ${location.id} ${nextArchived ? "archived" : "restored"}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to update location.");
