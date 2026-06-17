@@ -3329,6 +3329,7 @@ table.tbl tbody tr:last-child td {
     justify-content: center;
 }
 
+.asset-map-anomaly-action,
 .asset-map-osm-action,
 .asset-map-archive-action {
     justify-content: center;
@@ -6431,6 +6432,28 @@ table.tbl tbody tr:last-child td {
     gap: 8px;
     flex-wrap: wrap;
     min-width: 0;
+}
+
+.anomaly-replay-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 0;
+    margin: -2px 0 12px;
+    padding: 9px 11px;
+    border: 1px solid var(--amber-border);
+    border-radius: 8px;
+    background: var(--amber-soft);
+    color: var(--amber);
+    text-align: left;
+    justify-content: flex-start;
+}
+
+.anomaly-replay-note svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
 }
 
 .simulator-speed {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, FormMessage, Modal } from "@/components/common/primitives";
@@ -79,6 +80,34 @@ function locationPoint(location?: LocationOption | null): GeoPoint | null {
   return { lat, lon };
 }
 
+function metadataString(metadata: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  for (const key of keys) {
+    const value = metadata?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function anomalyHref(location: LocationOption) {
+  const params = new URLSearchParams({
+    severity: "all",
+    type: "all",
+    range: "scored",
+  });
+  const primaryUsage = metadataString(location.metadata, "primaryspaceusage", "primary_space_usage", "primaryUsage", "primary_usage");
+  if (primaryUsage) params.set("primaryUsage", primaryUsage);
+
+  if (isSiteLocation(location)) {
+    params.set("site", location.id);
+  } else {
+    if (location.parent_id) params.set("site", location.parent_id);
+    params.set("building", location.id);
+  }
+
+  return `/anomaly?${params.toString()}`;
+}
+
 function formatCoordinate(value: number) {
   return value.toFixed(5);
 }
@@ -144,6 +173,7 @@ function modelAppliesGlobally(model: RegisteredModel) {
 }
 
 export function AssetsPage() {
+  const router = useRouter();
   const { session } = useAuth();
   const currentUser = session?.user;
   const canManageAssets = currentUser?.role === "Admin";
@@ -696,12 +726,18 @@ export function AssetsPage() {
                       <div><span>Child assets</span><b>{selectedMapChildren.length}</b></div>
                       {canManageAssets && <div><span>Operators</span><b>{selectedMapOperators.length}</b></div>}
                     </div>
-                    {selectedMapPoint && (
-                      <a className="btn btn-secondary btn-small asset-map-osm-action" href={osmLocationUrl(selectedMapPoint)} target="_blank" rel="noreferrer">
-                        <Icon name="external" />
-                        <span>Open in OSM</span>
-                      </a>
-                    )}
+                    <div className="asset-map-detail-actions">
+                      <button className="btn btn-primary btn-small asset-map-anomaly-action" type="button" onClick={() => router.push(anomalyHref(selectedMapLocation))}>
+                        <Icon name="pulse" />
+                        <span>Anomaly</span>
+                      </button>
+                      {selectedMapPoint && (
+                        <a className="btn btn-secondary btn-small asset-map-osm-action" href={osmLocationUrl(selectedMapPoint)} target="_blank" rel="noreferrer">
+                          <Icon name="external" />
+                          <span>Open in OSM</span>
+                        </a>
+                      )}
+                    </div>
                     {canManageAssets && (
                       <button
                         className="btn btn-primary btn-small asset-map-archive-action"
@@ -970,6 +1006,10 @@ export function AssetsPage() {
                     <dt>Status</dt><dd>{selectedLocation.archived ? "Archived" : "Active"}</dd>
                     <dt>Coordinates</dt><dd>{selectedPoint ? `${formatCoordinate(selectedPoint.lat)}, ${formatCoordinate(selectedPoint.lon)}` : "No coordinates in metadata"}</dd>
                   </dl>
+                  <button className="btn btn-primary asset-osm-link" type="button" onClick={() => router.push(anomalyHref(selectedLocation))}>
+                    <Icon name="pulse" />
+                    <span>Open Anomaly Detection</span>
+                  </button>
                   {selectedPoint && (
                     <>
                       <div className="sec-label">OpenStreetMap</div>
