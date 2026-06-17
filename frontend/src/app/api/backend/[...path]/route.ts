@@ -1,5 +1,21 @@
 const BACKEND_API_URL = process.env.BACKEND_API_URL ?? "http://localhost:8000";
 
+const TEXT_CONTENT_TYPES = new Set([
+  "application/json",
+  "text/",
+  "application/x-www-form-urlencoded",
+  "multipart/form-data",
+]);
+
+function isTextContentType(contentType: string | null): boolean {
+  if (!contentType) return true;
+  const normalized = contentType.toLowerCase().split(";")[0].trim();
+  for (const prefix of TEXT_CONTENT_TYPES) {
+    if (normalized === prefix || normalized.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 export const dynamic = "force-dynamic";
 
 async function proxy(request: Request, context: { params: Promise<{ path: string[] }> }) {
@@ -24,13 +40,24 @@ async function proxy(request: Request, context: { params: Promise<{ path: string
       signal: AbortSignal.timeout(30_000),
     });
 
-    const body = await response.text();
+    const responseContentType = response.headers.get("content-type") ?? "application/json";
+    const responseHeaders = new Headers({
+      "Content-Type": responseContentType,
+    });
+
+    // Preserve Content-Disposition for file downloads
+    const disposition = response.headers.get("content-disposition");
+    if (disposition) responseHeaders.set("Content-Disposition", disposition);
+
+    // Read binary responses as ArrayBuffer to avoid UTF-8 corruption
+    const body: BodyInit | null = isTextContentType(responseContentType)
+      ? await response.text()
+      : await response.arrayBuffer();
+
     return new Response(body, {
       status: response.status,
       statusText: response.statusText,
-      headers: {
-        "Content-Type": response.headers.get("content-type") ?? "application/json",
-      },
+      headers: responseHeaders,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Backend request failed";

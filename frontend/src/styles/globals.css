@@ -2051,6 +2051,7 @@ table.tbl tbody tr:last-child td {
 }
 
 @media (max-width: 1100px) {
+
     .dashboard-chart-grid,
     .dashboard-lower-grid,
     .forecast-detail-grid,
@@ -5192,7 +5193,7 @@ table.tbl tbody tr:last-child td {
 
 .model-version-control {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     align-items: end;
     gap: 14px;
     min-width: 0;

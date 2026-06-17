@@ -1,3 +1,6 @@
+import io
+import os
+import zipfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -5,7 +8,12 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from src.api.v1.deps import get_current_admin, get_current_user
+from mlflow.exceptions import MlflowException
+from src.api.v1.deps import (
+    get_current_admin,
+    get_current_ai_engineer_or_admin,
+    get_current_user,
+)
 from src.api.v1.endpoints.models import _sync_running_pipeline_log_with_celery
 from src.database import get_db
 from src.main import app
@@ -119,10 +127,7 @@ def test_trigger_training_queues_anomaly_training(mock_delay):
     assert body["task_id"] == "mock-anomaly-task-456"
     assert body["model_task"] == "anomaly_detection"
     assert body["algorithm"] == "lightgbm"
-    assert (
-        body["message"]
-        == "anomaly_detection training job queued using db data."
-    )
+    assert body["message"] == "anomaly_detection training job queued using db data."
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["model_task"] == "anomaly_detection"
     assert training_request["data_source"] == "db"
@@ -627,3 +632,123 @@ def test_get_pipeline_logs_returns_paginated_logs():
     assert data["logs"][0]["timestamp"].startswith("2026-06-08T12:00:00")
     query.offset.assert_called_once_with(5)
     query.limit.assert_called_once_with(10)
+
+
+# ---------------------------------------------------------------------------
+# download_model
+# ---------------------------------------------------------------------------
+
+
+def _fake_run_artifacts(run_id: str, path: str, dst_path: str) -> str:
+    """Side-effect that creates dummy run artifacts under dst_path."""
+    artifacts_dir = os.path.join(dst_path, "artifacts")
+    os.makedirs(artifacts_dir, exist_ok=True)
+    with open(os.path.join(artifacts_dir, "resid_stats.parquet"), "wb") as f:
+        f.write(b"parquet data")
+    return dst_path
+
+
+def _fake_model_artifacts(artifact_uri: str = "", dst_path: str = "") -> str:
+    """Side-effect that creates dummy registered model files under dst_path."""
+    with open(os.path.join(dst_path, "MLmodel"), "w") as f:
+        f.write("mlflow artifact metadata")
+    model_dir = os.path.join(dst_path, "model")
+    os.makedirs(model_dir, exist_ok=True)
+    with open(os.path.join(model_dir, "model.pkl"), "w") as f:
+        f.write("dummy model binary")
+    return dst_path
+
+
+@patch("src.api.v1.endpoints.models._mlflow_client")
+@patch("mlflow.artifacts.download_artifacts")
+def test_download_model_returns_zip_with_all_artifacts(mock_model_artifacts, mock_mlflow_client):
+    """Successful download returns a valid zip containing both run and model artifacts."""
+    client_mock = Mock()
+    client_mock.get_model_version.return_value = SimpleNamespace(
+        name="energy_forecast",
+        version="3",
+        run_id="run-def456",
+    )
+    client_mock.download_artifacts.side_effect = _fake_run_artifacts
+    mock_model_artifacts.side_effect = _fake_model_artifacts
+    mock_mlflow_client.return_value = client_mock
+
+    response = client.get("/api/v1/models/energy_forecast/versions/3/download")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    expected_disposition = 'attachment; filename="energy_forecast_v3.zip"'
+    assert response.headers["content-disposition"] == expected_disposition
+
+    zip_buf = io.BytesIO(response.content)
+    with zipfile.ZipFile(zip_buf) as zf:
+        names = sorted(zf.namelist())
+        assert names == [
+            "MLmodel",
+            "artifacts/",
+            "artifacts/resid_stats.parquet",
+            "model/",
+            "model/model.pkl",
+        ]
+        with zf.open("MLmodel") as f:
+            assert f.read().decode() == "mlflow artifact metadata"
+
+    client_mock.get_model_version.assert_called_once_with("energy_forecast", "3")
+    client_mock.download_artifacts.assert_called_once()
+    assert client_mock.download_artifacts.call_args.args[0] == "run-def456"
+    mock_model_artifacts.assert_called_once()
+    assert mock_model_artifacts.call_args.kwargs["artifact_uri"] == "models:/energy_forecast/3"
+
+
+@patch("src.api.v1.endpoints.models._mlflow_client")
+def test_download_model_404_when_version_not_in_registry(mock_mlflow_client):
+    """Returns 404 when MLflow has no such model version."""
+    client_mock = Mock()
+    client_mock.get_model_version.side_effect = MlflowException(
+        "Model version 99 not found"
+    )
+    mock_mlflow_client.return_value = client_mock
+
+    response = client.get("/api/v1/models/nonexistent/versions/99/download")
+
+    assert response.status_code == 404
+    assert "Model version not found" in response.json()["detail"]
+
+
+@patch("src.api.v1.endpoints.models._mlflow_client")
+def test_download_model_404_when_version_has_no_run_id(mock_mlflow_client):
+    """Returns 404 when the model version has no associated run ID."""
+    client_mock = Mock()
+    client_mock.get_model_version.return_value = SimpleNamespace(
+        name="orphan",
+        version="1",
+        run_id=None,
+    )
+    mock_mlflow_client.return_value = client_mock
+
+    response = client.get("/api/v1/models/orphan/versions/1/download")
+
+    assert response.status_code == 404
+    assert "no associated run id" in response.json()["detail"].lower()
+
+
+def test_download_model_403_for_operator_user():
+    """Operators cannot download models."""
+
+    class MockOperator:
+        email = "operator@vinsmart.com"
+        role = "Operator"
+
+    app.dependency_overrides[get_current_user] = lambda: MockOperator()
+    app.dependency_overrides.pop(get_current_admin, None)
+    app.dependency_overrides.pop(get_current_ai_engineer_or_admin, None)
+    try:
+        response = client.get("/api/v1/models/some_model/versions/1/download")
+    finally:
+        app.dependency_overrides.clear()
+        # Restore auth overrides that the autouse fixture provides
+        app.dependency_overrides[get_current_admin] = get_mock_admin
+        app.dependency_overrides[get_current_user] = get_mock_admin
+        _override_training_validation_db()
+
+    assert response.status_code == 403

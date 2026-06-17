@@ -1,6 +1,12 @@
+import os
+import shutil
+import tempfile
 from datetime import datetime, timezone
+
+import mlflow.artifacts
 from celery.result import AsyncResult
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
@@ -8,7 +14,6 @@ from sqlalchemy.orm import Session
 from src.api.v1.deps import get_current_ai_engineer_or_admin, get_current_user
 from src.core.config import settings
 from src.database import get_db
-from src.models import AIPipelineLog
 from src.ml.training import (
     algorithm_for_task,
     create_queued_pipeline_log,
@@ -16,6 +21,7 @@ from src.ml.training import (
     training_error_detail,
     validate_training_request,
 )
+from src.models import AIPipelineLog
 from src.schemas import (
     ModelRollbackRequest,
     ModelRollbackResponse,
@@ -28,8 +34,13 @@ from src.schemas import (
     TrainingDataSource,
     UserResponse,
 )
-from src.tasks import celery_app, run_anomaly_backfill_task, train_model_task
-from src.tasks import mark_pipeline_log_external_failure
+from src.tasks import (
+    celery_app,
+    mark_pipeline_log_external_failure,
+    run_anomaly_backfill_task,
+    train_model_task,
+)
+from starlette.background import BackgroundTask
 
 from mlflow import set_tracking_uri
 
@@ -315,6 +326,71 @@ async def get_model_versions(
     )
 
 
+@router.get("/{model_name}/versions/{version}/download")
+async def download_model(
+    model_name: str,
+    version: str,
+    current_user: UserResponse = Depends(get_current_ai_engineer_or_admin),
+):
+    """
+    Download a registered model version as a zip file containing all MLflow artifacts.
+
+    The zip preserves the MLflow artifact directory structure (model files, conda
+    environment, MLmodel metadata, and any custom artifacts like resid_stats.parquet).
+    """
+    client = _mlflow_client()
+
+    try:
+        model_version = client.get_model_version(model_name, version)
+    except MlflowException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model version not found: {exc}",
+        ) from exc
+
+    run_id = model_version.run_id
+    if not run_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model version has no associated run ID.",
+        )
+
+    artifacts_dir = tempfile.mkdtemp()
+    try:
+        # 1. Download run-specific artifacts (resid_stats.parquet, etc.)
+        client.download_artifacts(run_id, "", artifacts_dir)
+
+        # 2. Download the registered model files (model.pkl, MLmodel, conda.yaml, etc.)
+        model_uri = f"models:/{model_name}/{version}"
+        mlflow.artifacts.download_artifacts(
+            artifact_uri=model_uri, dst_path=artifacts_dir
+        )
+
+        # 3. Zip everything — create the zip in a SEPARATE temp dir
+        #    so there is zero risk of the zip self-archiving.
+        zip_tmp = tempfile.mkdtemp()
+        zip_path = os.path.join(zip_tmp, "model.zip")
+        shutil.make_archive(
+            base_name=zip_path.replace(".zip", ""),
+            format="zip",
+            root_dir=artifacts_dir,
+        )
+
+        def _cleanup():
+            shutil.rmtree(artifacts_dir, ignore_errors=True)
+            shutil.rmtree(zip_tmp, ignore_errors=True)
+
+        return FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename=f"{model_name}_v{version}.zip",
+            background=BackgroundTask(_cleanup),
+        )
+    except Exception:
+        shutil.rmtree(artifacts_dir, ignore_errors=True)
+        raise
+
+
 @router.post("/train", response_model=ModelTrainingResponse)
 async def trigger_training(
     payload: ModelTrainingRequest | None = Body(default=None),
@@ -344,9 +420,7 @@ async def trigger_training(
         model_task=model_task,
         data_source=data_source,
     )
-    validation = validate_training_request(
-        request, db, enforce_data_availability=False
-    )
+    validation = validate_training_request(request, db, enforce_data_availability=False)
     if not validation.valid:
         raise HTTPException(
             status_code=422,
@@ -493,15 +567,28 @@ async def trigger_anomaly_backfill(
     Queue a backfill inference job that scores rule-based and LGBm anomalies
     for every hour in the requested historical date range.
     """
-    start = payload.time_range_start.replace(tzinfo=timezone.utc) if payload.time_range_start.tzinfo is None else payload.time_range_start.astimezone(timezone.utc)
-    end = payload.time_range_end.replace(tzinfo=timezone.utc) if payload.time_range_end.tzinfo is None else payload.time_range_end.astimezone(timezone.utc)
+    start = (
+        payload.time_range_start.replace(tzinfo=timezone.utc)
+        if payload.time_range_start.tzinfo is None
+        else payload.time_range_start.astimezone(timezone.utc)
+    )
+    end = (
+        payload.time_range_end.replace(tzinfo=timezone.utc)
+        if payload.time_range_end.tzinfo is None
+        else payload.time_range_end.astimezone(timezone.utc)
+    )
 
     if end <= start:
-        raise HTTPException(status_code=422, detail="time_range_end must be after time_range_start.")
+        raise HTTPException(
+            status_code=422, detail="time_range_end must be after time_range_start."
+        )
 
     total_hours = int((end - start).total_seconds() // 3600) + 1
     if total_hours > 8760:
-        raise HTTPException(status_code=422, detail="Backfill range cannot exceed 365 days (8 760 hours).")
+        raise HTTPException(
+            status_code=422,
+            detail="Backfill range cannot exceed 365 days (8 760 hours).",
+        )
 
     pipeline_log = AIPipelineLog(
         type="Inference",
@@ -542,8 +629,8 @@ async def cancel_pipeline_log(
     """
     Cancel a running or queued training pipeline by revoking the Celery task.
     """
-    from uuid import UUID
     from datetime import datetime, timezone
+    from uuid import UUID
 
     try:
         log = db.get(AIPipelineLog, UUID(log_id))
@@ -551,7 +638,9 @@ async def cancel_pipeline_log(
         log = None
 
     if log is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline log not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline log not found."
+        )
 
     log_status = log.status.name if hasattr(log.status, "name") else log.status
     if log_status not in ("Running", "running"):
