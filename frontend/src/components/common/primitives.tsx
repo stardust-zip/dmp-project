@@ -287,6 +287,68 @@ export function Field({ label, children }: { label: string; children: ReactNode 
   );
 }
 
+export function FormMessage({
+  children,
+  tone = "info",
+}: {
+  children: ReactNode;
+  tone?: "info" | "error" | "success";
+}) {
+  return (
+    <div className={`form-message form-message-${tone}`} role={tone === "error" ? "alert" : "status"}>
+      <Icon name={tone === "success" ? "check" : tone === "error" ? "alert" : "info"} />
+      <span>{children}</span>
+    </div>
+  );
+}
+
+export function Modal({
+  title,
+  description,
+  labelledBy,
+  children,
+  footer,
+  className = "",
+  onClose,
+}: {
+  title: string;
+  description?: ReactNode;
+  labelledBy?: string;
+  children: ReactNode;
+  footer?: ReactNode;
+  className?: string;
+  onClose: () => void;
+}) {
+  const titleId = labelledBy ?? `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-title`;
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className={`app-modal ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="app-modal-head">
+          <div>
+            <h2 id={titleId}>{title}</h2>
+            {description && <span>{description}</span>}
+          </div>
+          <button className="icon-btn" type="button" aria-label={`Close ${title} dialog`} onClick={onClose}>
+            <Icon name="x" />
+          </button>
+        </div>
+        <div className="app-modal-body">{children}</div>
+        {footer && <div className="app-modal-foot">{footer}</div>}
+      </section>
+    </div>
+  );
+}
+
 export function Select<T extends string>({
   value,
   onChange,

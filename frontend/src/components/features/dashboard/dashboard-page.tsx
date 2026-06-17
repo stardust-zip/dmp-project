@@ -27,9 +27,6 @@ export function DashboardPage() {
           </p>
         </div>
         <div className="page-head-actions">
-          <button className="btn">
-            <Icon name="refresh" /> Refresh
-          </button>
           <button className="btn btn-primary">
             <Icon name="download" /> Export
           </button>
@@ -49,7 +46,7 @@ export function DashboardPage() {
         ))}
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "minmax(0,1.62fr) minmax(0,1fr)", marginBottom: "var(--gap)" }}>
+      <div className="grid dashboard-chart-grid" style={{ marginBottom: "var(--gap)" }}>
         <Card
           title="Energy Consumption Trend"
           icon="pulse"
@@ -92,7 +89,7 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "minmax(0,1.45fr) minmax(0,1fr)" }}>
+      <div className="grid dashboard-lower-grid">
         <Card
           title="Recent Alerts"
           icon="bell"
@@ -105,7 +102,8 @@ export function DashboardPage() {
           }
           noBody
         >
-          <table className="tbl tbl-clickable">
+          <div className="table-scroll">
+            <table className="tbl tbl-clickable">
             <thead>
               <tr>
                 <th>Time</th>
@@ -126,7 +124,8 @@ export function DashboardPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         </Card>
 
         <Card
@@ -142,7 +141,7 @@ export function DashboardPage() {
             </div>
           }
         >
-          <div className="grid" style={{ gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 10 }}>
+          <div className="grid health-grid" style={{ gap: 10 }}>
             {HEALTH.slice(0, 8).map((building) => {
               const statusClass = building.status === "red" ? "s-red" : building.status === "yellow" ? "s-yellow" : "s-green";
               const barColor = building.status === "red" ? "var(--red)" : building.status === "yellow" ? "var(--amber)" : "var(--green)";

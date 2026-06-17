@@ -1,7 +1,6 @@
 import { authHeaders, roleLabel } from "@/lib/auth-api";
 import type { AuthRole } from "@/types/auth";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/backend";
+import { API_BASE } from "@/lib/api-base";
 
 export const USER_ROLES = ["Admin", "AI_Engineer", "Operator"] as const;
 export const USER_STATUSES = ["Available", "In_Shift", "Busy", "On_Break", "Off_Duty", "On_Leave", "Suspended"] as const;
@@ -32,6 +31,8 @@ export interface CreateUserPayload {
 }
 
 export interface UpdateUserRolePayload {
+  full_name?: string;
+  email?: string;
   role?: ManagedUserRole;
   status?: ManagedUserStatus;
   contact_number?: string | null;

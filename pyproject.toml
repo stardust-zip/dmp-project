@@ -18,7 +18,6 @@ dependencies = [
     "mlflow>=2.13.0",
     "psycopg2-binary>=2.9.9",
     "sqlalchemy>=2.0.30",
-    "alembic>=1.18.0",
     # API & Config
     "fastapi>=0.111.0",
     "uvicorn>=0.30.0",
@@ -38,6 +37,7 @@ dependencies = [
     "lightgbm>=4.6.0",
     "polars>=1.41.2",
     "huggingface-hub>=1.19.0",
+    "holidays>=0.50",
 ]
 
 [dependency-groups]

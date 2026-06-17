@@ -114,8 +114,9 @@ def seed_metadata(db: Session):
 
         # Safely handle primaryspaceusage for the type checker
         psu_val = row.get("primaryspaceusage")
-        if isinstance(psu_val, str) and psu_val.strip().lower() != "nan":
+        if isinstance(psu_val, str) and psu_val.strip().lower() not in ("nan", ""):
             loc_type_id = str(psu_val)
+            metadata_dict["primaryspaceusage"] = str(psu_val)
         else:
             loc_type_id = "Unknown"
 

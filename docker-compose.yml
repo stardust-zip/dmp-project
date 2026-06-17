@@ -103,7 +103,7 @@ services:
       sh -c "python -m src.seeders.users &&
       uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -144,8 +144,7 @@ services:
     ports:
       - "3001:3000"
     environment:
-      # - VITE_API_URL=http://localhost:8000
-      # - NEXT_PUBLIC_API_URL=/api/backend
+      - NEXT_PUBLIC_API_URL=/api/backend
       - BACKEND_API_URL=http://backend:8000
       - WATCHPACK_POLLING=true
     volumes:
@@ -259,3 +258,4 @@ volumes:
   grafana_data:
   dbgate_data:
   frontend_node_modules:
+

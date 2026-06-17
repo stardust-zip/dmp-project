@@ -241,6 +241,7 @@ export function AnomalyPage() {
   const [filters, setFilters] = useState<Filters>({ site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
   const [page, setPage] = useState(1);
   const [facets, setFacets] = useState<AnomalyFacets>({ sites: [], buildings: [], severities: ["Critical", "High", "Medium", "Low"], types: [], primary_usage_types: [] });
+  const [siteFacetsBySite, setSiteFacetsBySite] = useState<Record<string, AnomalyFacets>>({});
   const [siteEventsBySite, setSiteEventsBySite] = useState<Record<string, AnomalyEvent[]>>({});
   const [rawTimeline, setRawTimeline] = useState<AnomalyTimelineResponse>(EMPTY_TIMELINE);
   const [simBounds, setSimBounds] = useState<SimBounds | null>(null);
@@ -282,14 +283,21 @@ export function AnomalyPage() {
     [visibleTimeline.items, statuses],
   );
   const siteEvents = useMemo(() => (filters.site === "all" ? [] : (siteEventsBySite[filters.site] ?? [])), [filters.site, siteEventsBySite]);
+  const activeFacets = filters.site === "all" ? facets : (siteFacetsBySite[filters.site] ?? facets);
   const filteredPrimaryUsages = useMemo(
-    () => [...new Set(siteEvents.map((event) => event.primary_space_usage).filter(Boolean))].sort() as string[],
-    [siteEvents],
+    () => {
+      const fromFacets = activeFacets.primary_usage_types.filter(Boolean);
+      if (fromFacets.length > 0) return fromFacets;
+      return [...new Set(siteEvents.map((event) => event.primary_space_usage).filter(Boolean))].sort() as string[];
+    },
+    [activeFacets.primary_usage_types, siteEvents],
   );
   const filteredBuildings = useMemo(() => {
-    const source = filters.primaryUsage === "all" ? siteEvents : siteEvents.filter((event) => event.primary_space_usage === filters.primaryUsage);
-    return [...new Set(source.map((event) => event.building_id))].sort();
-  }, [filters.primaryUsage, siteEvents]);
+    if (filters.primaryUsage === "all") return activeFacets.buildings;
+    const source = siteEvents.filter((event) => event.primary_space_usage === filters.primaryUsage);
+    const fromEvents = [...new Set(source.map((event) => event.building_id))].sort();
+    return fromEvents.length > 0 ? fromEvents : activeFacets.buildings;
+  }, [activeFacets.buildings, filters.primaryUsage, siteEvents]);
 
   // Load all facets on mount
   useEffect(() => {
@@ -318,6 +326,21 @@ export function AnomalyPage() {
       });
     return () => controller.abort();
   }, [filters.site, siteEventsBySite]);
+
+  // Load site-scoped facets for dropdown options; this is not limited by the timeline page size.
+  useEffect(() => {
+    if (filters.site === "all" || siteFacetsBySite[filters.site]) return;
+
+    const controller = new AbortController();
+    getAnomalyFacets(filters.site, controller.signal)
+      .then((data) => {
+        setSiteFacetsBySite((current) => ({ ...current, [filters.site]: data }));
+      })
+      .catch((err: Error) => {
+        if (err.name !== "AbortError") console.error(err);
+      });
+    return () => controller.abort();
+  }, [filters.site, siteFacetsBySite]);
 
   useEffect(() => {
     if (pendingOpen !== "primaryUsage" || filters.site === "all" || filteredPrimaryUsages.length === 0) return;
@@ -386,7 +409,7 @@ export function AnomalyPage() {
   const primaryUsageOptions = filters.site === "all"
     ? []
     : [{ value: "all" as const, label: "All Usage Types" }, ...filteredPrimaryUsages.map((usage) => ({ value: usage, label: usage }))];
-  const buildingOptions = filters.site === "all" || filters.primaryUsage === "all"
+  const buildingOptions = filters.site === "all"
     ? []
     : [{ value: "all" as const, label: "All Buildings" }, ...filteredBuildings.map((building) => ({ value: building, label: buildingLabel(building) }))];
 
@@ -453,7 +476,7 @@ export function AnomalyPage() {
             <Select
               value={filters.building}
               onChange={(value) => set("building", value)}
-              disabled={filters.site === "all" || filters.primaryUsage === "all" || buildingOptions.length === 0}
+              disabled={filters.site === "all" || buildingOptions.length === 0}
               options={buildingOptions}
               openSignal={buildingOpenSignal}
               searchable
@@ -545,6 +568,12 @@ export function AnomalyPage() {
                   themeKey="unified-anomaly"
                   height={312}
                   preserveDataZoom
+                  onChartClick={(params) => {
+                    const p = params as { seriesName?: string; data?: { event?: AnomalyEvent } };
+                    if (p.seriesName === "Anomaly" && p.data?.event) {
+                      setSelected(p.data.event);
+                    }
+                  }}
                 />
               )}
             </Card>

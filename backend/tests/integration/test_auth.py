@@ -4,7 +4,12 @@ from src import models
 from src.core.security import create_access_token, verify_password
 from src.database import get_db
 from src.main import app
-from src.seeders.users import DEFAULT_USERS, seed_default_users
+from src.seeders.users import _build_seed_users, seed_default_users
+
+# Canonical set of demo emails (invariant regardless of DB state).
+_EXPECTED_SEED_USERS = _build_seed_users([])
+_EXPECTED_EMAILS = {u.email for u in _EXPECTED_SEED_USERS}
+_EXPECTED_COUNT = len(_EXPECTED_SEED_USERS)
 
 
 def override_db(db_session):
@@ -20,10 +25,10 @@ def test_seed_default_users_is_idempotent(db_session):
 
     users = db_session.query(models.User).all()
 
-    assert first == {"created": len(DEFAULT_USERS), "updated": 0}
+    assert first == {"created": _EXPECTED_COUNT, "updated": 0}
     assert second == {"created": 0, "updated": 0}
-    assert len(users) == len(DEFAULT_USERS)
-    assert {user.email for user in users} == {user.email for user in DEFAULT_USERS}
+    assert len(users) == _EXPECTED_COUNT
+    assert {user.email for user in users} == _EXPECTED_EMAILS
 
 
 def test_seed_default_users_does_not_reset_existing_password_by_default(db_session):

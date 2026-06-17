@@ -1,6 +1,5 @@
 import { authHeaders } from "@/lib/auth-api";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/backend";
+import { API_BASE } from "@/lib/api-base";
 
 export interface RegisteredModel {
   name: string;
@@ -117,6 +116,7 @@ export interface PipelineLog {
   model_task?: string | null;
   status: string;
   mlflow_run_id?: string | null;
+  celery_task_id?: string | null;
   datasource_used?: string | null;
   execution_time_ms?: number | null;
   timestamp?: string | null;
@@ -127,7 +127,7 @@ export type ModelTask = "forecasting" | "anomaly_detection" | "prediction";
 export type TrainingDataSource = "csv" | "db";
 
 export interface TrainModelPayload {
-  site_id: string;
+  site_id: string | null;
   building_id?: string | null;
   metrics: string[];
   time_range_start: string;
@@ -300,6 +300,14 @@ export function getPipelineLogs(signal?: AbortSignal) {
   return apiGet<{ limit: number; offset: number; logs: PipelineLog[] }>("/api/v1/models/logs/pipeline", signal);
 }
 
+export function cancelPipelineLog(logId: string, signal?: AbortSignal) {
+  return apiPost<{ id: string; status: string; cancelled_by: string }>(
+    `/api/v1/models/logs/${encodeURIComponent(logId)}/cancel`,
+    {},
+    signal,
+  );
+}
+
 export function trainModel(payload: TrainModelPayload, signal?: AbortSignal) {
   return apiPost<TrainModelResponse>("/api/v1/models/train", payload, signal);
 }
@@ -379,4 +387,45 @@ export function updateDevice(deviceId: string, payload: UpdateDevicePayload, sig
 
 export function deactivateDevice(deviceId: string, signal?: AbortSignal) {
   return apiPost<DeviceOption>(`/api/v1/metadata/devices/${encodeURIComponent(deviceId)}/deactivate`, {}, signal);
+}
+
+export interface AnomalyBackfillPayload {
+  time_range_start: string;
+  time_range_end: string;
+}
+
+export interface AnomalyBackfillResponse {
+  message: string;
+  task_id: string;
+  pipeline_log_id: string;
+  time_range_start: string;
+  time_range_end: string;
+  triggered_by: string;
+}
+
+export function backfillAnomalyInference(payload: AnomalyBackfillPayload, signal?: AbortSignal) {
+  return apiPost<AnomalyBackfillResponse>("/api/v1/models/anomaly/backfill", payload, signal);
+}
+
+export async function downloadModelFile(
+  modelName: string,
+  version: string,
+  signal?: AbortSignal,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(version)}/download`,
+    { signal, headers: authHeaders() },
+  );
+
+  if (!response.ok) {
+    throw new Error(await apiErrorMessage(response));
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const filenameMatch = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+  const filename = filenameMatch
+    ? filenameMatch[1].replace(/['"]/g, "")
+    : `${modelName}_v${version}.zip`;
+
+  return { blob: await response.blob(), filename };
 }

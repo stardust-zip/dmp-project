@@ -2,6 +2,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from src import models
 from src.api.v1.deps import get_current_admin, to_user_response
@@ -20,6 +21,34 @@ def _site_ids(value: list[str] | None) -> list[str]:
     return sorted(set(value or []))
 
 
+def _normalized_contact_number(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = "".join(char for char in value.strip() if char.isdigit() or char == "+")
+    return normalized or None
+
+
+def _validate_contact_number_available(
+    db: Session,
+    contact_number: str | None,
+    *,
+    exclude_user_id: UUID | None = None,
+) -> None:
+    normalized_contact = _normalized_contact_number(contact_number)
+    if normalized_contact is None:
+        return
+
+    users = db.query(models.User).filter(models.User.contact_number.isnot(None)).all()
+    for user in users:
+        if exclude_user_id is not None and user.id == exclude_user_id:
+            continue
+        if _normalized_contact_number(user.contact_number) == normalized_contact:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A user with this contact number already exists.",
+            )
+
+
 def _validate_locations_exist(db: Session, location_ids: list[str]) -> None:
     if not location_ids:
         return
@@ -36,14 +65,75 @@ def _validate_locations_exist(db: Session, location_ids: list[str]) -> None:
         )
 
 
+def _resolve_single_site(db: Session, location_ids: list[str]) -> str | None:
+    """
+    Return the single site that all *location_ids* belong to.
+
+    Walks the parent chain of each location until a ``location_type_id ==
+    "site"`` row is found.  If the locations span more than one site a
+    422 error is raised — operators may be assigned to multiple buildings
+    but they must all live under the same site.
+    """
+    if not location_ids:
+        return None
+
+    # Load all referenced locations (and their immediate parents if needed).
+    loc_map: dict[str, models.Location] = {
+        loc.id: loc
+        for loc in db.query(models.Location)
+        .filter(models.Location.id.in_(location_ids))
+        .all()
+    }
+    missing_parents = {
+        loc.parent_id
+        for loc in loc_map.values()
+        if loc.parent_id and loc.parent_id not in loc_map
+    }
+    if missing_parents:
+        for ploc in db.query(models.Location).filter(
+            models.Location.id.in_(missing_parents)
+        ).all():
+            loc_map[ploc.id] = ploc
+
+    site_ids: set[str] = set()
+    site_names: list[str] = []
+
+    for loc_id in location_ids:
+        current = loc_map.get(loc_id)
+        while current:
+            if current.location_type_id == "site":
+                if current.id not in site_ids:
+                    site_names.append(current.name)
+                site_ids.add(current.id)
+                break
+            current = loc_map.get(current.parent_id) if current.parent_id else None
+
+    if len(site_ids) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Operators can only be assigned to locations within a single site. "
+                f"These locations span multiple sites: {', '.join(site_names)}."
+            ),
+        )
+
+    return site_ids.pop() if site_ids else None
+
+
 def _can_manage_user(current_user: UserResponse, target_user: models.User) -> bool:
-    # Admin users can manage all accounts regardless of scope.
-    # The admin RBAC gate (get_current_admin) already restricts this endpoint
-    # to users with the Admin role.
-    if current_user.role == "Admin":
+    # Global admins can manage any account.
+    if current_user.is_global_admin:
         return True
+    # Users can always manage their own account.
     if str(target_user.id) == current_user.id:
         return True
+    # Site-scoped admins cannot manage any other admin user.
+    if target_user.role == "Admin":
+        return False
+    # Site-scoped admins can manage operators who share at least one
+    # assigned site.  Because operators are restricted to a single site
+    # (enforced by _resolve_single_site), there is no cross-admin
+    # ownership conflict.
     return bool(
         set(current_user.assigned_site_ids) & set(target_user.assigned_site_ids or [])
     )
@@ -100,11 +190,30 @@ def list_users(
     current_user: Annotated[UserResponse, Depends(get_current_admin)],
 ) -> list[UserResponse]:
     """
-    List all users. Admin users see every account regardless of scope;
-    site-based access control is enforced on mutating endpoints (update/delete)
-    to prevent cross-site modifications.
+    List users visible to the current admin.
+
+    * **Global admins** see every account in the system.
+    * **Site-scoped admins** see only users who share at least one
+      assigned site with them (including themselves).
     """
-    users = db.query(models.User).order_by(models.User.email).all()
+    query = db.query(models.User)
+    if not current_user.is_global_admin:
+        # A site-scoped admin can only see users whose assigned_site_ids
+        # JSONB array contains at least one of the admin's own sites.
+        # Uses PostgreSQL `@>` (contains) operator on the JSONB column.
+        site_conditions = [
+            models.User.assigned_site_ids.contains([site_id])
+            for site_id in current_user.assigned_site_ids
+        ]
+        if site_conditions:
+            query = query.filter(
+                (or_(*site_conditions) & (models.User.role != "Admin"))
+                | (models.User.id == current_user.id)
+            )
+        else:
+            # Site admin with no assigned sites can only see themselves.
+            query = query.filter(models.User.id == current_user.id)
+    users = query.order_by(models.User.email).all()
     return [to_user_response(user) for user in users]
 
 
@@ -122,12 +231,17 @@ def create_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="A user with this email already exists.",
         )
+    _validate_contact_number_available(db, payload.contact_number)
 
     role = _role_value(payload.role)
     assigned_site_ids, is_global_admin = _normalized_scope(
         role, _site_ids(payload.assigned_site_ids), payload.is_global_admin
     )
     _validate_locations_exist(db, assigned_site_ids)
+    # Operators must belong to a single site (multiple buildings within
+    # that site are fine).
+    if role == UserRole.Operator.value:
+        _resolve_single_site(db, assigned_site_ids)
     _assert_can_assign_scope(
         current_user,
         role=role,
@@ -184,6 +298,8 @@ def update_user_role(
         role, assigned_site_ids, is_global_admin
     )
     _validate_locations_exist(db, assigned_site_ids)
+    if role == UserRole.Operator.value:
+        _resolve_single_site(db, assigned_site_ids)
     _assert_can_assign_scope(
         current_user,
         role=role,
@@ -191,10 +307,33 @@ def update_user_role(
         is_global_admin=is_global_admin,
     )
 
+    if payload.email is not None:
+        normalized_email = str(payload.email).strip().lower()
+        if normalized_email != user.email:
+            existing = (
+                db.query(models.User)
+                .filter(models.User.email == normalized_email)
+                .one_or_none()
+            )
+            if existing is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A user with this email already exists.",
+                )
+            user.email = normalized_email
+
+    if "contact_number" in payload.model_fields_set:
+        _validate_contact_number_available(
+            db, payload.contact_number, exclude_user_id=user.id
+        )
+
+    if payload.full_name is not None:
+        user.full_name = payload.full_name.strip()
+
     user.role = role
     if payload.status is not None:
         user.status = _role_value(payload.status)
-    if payload.contact_number is not None:
+    if "contact_number" in payload.model_fields_set:
         user.contact_number = payload.contact_number
     user.assigned_site_ids = assigned_site_ids
     user.is_global_admin = is_global_admin

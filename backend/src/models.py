@@ -12,6 +12,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
@@ -81,7 +82,7 @@ model_task_enum = Enum(
     "forecasting", "anomaly_detection", "prediction", name="model_task"
 )
 
-job_status_enum = Enum("Success", "Failed", "Running", name="job_status")
+job_status_enum = Enum("Success", "Failed", "Running", "Cancelled", name="job_status")
 
 ingestion_status_enum = Enum(
     "Success", "Device_Error", "Network_Timeout", name="ingestion_status"
@@ -242,6 +243,7 @@ class AIPipelineLog(UUIDMixin, TimestampMixin, Base):
         server_default="forecasting",
     )
     mlflow_run_id: Mapped[str] = mapped_column(String, nullable=False)
+    celery_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
     datasource_used: Mapped[str | None] = mapped_column(String, nullable=True)
     execution_time_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(job_status_enum, nullable=False)
@@ -253,3 +255,35 @@ class SystemLog(UUIDMixin, TimestampMixin, Base):
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     actor: Mapped[str] = mapped_column(String, nullable=False)
     details: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class AnomalyDetectedEvent(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "anomaly_detected_event"
+
+    building_id: Mapped[str] = mapped_column(String, ForeignKey("location.id"), nullable=False)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metric_type_id: Mapped[str] = mapped_column(String, ForeignKey("metric_type.id"), nullable=False)
+    primary_space_usage: Mapped[str | None] = mapped_column(String, nullable=True)
+    actual_value: Mapped[float | None] = mapped_column(Double, nullable=True)
+    predicted_value: Mapped[float | None] = mapped_column(Double, nullable=True)
+    residual: Mapped[float | None] = mapped_column(Double, nullable=True)
+    residual_z: Mapped[float | None] = mapped_column(Double, nullable=True)
+    anomaly_score: Mapped[float | None] = mapped_column(Double, nullable=True)
+    is_anomaly: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    direction: Mapped[str | None] = mapped_column(String, nullable=True)
+    severity: Mapped[str] = mapped_column(String, nullable=False, default="normal")
+    source: Mapped[str] = mapped_column(String, nullable=False)  # "rule_based" / "lgbm"
+    anomaly_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    mlflow_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "building_id",
+            "timestamp",
+            "metric_type_id",
+            "source",
+            name="uq_anomaly_detected_event",
+        ),
+    )
