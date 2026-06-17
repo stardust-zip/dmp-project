@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, FormMessage, Modal } from "@/components/common/primitives";
 import { displayLocationName, displayModelName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
@@ -21,6 +21,21 @@ type DetailTarget = { kind: "location"; item: LocationOption } | null;
 const LOCATION_INDEX_LIMIT = 1000;
 const LOCATIONS_PER_PAGE = 24;
 
+type GeoPoint = {
+  lat: number;
+  lon: number;
+};
+
+type MappedLocation = {
+  location: LocationOption;
+  point: GeoPoint;
+};
+
+type MapSearchResult = {
+  location: LocationOption;
+  point: GeoPoint | null;
+};
+
 function parseMetadata(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -34,6 +49,39 @@ function titleCase(value?: string | null) {
 function shortJson(value?: Record<string, unknown> | null) {
   if (!value || Object.keys(value).length === 0) return "No metadata";
   return JSON.stringify(value, null, 2);
+}
+
+function readNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function locationPoint(location?: LocationOption | null): GeoPoint | null {
+  const metadata = location?.metadata;
+  if (!metadata) return null;
+  const lat = readNumber(metadata.latitude ?? metadata.lat);
+  const lon = readNumber(metadata.longitude ?? metadata.longtitude ?? metadata.lon ?? metadata.lng);
+  if (lat == null || lon == null) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
+function formatCoordinate(value: number) {
+  return value.toFixed(5);
+}
+
+function osmLocationUrl(point: GeoPoint, zoom = 18) {
+  return `https://www.openstreetmap.org/?mlat=${point.lat}&mlon=${point.lon}#map=${zoom}/${point.lat}/${point.lon}`;
+}
+
+function osmEmbedUrl(point: GeoPoint, zoom = 17) {
+  const delta = zoom >= 17 ? 0.004 : 0.02;
+  const bbox = [point.lon - delta, point.lat - delta, point.lon + delta, point.lat + delta].map((value) => value.toFixed(6)).join("%2C");
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${point.lat}%2C${point.lon}`;
 }
 
 function modelMatches(model: RegisteredModel, terms: string[]) {
@@ -50,6 +98,8 @@ function modelMatches(model: RegisteredModel, terms: string[]) {
 }
 
 export function AssetsPage() {
+  const mapSearchRef = useRef<HTMLDivElement | null>(null);
+  const mapStatsRef = useRef<HTMLDivElement | null>(null);
   const [locations, setLocations] = useState<LocationOption[]>([]);
 
   const [models, setModels] = useState<RegisteredModel[]>([]);
@@ -59,6 +109,8 @@ export function AssetsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [activeModal, setActiveModal] = useState<AssetModal>(null);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [mapStatsOpen, setMapStatsOpen] = useState(false);
   const [assetFormError, setAssetFormError] = useState<string | null>(null);
   const [detailTarget, setDetailTarget] = useState<DetailTarget>(null);
 
@@ -72,8 +124,13 @@ export function AssetsPage() {
   const [buildingMetadata, setBuildingMetadata] = useState("");
 
   const [locationQuery, setLocationQuery] = useState("");
+  const [mapQuery, setMapQuery] = useState("");
+  const [mapDropdownOpen, setMapDropdownOpen] = useState(false);
+  const [selectedMapLocationId, setSelectedMapLocationId] = useState<string | null>(null);
   const [searchedLocations, setSearchedLocations] = useState<LocationOption[] | null>(null);
+  const [mapSearchedLocations, setMapSearchedLocations] = useState<LocationOption[] | null>(null);
   const [locationSearchLoading, setLocationSearchLoading] = useState(false);
+  const [mapSearchLoading, setMapSearchLoading] = useState(false);
 
   const [locationStatusFilter, setLocationStatusFilter] = useState<LocationFilter>("all");
   const [locationPage, setLocationPage] = useState(1);
@@ -84,6 +141,18 @@ export function AssetsPage() {
   const activeLocationCount = useMemo(() => locations.filter((location) => !location.archived).length, [locations]);
   const archivedLocationCount = locations.length - activeLocationCount;
   const locationSource = locationQuery.trim() && searchedLocations ? searchedLocations : locations;
+  const mappedLocations = useMemo<MappedLocation[]>(
+    () => locations.map((location) => ({ location, point: locationPoint(location) })).filter((item): item is MappedLocation => item.point != null),
+    [locations],
+  );
+  const mappedLocationById = useMemo(() => new Map(mappedLocations.map((item) => [item.location.id, item])), [mappedLocations]);
+  const mapCenter = useMemo<GeoPoint | null>(() => {
+    if (mappedLocations.length === 0) return null;
+    return {
+      lat: mappedLocations.reduce((sum, item) => sum + item.point.lat, 0) / mappedLocations.length,
+      lon: mappedLocations.reduce((sum, item) => sum + item.point.lon, 0) / mappedLocations.length,
+    };
+  }, [mappedLocations]);
 
   const filteredLocations = useMemo(() => {
     const query = locationQuery.trim().toLowerCase();
@@ -100,6 +169,32 @@ export function AssetsPage() {
     () => filteredLocations.slice((safeLocationPage - 1) * LOCATIONS_PER_PAGE, safeLocationPage * LOCATIONS_PER_PAGE),
     [filteredLocations, safeLocationPage],
   );
+  const mapLocationById = useMemo(() => {
+    const indexed = new Map(locations.map((location) => [location.id, location]));
+    (mapSearchedLocations ?? []).forEach((location) => indexed.set(location.id, location));
+    return indexed;
+  }, [locations, mapSearchedLocations]);
+  const mapSearchResults = useMemo<MapSearchResult[]>(() => {
+    const query = mapQuery.trim().toLowerCase();
+    const source = query && mapSearchedLocations ? mapSearchedLocations : locations;
+    const filtered = query && !mapSearchedLocations
+      ? source.filter((location) =>
+          `${locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : undefined)} ${location.archived ? "archived" : "active"}`.includes(query),
+        )
+      : source;
+
+    return filtered.map((location) => ({ location, point: locationPoint(location) })).slice(0, 10);
+  }, [locationById, locations, mapQuery, mapSearchedLocations]);
+  const activeMapLocationId = useMemo(() => {
+    const query = mapQuery.trim();
+    const selectedStillVisible = selectedMapLocationId
+      ? (!query && mapLocationById.has(selectedMapLocationId)) || mapSearchResults.some((item) => item.location.id === selectedMapLocationId)
+      : false;
+    if (selectedStillVisible) return selectedMapLocationId;
+    return mapSearchResults.find((item) => item.point)?.location.id ?? mappedLocations[0]?.location.id ?? null;
+  }, [mapLocationById, mapQuery, mapSearchResults, mappedLocations, selectedMapLocationId]);
+  const selectedMapLocation = activeMapLocationId ? mapLocationById.get(activeMapLocationId) ?? null : null;
+  const selectedMapPoint = selectedMapLocation ? locationPoint(selectedMapLocation) : null;
   const locationRangeStart = filteredLocations.length ? (safeLocationPage - 1) * LOCATIONS_PER_PAGE + 1 : 0;
   const locationRangeEnd = Math.min(safeLocationPage * LOCATIONS_PER_PAGE, filteredLocations.length);
   async function refresh() {
@@ -153,6 +248,81 @@ export function AssetsPage() {
       window.clearTimeout(timeout);
     };
   }, [locationQuery]);
+
+  useEffect(() => {
+    const query = mapQuery.trim();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      if (!query) {
+        setMapSearchedLocations(null);
+        setMapSearchLoading(false);
+        return;
+      }
+
+      setMapSearchLoading(true);
+      try {
+        const data = await getLocationOptions({ q: query, includeArchived: true, limit: LOCATION_INDEX_LIMIT }, controller.signal);
+        setMapSearchedLocations(data.locations);
+      } catch {
+        if (!controller.signal.aborted) setMapSearchedLocations([]);
+      } finally {
+        if (!controller.signal.aborted) setMapSearchLoading(false);
+      }
+    }, query ? 180 : 0);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [mapQuery]);
+
+  useEffect(() => {
+    if (!mapDropdownOpen) return;
+
+    const closeIfOutside = (event: PointerEvent) => {
+      if (!mapSearchRef.current?.contains(event.target as Node)) {
+        setMapDropdownOpen(false);
+      }
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMapDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeIfOutside);
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [mapDropdownOpen]);
+
+  useEffect(() => {
+    if (!mapStatsOpen) return;
+
+    const closeIfOutside = (event: PointerEvent) => {
+      if (!mapStatsRef.current?.contains(event.target as Node)) {
+        setMapStatsOpen(false);
+      }
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMapStatsOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeIfOutside);
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [mapStatsOpen]);
 
   async function run(action: string, fn: () => Promise<string>) {
     setSubmitting(action);
@@ -257,8 +427,11 @@ export function AssetsPage() {
     () => locations.filter((location) => modelsForLocation(location).some((model) => model.production_version)).length,
     [locations, modelsForLocation],
   );
+  const selectedMapModels = selectedMapLocation ? modelsForLocation(selectedMapLocation) : [];
+  const selectedMapChildren = selectedMapLocation ? locations.filter((item) => item.parent_id === selectedMapLocation.id) : [];
 
   const selectedLocation = detailTarget?.kind === "location" ? detailTarget.item : null;
+  const selectedPoint = selectedLocation ? locationPoint(selectedLocation) : null;
 
   return (
     <main className="page assets-page">
@@ -282,32 +455,205 @@ export function AssetsPage() {
       {error && <div className="anomaly-error">{error}</div>}
       {message && <div className="models-success">{message}</div>}
 
-      <section className="asset-summary-grid">
-        <div className="asset-summary-card">
-          <span className="asset-summary-label">Total locations</span>
-          <b className="asset-summary-value">{locations.length}</b>
-          <small className="asset-summary-foot">Loaded in local index</small>
-        </div>
-        <div className="asset-summary-card">
-          <span className="asset-summary-label">Active locations</span>
-          <b className="asset-summary-value">{activeLocationCount}</b>
-          <small className="asset-summary-foot">Available in selectors</small>
-        </div>
-        <div className="asset-summary-card">
-          <span className="asset-summary-label">Archived locations</span>
-          <b className="asset-summary-value">{archivedLocationCount}</b>
-          <small className="asset-summary-foot">Hidden from active workflows</small>
-        </div>
-        <div className="asset-summary-card">
-          <span className="asset-summary-label">Model-covered locations</span>
-          <b className="asset-summary-value">{modelCoveredLocationCount}</b>
-          <small className="asset-summary-foot">Matched to production models</small>
-        </div>
-
-      </section>
-
       <div className="assets-layout">
-        <Card title="Location Gallery" sub={loading ? "Loading locations and model coverage" : `${filteredLocations.length} of ${locations.length} locations found`} icon="map">
+        <Card
+          title="Asset Map"
+          sub={mappedLocations.length ? `${mappedLocations.length} locations geocoded from metadata` : "Add latitude and longitude metadata to enable the map"}
+          icon="map"
+          actions={(
+            <div className="asset-map-actions">
+              <button className="btn btn-secondary btn-small" type="button" onClick={() => setGalleryOpen(true)}>
+                <Icon name="grid" />
+                <span>Location Gallery</span>
+              </button>
+              <div className="asset-map-stats-wrap" ref={mapStatsRef}>
+                <button className="btn btn-secondary btn-small" type="button" aria-expanded={mapStatsOpen} onClick={() => setMapStatsOpen((open) => !open)}>
+                  <Icon name="info" />
+                  <span>Stats</span>
+                </button>
+                {mapStatsOpen && (
+                  <div className="asset-map-stats-popover" role="dialog" aria-label="Asset map stats">
+                    <div className="asset-map-stats-head">
+                      <b>Asset Stats</b>
+                      <small>{loading ? "Loading asset index..." : `${locations.length} locations loaded`}</small>
+                    </div>
+                    <div className="asset-map-stats-grid">
+                      <div className="asset-stat-card is-primary">
+                        <span>Total</span>
+                        <b>{locations.length}</b>
+                        <small>Locations in index</small>
+                      </div>
+                      <div className="asset-stat-card">
+                        <span>Active</span>
+                        <b>{activeLocationCount}</b>
+                        <small>Available in workflows</small>
+                      </div>
+                      <div className="asset-stat-card">
+                        <span>Archived</span>
+                        <b>{archivedLocationCount}</b>
+                        <small>Hidden by default</small>
+                      </div>
+                      <div className="asset-stat-card">
+                        <span>Mapped</span>
+                        <b>{mappedLocations.length}</b>
+                        <small>With coordinates</small>
+                      </div>
+                      <div className="asset-stat-card">
+                        <span>Coverage</span>
+                        <b>{Math.round((mappedLocations.length / Math.max(locations.length, 1)) * 100)}%</b>
+                        <small>{locations.length - mappedLocations.length} missing coords</small>
+                      </div>
+                      <div className="asset-stat-card">
+                        <span>Model-covered</span>
+                        <b>{modelCoveredLocationCount}</b>
+                        <small>Production model match</small>
+                      </div>
+                    </div>
+                    <div className="asset-map-stats-foot">
+                      <span>Map center</span>
+                      <b>{mapCenter ? `${formatCoordinate(mapCenter.lat)}, ${formatCoordinate(mapCenter.lon)}` : "No map center"}</b>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {(selectedMapPoint ?? mapCenter) && (
+                <a className="btn btn-secondary btn-small" href={osmLocationUrl(selectedMapPoint ?? mapCenter!, selectedMapPoint ? 18 : 3)} target="_blank" rel="noreferrer">
+                  <Icon name="external" />
+                  <span>Open OSM</span>
+                </a>
+              )}
+            </div>
+          )}
+        >
+          <div className="asset-map-workspace">
+            <div className="asset-map-command">
+              <div className="asset-map-search-wrap" ref={mapSearchRef}>
+                <div className="asset-search asset-map-search">
+                  <Icon name="search" />
+                  <input
+                    value={mapQuery}
+                    onChange={(event) => {
+                      setMapQuery(event.target.value);
+                      setMapDropdownOpen(true);
+                    }}
+                    onFocus={() => {
+                      if (mapQuery.trim() || mapSearchResults.length > 0) setMapDropdownOpen(true);
+                    }}
+                    placeholder="Search DB locations, e.g. Panther"
+                  />
+                </div>
+                {mapDropdownOpen && (mapQuery.trim() || mapSearchLoading) && (
+                  <div className="asset-map-dropdown">
+                    {mapSearchLoading && <div className="asset-map-no-results">Searching database...</div>}
+                    {!mapSearchLoading && mapSearchResults.map(({ location, point }) => (
+                      <button
+                        className={activeMapLocationId === location.id ? "is-selected" : ""}
+                        type="button"
+                        key={location.id}
+                        onClick={() => {
+                          setSelectedMapLocationId(location.id);
+                          setMapDropdownOpen(false);
+                        }}
+                      >
+                        <Icon name={isSiteLocation(location) ? "map" : "building"} />
+                        <span>
+                          <b>{displayLocationName(location.name, location.id)}</b>
+                          <small>{location.id}</small>
+                        </span>
+                        <em>{point ? `${formatCoordinate(point.lat)}, ${formatCoordinate(point.lon)}` : "No coords"}</em>
+                      </button>
+                    ))}
+                    {!mapSearchLoading && mapQuery.trim() && mapSearchResults.length === 0 && <div className="asset-map-no-results">No database location matches this search.</div>}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="asset-map-content">
+              <div className="asset-map-main">
+                {(selectedMapPoint ?? mapCenter) ? (
+                  <iframe
+                    className="asset-map-frame"
+                    title={selectedMapLocation ? `${displayLocationName(selectedMapLocation.name, selectedMapLocation.id)} map` : "Asset map"}
+                    src={osmEmbedUrl(selectedMapPoint ?? mapCenter!, selectedMapPoint ? 17 : 3)}
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                ) : (
+                  <div className="asset-empty">No latitude and longitude metadata found yet.</div>
+                )}
+              </div>
+
+              <aside className="asset-map-detail-panel" aria-label="Selected location details">
+                {selectedMapLocation ? (
+                  <>
+                    <div className="asset-map-detail-head">
+                      <span className="asset-summary-label">Selected location</span>
+                      <h3>{displayLocationName(selectedMapLocation.name, selectedMapLocation.id)}</h3>
+                      <p>{selectedMapLocation.id}</p>
+                    </div>
+                    <div className="asset-map-detail-facts">
+                      <div><span>Type</span><b>{titleCase(selectedMapLocation.location_type)}</b></div>
+                      <div><span>Site</span><b>{isSiteLocation(selectedMapLocation) ? selectedMapLocation.id : selectedMapLocation.parent_id ?? "No site assigned"}</b></div>
+                      <div><span>Status</span><b>{selectedMapLocation.archived ? "Archived" : "Active"}</b></div>
+                      <div><span>Coordinates</span><b>{selectedMapPoint ? `${formatCoordinate(selectedMapPoint.lat)}, ${formatCoordinate(selectedMapPoint.lon)}` : "No coordinates"}</b></div>
+                      <div><span>Models</span><b>{selectedMapModels.length}</b></div>
+                      <div><span>Child assets</span><b>{selectedMapChildren.length}</b></div>
+                    </div>
+                    {selectedMapPoint && (
+                      <a className="btn btn-secondary btn-small asset-map-osm-action" href={osmLocationUrl(selectedMapPoint)} target="_blank" rel="noreferrer">
+                        <Icon name="external" />
+                        <span>Open in OSM</span>
+                      </a>
+                    )}
+                    <button
+                      className="btn btn-primary btn-small asset-map-archive-action"
+                      type="button"
+                      disabled={submitting === `archive-${selectedMapLocation.id}`}
+                      onClick={() => void toggleLocationArchive(selectedMapLocation)}
+                    >
+                      <Icon name="flag" />
+                      <span>{selectedMapLocation.archived ? "Restore Location" : "Archive Location"}</span>
+                    </button>
+                    <div className="asset-map-detail-section">
+                      <span className="asset-summary-label">Related assets</span>
+                      <div className="asset-detail-list compact">
+                        {selectedMapChildren.slice(0, 4).map((item) => <span key={item.id} title={item.id}>{displayLocationName(item.name, item.id)}</span>)}
+                        {selectedMapChildren.length === 0 && <span>No direct child locations</span>}
+                      </div>
+                    </div>
+                    <div className="asset-map-detail-section">
+                      <span className="asset-summary-label">Model usage</span>
+                      <div className="asset-detail-list compact">
+                        {selectedMapModels.map((model) => <span key={model.name} title={model.name}>{displayModelName(model.name)}</span>)}
+                        {selectedMapModels.length === 0 && <span>No matching model tags or names found</span>}
+                      </div>
+                    </div>
+                    <div className="asset-map-detail-section">
+                      <span className="asset-summary-label">Metadata JSON</span>
+                      <pre className="asset-json in-panel">{shortJson(selectedMapLocation.metadata)}</pre>
+                    </div>
+                  </>
+                ) : (
+                  <div className="asset-map-detail-empty">
+                    <span className="asset-summary-label">Selected location</span>
+                    <b>No mapped asset selected</b>
+                    <small>Search or pick a mapped location from the gallery.</small>
+                  </div>
+                )}
+              </aside>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {galleryOpen && (
+        <Modal
+          title="Location Gallery"
+          description={loading ? "Loading locations and model coverage" : `${filteredLocations.length} of ${locations.length} locations found`}
+          className="asset-gallery-modal"
+          onClose={() => setGalleryOpen(false)}
+        >
           <div className="asset-toolbar">
             <div className="asset-toolbar-controls">
               <div className="asset-search">
@@ -348,7 +694,15 @@ export function AssetsPage() {
 
           <div className="asset-gallery">
             {pagedLocations.map((location) => (
-              <button className="asset-tile" type="button" key={location.id} onClick={() => setDetailTarget({ kind: "location", item: location })}>
+              <button
+                className="asset-tile"
+                type="button"
+                key={location.id}
+                onClick={() => {
+                  setGalleryOpen(false);
+                  setSelectedMapLocationId(location.id);
+                }}
+              >
                 <div className="asset-tile-head">
                   <span className="asset-tile-icon"><Icon name={isSiteLocation(location) ? "map" : "building"} /></span>
                   <span className={`badge ${location.archived ? "badge-neutral" : "badge-resolved"}`}>{location.archived ? "Archived" : "Active"}</span>
@@ -367,6 +721,7 @@ export function AssetsPage() {
                 </div>
                 <div className="asset-tile-stats">
                   <span>{modelsForLocation(location).length} models</span>
+                  <span>{mappedLocationById.has(location.id) ? "Mapped" : "No coords"}</span>
                 </div>
               </button>
             ))}
@@ -397,9 +752,8 @@ export function AssetsPage() {
               </div>
             </div>
           )}
-        </Card>
-
-      </div>
+        </Modal>
+      )}
 
       {activeModal && (
         <Modal
@@ -486,7 +840,25 @@ export function AssetsPage() {
                     <dt>Type</dt><dd>{titleCase(selectedLocation.location_type)}</dd>
                     <dt>Site</dt><dd>{isSiteLocation(selectedLocation) ? selectedLocation.id : selectedLocation.parent_id ?? "No site assigned"}</dd>
                     <dt>Status</dt><dd>{selectedLocation.archived ? "Archived" : "Active"}</dd>
+                    <dt>Coordinates</dt><dd>{selectedPoint ? `${formatCoordinate(selectedPoint.lat)}, ${formatCoordinate(selectedPoint.lon)}` : "No coordinates in metadata"}</dd>
                   </dl>
+                  {selectedPoint && (
+                    <>
+                      <div className="sec-label">OpenStreetMap</div>
+                      <div className="asset-osm-preview">
+                        <iframe
+                          title={`${displayLocationName(selectedLocation.name, selectedLocation.id)} map`}
+                          src={osmEmbedUrl(selectedPoint)}
+                          loading="lazy"
+                          referrerPolicy="no-referrer-when-downgrade"
+                        />
+                      </div>
+                      <a className="btn btn-secondary asset-osm-link" href={osmLocationUrl(selectedPoint)} target="_blank" rel="noreferrer">
+                        <Icon name="external" />
+                        <span>Open in OpenStreetMap</span>
+                      </a>
+                    </>
+                  )}
                   <pre className="asset-json">{shortJson(selectedLocation.metadata)}</pre>
                   <div className="sec-label">Related Assets</div>
                   <div className="asset-detail-list">
