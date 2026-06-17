@@ -406,3 +406,26 @@ export interface AnomalyBackfillResponse {
 export function backfillAnomalyInference(payload: AnomalyBackfillPayload, signal?: AbortSignal) {
   return apiPost<AnomalyBackfillResponse>("/api/v1/models/anomaly/backfill", payload, signal);
 }
+
+export async function downloadModelFile(
+  modelName: string,
+  version: string,
+  signal?: AbortSignal,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(version)}/download`,
+    { signal, headers: authHeaders() },
+  );
+
+  if (!response.ok) {
+    throw new Error(await apiErrorMessage(response));
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const filenameMatch = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+  const filename = filenameMatch
+    ? filenameMatch[1].replace(/['"]/g, "")
+    : `${modelName}_v${version}.zip`;
+
+  return { blob: await response.blob(), filename };
+}

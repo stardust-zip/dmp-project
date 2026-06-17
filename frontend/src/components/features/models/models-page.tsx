@@ -8,6 +8,7 @@ import {
   backfillAnomalyInference,
   cancelPipelineLog,
   demoteModel,
+  downloadModelFile,
   getLocationOptions,
   getMetricOptions,
   getModelVersions,
@@ -289,6 +290,7 @@ export function ModelsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [rollbackSubmitting, setRollbackSubmitting] = useState(false);
   const [demoteSubmitting, setDemoteSubmitting] = useState(false);
+  const [downloadSubmitting, setDownloadSubmitting] = useState(false);
   const [selectedModelName, setSelectedModelName] = useState("");
   const [versions, setVersions] = useState<ModelVersion[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
@@ -738,6 +740,40 @@ export function ModelsPage() {
     } finally {
       setDemoteSubmitting(false);
     }
+  }
+
+  function onDownloadModel() {
+    if (!selectedModelName || !selectedRunId) {
+      setError("Select a model version before downloading.");
+      return;
+    }
+
+    const version = versions.find((v) => v.run_id === selectedRunId);
+    if (!version) {
+      setError("Selected version not found in registry.");
+      return;
+    }
+
+    setDownloadSubmitting(true);
+    setError(null);
+    downloadModelFile(selectedModelName, version.version)
+      .then(({ blob, filename }) => {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(url);
+        setTrainMessage(`${filename} downloaded.`);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Unable to download model.");
+      })
+      .finally(() => {
+        setDownloadSubmitting(false);
+      });
   }
 
   async function onCancelPipeline(log: PipelineLog) {
@@ -1299,6 +1335,16 @@ export function ModelsPage() {
                 <button className="btn" type="button" onClick={onDemoteModel} disabled={demoteSubmitting || versionsLoading || !detailVersionIsProduction}>
                   <Icon name={demoteSubmitting ? "refresh" : "arrowDown"} className={demoteSubmitting ? "spin" : undefined} />
                   <span>{demoteSubmitting ? "Moving..." : "Move Out of Production"}</span>
+                </button>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={onDownloadModel}
+                  disabled={downloadSubmitting || versionsLoading || !selectedRunId}
+                  title="Download model artifacts as a zip file"
+                >
+                  <Icon name={downloadSubmitting ? "refresh" : "download"} className={downloadSubmitting ? "spin" : undefined} />
+                  <span>{downloadSubmitting ? "Downloading..." : "Download Model"}</span>
                 </button>
               </div>
               {versionError && <div className="model-inline-error">{versionError}</div>}
