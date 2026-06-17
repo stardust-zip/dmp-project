@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
+import { UserEditModal } from "@/components/features/users/user-edit-modal";
 import { displayLocationName, humanizeIdentifier } from "@/lib/format";
 import { getLocationOptions, type LocationOption } from "@/lib/models-api";
 import { UserLocationPicker } from "@/components/features/users/user-location-picker";
@@ -11,16 +12,13 @@ import {
   USER_ROLES,
   USER_STATUSES,
   createUser,
-  deleteUser,
   getUsers,
   isManagedUserRole,
   managedRoleLabel,
-  updateUserRole,
   type CreateUserPayload,
   type ManagedUser,
   type ManagedUserRole,
   type ManagedUserStatus,
-  type UpdateUserRolePayload,
 } from "@/lib/users-api";
 
 type RoleFilter = "all" | ManagedUserRole;
@@ -178,10 +176,6 @@ export function UsersPage() {
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
-  const [editingUserForm, setEditingUserForm] = useState<UpdateUserRolePayload>({});
-  const [editError, setEditError] = useState<string | null>(null);
-  const [editingUserSubmitting, setEditingUserSubmitting] = useState(false);
-  const [editingUserDeleteConfirm, setEditingUserDeleteConfirm] = useState(false);
 
   const currentEmail = session?.user.email.toLowerCase() ?? "";
   const siteById = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites]);
@@ -311,32 +305,10 @@ export function UsersPage() {
     }));
   }
 
-  function editingAddAssignedLocation(location: LocationOption) {
+  function replaceAssignedLocation(location: LocationOption) {
     setSites((current) => (current.some((site) => site.id === location.id) ? current : [...current, location]));
-    setEditingUserForm((current) => {
-      const resolvedRole = current.role ?? editingUser?.role;
-      const prev = current.assigned_site_ids ?? [];
-      if (resolvedRole === "Operator") {
-        const selectedSiteId = prev
-          .map((siteId) => siteById.get(siteId) ?? { id: siteId, name: siteId })
-          .map((site) => (site.location_type === "site" ? site.id : site.parent_id ?? site.id))
-          .find(Boolean);
-        const nextSiteId = location.location_type === "site" ? location.id : location.parent_id ?? location.id;
-        if (selectedSiteId && nextSiteId !== selectedSiteId) return current;
-      }
-      const selected = new Set(prev);
-      selected.add(location.id);
-      const nextIds = [...selected].sort();
-      saveRecentLocationEntries([{ id: location.id, name: location.name ?? location.id } as LocationOption]);
-      return { ...current, assigned_site_ids: nextIds };
-    });
-  }
-
-  function editingRemoveAssignedLocation(locationId: string) {
-    setEditingUserForm((current) => ({
-      ...current,
-      assigned_site_ids: (current.assigned_site_ids ?? []).filter((siteId) => siteId !== locationId),
-    }));
+    saveRecentLocationEntries([{ id: location.id, name: location.name ?? location.id } as LocationOption]);
+    setForm((current) => ({ ...current, assigned_site_ids: [location.id] }));
   }
 
   function scopeLabel(user: ManagedUser) {
@@ -386,79 +358,8 @@ export function UsersPage() {
     }
   }
 
-  async function handleDelete(user: ManagedUser) {
-    setSubmitting(`delete-${user.id}`);
-    setError(null);
-    setMessage(null);
-    try {
-      await deleteUser(user.id);
-      setUsers((current) => current.filter((item) => item.id !== user.id));
-      setEditingUser(null);
-      setEditingUserDeleteConfirm(false);
-      setMessage(`${user.full_name} was removed.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to delete user.");
-    } finally {
-      setSubmitting(null);
-    }
-  }
-
   function openEditUser(user: ManagedUser) {
     setEditingUser(user);
-    setEditError(null);
-    setEditingUserForm({
-      full_name: user.full_name,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      contact_number: user.contact_number ?? "",
-      is_global_admin: user.is_global_admin,
-      assigned_site_ids: [...user.assigned_site_ids].sort(),
-    });
-    setEditingUserSubmitting(false);
-    setEditingUserDeleteConfirm(false);
-  }
-
-  async function handleEditUser(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!editingUser) return;
-
-    const resolvedRole = editingUserForm.role ?? editingUser.role;
-    const resolvedIsGlobalAdmin = resolvedRole === "Admin" && (editingUserForm.is_global_admin ?? editingUser.is_global_admin);
-    const resolvedAssignedSiteIds =
-      (resolvedRole === "Operator" || (resolvedRole === "Admin" && !resolvedIsGlobalAdmin))
-        ? (editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids)
-        : [];
-
-    const payload: UpdateUserRolePayload = {
-      full_name: editingUserForm.full_name?.trim() || undefined,
-      email: editingUserForm.email?.trim().toLowerCase() || undefined,
-      role: resolvedRole,
-      status: editingUserForm.status,
-      contact_number: editingUserForm.contact_number?.trim() || null,
-      is_global_admin: resolvedIsGlobalAdmin,
-      assigned_site_ids: resolvedAssignedSiteIds,
-    };
-
-    setEditingUserSubmitting(true);
-    setEditError(null);
-    setMessage(null);
-    try {
-      const updated = await updateUserRole(editingUser.id, payload);
-      setUsers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      if (resolvedAssignedSiteIds.length > 0) {
-        const currentLocations = resolvedAssignedSiteIds
-          .map((id) => siteById.get(id))
-          .filter((loc): loc is LocationOption => Boolean(loc));
-        saveRecentLocationEntries(currentLocations);
-      }
-      setEditingUser(null);
-      setMessage(`${updated.full_name} was updated.`);
-    } catch (err) {
-      setEditError(err instanceof Error ? err.message : "Unable to update user.");
-    } finally {
-      setEditingUserSubmitting(false);
-    }
   }
 
   return (
@@ -735,6 +636,7 @@ export function UsersPage() {
                       siteById={siteById}
                       onAdd={addAssignedLocation}
                       onRemove={removeAssignedLocation}
+                      onReplace={replaceAssignedLocation}
                       recentLocationEntries={recentLocationEntries}
                       enforceSingleSite={form.role === "Operator"}
                     />
@@ -819,232 +721,29 @@ export function UsersPage() {
       )}
 
       {editingUser && (
-        <div className="user-modal-backdrop" role="presentation" onMouseDown={() => setEditingUser(null)}>
-          <section className="user-modal" role="dialog" aria-modal="true" aria-labelledby="edit-user-title" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="user-modal-head">
-              <div>
-                <h2 id="edit-user-title">Edit User</h2>
-                <span>
-                  {editingUser.full_name} &middot; {editingUser.email}
-                </span>
-              </div>
-              <button className="icon-btn" type="button" aria-label="Close edit user dialog" onClick={() => setEditingUser(null)}>
-                <Icon name="x" />
-              </button>
-            </div>
-            <form className="user-form user-modal-body" onSubmit={handleEditUser}>
-              <Field label="Full name">
-                <input
-                  className="input"
-                  value={editingUserForm.full_name ?? editingUser.full_name}
-                  onChange={(event) =>
-                    setEditingUserForm((current) => ({ ...current, full_name: event.target.value }))
-                  }
-                  autoComplete="name"
-                  placeholder="Jane Smith"
-                  required
-                />
-              </Field>
-
-              <Field label="Email">
-                <input
-                  className="input"
-                  type="email"
-                  value={editingUserForm.email ?? editingUser.email}
-                  onChange={(event) =>
-                    setEditingUserForm((current) => ({ ...current, email: event.target.value }))
-                  }
-                  autoComplete="email"
-                  placeholder="jane@example.com"
-                  required
-                />
-                {(() => {
-                  const editEmail = editingUserForm.email ?? editingUser.email;
-                  const editEmailIssue = emailValidationIssue(editEmail);
-                  if (editEmail.trim() && editEmailIssue) {
-                    return <span className="user-field-help">{editEmailIssue}</span>;
-                  }
-                  if (editEmail.trim() && !editEmailIssue) {
-                    return <span className="user-field-ok">Email format accepted.</span>;
-                  }
-                  return null;
-                })()}
-              </Field>
-
-              <Field label="Role">
-                <Select
-                  value={editingUserForm.role ?? editingUser.role}
-                  onChange={(role) =>
-                    setEditingUserForm((current) => ({
-                      ...current,
-                      role,
-                      is_global_admin: role === "Admin" ? current.is_global_admin : false,
-                      assigned_site_ids: role === "AI_Engineer" ? [] : current.assigned_site_ids,
-                    }))
-                  }
-                  options={USER_ROLES.map((role) => ({ value: role, label: managedRoleLabel(role) }))}
-                />
-                <span className="user-role-hint">{roleDescription(editingUserForm.role ?? editingUser.role)}</span>
-              </Field>
-
-              <Field label="Work status">
-                <Select
-                  value={editingUserForm.status ?? editingUser.status}
-                  onChange={(status) =>
-                    setEditingUserForm((current) => ({ ...current, status }))
-                  }
-                  options={USER_STATUSES.map((status) => ({ value: status, label: statusLabel(status) }))}
-                />
-              </Field>
-
-              <Field label="Contact number">
-                <input
-                  className="input"
-                  value={editingUserForm.contact_number ?? ""}
-                  onChange={(event) =>
-                    setEditingUserForm((current) => ({ ...current, contact_number: event.target.value }))
-                  }
-                  autoComplete="tel"
-                  placeholder="+1 555 123 4567"
-                />
-              </Field>
-
-              {/* ── Global admin toggle ── */}
-              {(editingUserForm.role ?? editingUser.role) === "Admin" && session?.user.isGlobalAdmin && (
-                <label className="user-check-row">
-                  <input
-                    type="checkbox"
-                    checked={editingUserForm.is_global_admin ?? editingUser.is_global_admin}
-                    onChange={(event) =>
-                      setEditingUserForm((current) => ({
-                        ...current,
-                        is_global_admin: event.target.checked,
-                        assigned_site_ids: event.target.checked ? [] : current.assigned_site_ids,
-                      }))
-                    }
-                  />
-                  <span>
-                    <b>Global admin</b>
-                    <small>Access to all locations, users, and system configuration across every site.</small>
-                  </span>
-                </label>
-              )}
-
-              {/* ── Location assignments ── */}
-              {(() => {
-                const resolvedRole = editingUserForm.role ?? editingUser.role;
-                const resolvedIsGlobal = editingUserForm.is_global_admin ?? editingUser.is_global_admin;
-                if (resolvedRole === "AI_Engineer" || (resolvedRole === "Admin" && resolvedIsGlobal)) {
-                  return (
-                    <div className="user-scope-note">
-                      {resolvedRole === "AI_Engineer"
-                        ? "AI Engineers have global read-only access."
-                        : "Global admins have access to all locations."}
-                    </div>
-                  );
-                }
-                return (
-                  <Field label="Assigned locations">
-                    <UserLocationPicker
-                      selectedIds={editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids}
-                      selectedLocations={(editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids)
-                        .map((siteId) => siteById.get(siteId) ?? { id: siteId, name: siteId })
-                        .filter(Boolean) as LocationOption[]}
-                      siteById={siteById}
-                      onAdd={editingAddAssignedLocation}
-                      onRemove={editingRemoveAssignedLocation}
-                      recentLocationEntries={recentLocationEntries}
-                      enforceSingleSite={resolvedRole === "Operator"}
-                    />
-                    {resolvedRole === "Operator" && (
-                      <span className="user-role-hint">Select one site, or multiple buildings from the same site.</span>
-                    )}
-                  </Field>
-                );
-              })()}
-
-              {/* ── Danger zone ── */}
-              <div className="user-delete-zone">
-                {(() => {
-                  const isEditingSelf = editingUser.email.toLowerCase() === currentEmail;
-                  const isDeleting = submitting === `delete-${editingUser.id}`;
-                  if (editingUserDeleteConfirm) {
-                    return (
-                      <div className="user-delete-confirm">
-                        <span>Permanently delete <b>{editingUser.full_name}</b>? This cannot be undone.</span>
-                        <div className="user-delete-confirm-actions">
-                          <button
-                            className="btn btn-small"
-                            type="button"
-                            onClick={() => setEditingUserDeleteConfirm(false)}
-                            disabled={isDeleting}
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            className="btn btn-small user-danger"
-                            type="button"
-                            onClick={() => handleDelete(editingUser)}
-                            disabled={isDeleting}
-                          >
-                            <Icon name={isDeleting ? "refresh" : "x"} className={isDeleting ? "spin" : undefined} />
-                            <span>{isDeleting ? "Deleting..." : "Delete permanently"}</span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <button
-                      className="btn btn-small user-delete-btn"
-                      type="button"
-                      onClick={() => setEditingUserDeleteConfirm(true)}
-                      disabled={isEditingSelf}
-                    >
-                      <Icon name="x" />
-                      <span>{isEditingSelf ? "Cannot delete yourself" : "Delete User"}</span>
-                    </button>
-                  );
-                })()}
-              </div>
-
-              {editError && (
-                <div className="user-form-error" role="alert">
-                  <Icon name="info" />
-                  <span>{editError}</span>
-                </div>
-              )}
-              <div className="user-modal-foot">
-                <div className="user-submit-summary">
-                  <span className="user-submit-hint">
-                    {(() => {
-                      const resolvedRole = editingUserForm.role ?? editingUser.role;
-                      const resolvedIsGlobal = editingUserForm.is_global_admin ?? editingUser.is_global_admin;
-                      if (resolvedRole === "Admin" && resolvedIsGlobal) return "Global admin — all locations.";
-                      if (resolvedRole === "AI_Engineer") return "Global read-only access.";
-                      if (resolvedRole === "Admin" || resolvedRole === "Operator") {
-                        const count = (editingUserForm.assigned_site_ids ?? editingUser.assigned_site_ids).length;
-                        return count > 0
-                          ? `${count} location${count !== 1 ? "s" : ""} assigned`
-                          : "No locations assigned";
-                      }
-                      return null;
-                    })()}
-                  </span>
-                </div>
-                <div className="user-modal-foot-actions">
-                  <button className="btn" type="button" onClick={() => setEditingUser(null)} disabled={editingUserSubmitting}>
-                    Cancel
-                  </button>
-                  <button className="btn btn-primary" type="submit" disabled={editingUserSubmitting}>
-                    <Icon name={editingUserSubmitting ? "refresh" : "check"} className={editingUserSubmitting ? "spin" : undefined} />
-                    <span>{editingUserSubmitting ? "Saving..." : "Save Changes"}</span>
-                  </button>
-                </div>
-              </div>
-            </form>
-          </section>
-        </div>
+        <UserEditModal
+          user={editingUser}
+          currentEmail={currentEmail}
+          currentUserIsGlobalAdmin={Boolean(session?.user.isGlobalAdmin)}
+          locations={sites}
+          recentLocationEntries={recentLocationEntries}
+          onClose={() => setEditingUser(null)}
+          onLocationsDiscovered={(newLocations) => {
+            setSites((current) => {
+              const existing = new Set(current.map((location) => location.id));
+              return [...current, ...newLocations.filter((location) => !existing.has(location.id))];
+            });
+            saveRecentLocationEntries(newLocations);
+          }}
+          onSaved={(updated) => {
+            setUsers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+            setMessage(`${updated.full_name} was updated.`);
+          }}
+          onDeleted={(deleted) => {
+            setUsers((current) => current.filter((item) => item.id !== deleted.id));
+            setMessage(`${deleted.full_name} was removed.`);
+          }}
+        />
       )}
     </main>
   );

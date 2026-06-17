@@ -18,6 +18,7 @@ export interface UserLocationPickerProps {
   siteById: Map<string, LocationOption>;
   onAdd: (location: LocationOption) => void;
   onRemove: (locationId: string) => void;
+  onReplace?: (location: LocationOption) => void;
   recentLocationEntries?: RecentLocationEntry[];
   enforceSingleSite?: boolean;
 }
@@ -32,6 +33,7 @@ export function UserLocationPicker({
   siteById,
   onAdd,
   onRemove,
+  onReplace,
   recentLocationEntries = [],
   enforceSingleSite = false,
 }: UserLocationPickerProps) {
@@ -84,7 +86,17 @@ export function UserLocationPicker({
     return rootSiteId(location) === selectedSiteId;
   }
 
+  function canReplaceLocation(location: LocationOption) {
+    return enforceSingleSite && Boolean(selectedSiteId) && rootSiteId(location) !== selectedSiteId && Boolean(onReplace);
+  }
+
   function addLocation(location: LocationOption) {
+    if (canReplaceLocation(location)) {
+      setScopeIssue(null);
+      onReplace?.(location);
+      setQuery("");
+      return;
+    }
     if (!canAddLocation(location)) {
       setScopeIssue("Operators can be assigned to multiple buildings, but they must all belong to one site.");
       return;
@@ -148,12 +160,13 @@ export function UserLocationPicker({
         ) : (
           unassignedResults.slice(0, 8).map((loc) => {
             const allowed = canAddLocation(loc);
+            const replace = canReplaceLocation(loc);
             return (
               <button
                 key={loc.id}
-                className={`user-location-result ${allowed ? "" : "is-disabled"}`}
+                className={`user-location-result ${allowed || replace ? "" : "is-disabled"}`}
                 type="button"
-                disabled={!allowed}
+                disabled={!allowed && !replace}
                 onClick={() => addLocation(loc)}
               >
                 <span>
@@ -161,10 +174,12 @@ export function UserLocationPicker({
                   <small>
                     {allowed
                       ? `${locationTypeLabel(loc)}${loc.parent_id ? ` in ${displayLocationName(siteById.get(loc.parent_id)?.name, loc.parent_id)}` : ""}`
-                      : "Different site from the current operator assignment"}
+                      : replace
+                        ? "Replace current operator assignment"
+                        : "Different site from the current operator assignment"}
                   </small>
                 </span>
-                <Icon name={allowed ? "plus" : "x"} />
+                <Icon name={allowed || replace ? "plus" : "x"} />
               </button>
             );
           })

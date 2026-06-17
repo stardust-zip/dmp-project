@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, FormMessage, Modal } from "@/components/common/primitives";
+import { UserEditModal } from "@/components/features/users/user-edit-modal";
 import { displayLocationName, displayModelName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
 import {
   createBuilding,
@@ -14,6 +15,7 @@ import {
   type LocationOption,
   type RegisteredModel,
 } from "@/lib/models-api";
+import { getUsers, type ManagedUser, type ManagedUserStatus } from "@/lib/users-api";
 
 type LocationFilter = "all" | "active" | "archived";
 type AssetModal = "site" | "building" | null;
@@ -30,6 +32,11 @@ type GeoPoint = {
 type MappedLocation = {
   location: LocationOption;
   point: GeoPoint;
+};
+
+type AssignedOperator = {
+  user: ManagedUser;
+  assignment: "direct" | "site";
 };
 
 type MapSearchResult = {
@@ -75,6 +82,17 @@ function formatCoordinate(value: number) {
   return value.toFixed(5);
 }
 
+function statusLabel(status: ManagedUserStatus | string) {
+  return humanizeIdentifier(status);
+}
+
+function operatorStatusTone(status: ManagedUserStatus | string) {
+  if (status === "Available" || status === "In_Shift") return "user-status-available";
+  if (status === "Busy" || status === "On_Break") return "user-status-busy";
+  if (status === "Off_Duty" || status === "On_Leave") return "user-status-away";
+  return "user-status-suspended";
+}
+
 function osmLocationUrl(point: GeoPoint, zoom = 18) {
   return `https://www.openstreetmap.org/?mlat=${point.lat}&mlon=${point.lon}#map=${zoom}/${point.lat}/${point.lon}`;
 }
@@ -108,12 +126,14 @@ export function AssetsPage() {
   const [locations, setLocations] = useState<LocationOption[]>([]);
 
   const [models, setModels] = useState<RegisteredModel[]>([]);
+  const [users, setUsers] = useState<ManagedUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [activeModal, setActiveModal] = useState<AssetModal>(null);
+  const [editingOperator, setEditingOperator] = useState<ManagedUser | null>(null);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [mapStatsOpen, setMapStatsOpen] = useState(false);
   const [assetFormError, setAssetFormError] = useState<string | null>(null);
@@ -208,15 +228,17 @@ export function AssetsPage() {
     try {
       const locationRequest = getLocationOptions({ includeArchived: true, limit: LOCATION_INDEX_LIMIT });
       const modelRequest = canViewModelCoverage ? getRegisteredModels() : Promise.resolve({ models: [] });
-      const [locationData, modelData] = await Promise.all([locationRequest, modelRequest]);
+      const usersRequest = canManageAssets ? getUsers() : Promise.resolve([]);
+      const [locationData, modelData, userData] = await Promise.all([locationRequest, modelRequest, usersRequest]);
       setLocations(locationData.locations);
       setModels(modelData.models);
+      setUsers(userData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load asset data.");
     } finally {
       setLoading(false);
     }
-  }, [canViewModelCoverage]);
+  }, [canManageAssets, canViewModelCoverage]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -439,6 +461,36 @@ export function AssetsPage() {
 
   const selectedLocation = detailTarget?.kind === "location" ? detailTarget.item : null;
   const selectedPoint = selectedLocation ? locationPoint(selectedLocation) : null;
+  const assignedOperatorsForLocation = useCallback((location: LocationOption | null): AssignedOperator[] => {
+    if (!location) return [];
+
+    const childIds = new Set(locations.filter((item) => item.parent_id === location.id).map((item) => item.id));
+    const parentSiteId = isSiteLocation(location) ? location.id : location.parent_id;
+
+    return users
+      .filter((user) => user.role === "Operator")
+      .map((user) => {
+        const assignedIds = new Set(user.assigned_site_ids);
+        if (assignedIds.has(location.id)) {
+          return { user, assignment: "direct" as const };
+        }
+        if (isSiteLocation(location) && [...childIds].some((childId) => assignedIds.has(childId))) {
+          return { user, assignment: "direct" as const };
+        }
+        if (parentSiteId && assignedIds.has(parentSiteId)) {
+          return { user, assignment: "site" as const };
+        }
+        return null;
+      })
+      .filter((item): item is AssignedOperator => item != null)
+      .sort((a, b) => {
+        const statusCompare = a.user.status.localeCompare(b.user.status);
+        if (statusCompare !== 0) return statusCompare;
+        return a.user.full_name.localeCompare(b.user.full_name);
+      });
+  }, [locations, users]);
+  const selectedMapOperators = canManageAssets ? assignedOperatorsForLocation(selectedMapLocation) : [];
+  const selectedDrawerOperators = canManageAssets ? assignedOperatorsForLocation(selectedLocation) : [];
 
   return (
     <main className="page assets-page">
@@ -614,6 +666,7 @@ export function AssetsPage() {
                       <div><span>Coordinates</span><b>{selectedMapPoint ? `${formatCoordinate(selectedMapPoint.lat)}, ${formatCoordinate(selectedMapPoint.lon)}` : "No coordinates"}</b></div>
                       {canViewModelCoverage && <div><span>Models</span><b>{selectedMapModels.length}</b></div>}
                       <div><span>Child assets</span><b>{selectedMapChildren.length}</b></div>
+                      {canManageAssets && <div><span>Operators</span><b>{selectedMapOperators.length}</b></div>}
                     </div>
                     {selectedMapPoint && (
                       <a className="btn btn-secondary btn-small asset-map-osm-action" href={osmLocationUrl(selectedMapPoint)} target="_blank" rel="noreferrer">
@@ -639,6 +692,27 @@ export function AssetsPage() {
                         {selectedMapChildren.length === 0 && <span>No direct child locations</span>}
                       </div>
                     </div>
+                    {canManageAssets && (
+                      <div className="asset-map-detail-section">
+                        <span className="asset-summary-label">Assigned operators</span>
+                        <div className="asset-operator-list">
+                          {selectedMapOperators.slice(0, 5).map(({ user }) => (
+                            <div className="asset-operator-row" key={user.id}>
+                              <span className={`user-status-dot ${operatorStatusTone(user.status)}`} aria-label={statusLabel(user.status)} />
+                              <span>
+                                <b>{user.full_name}</b>
+                                <small>{user.email}</small>
+                              </span>
+                              <button className="btn btn-small" type="button" onClick={() => setEditingOperator(user)}>
+                                <Icon name="settings" />
+                                <span>Edit</span>
+                              </button>
+                            </div>
+                          ))}
+                          {selectedMapOperators.length === 0 && <span className="asset-operator-empty">No operators assigned to this location.</span>}
+                        </div>
+                      </div>
+                    )}
                     {canViewModelCoverage && (
                       <div className="asset-map-detail-section">
                         <span className="asset-summary-label">Model usage</span>
@@ -887,6 +961,27 @@ export function AssetsPage() {
                     {locations.filter((item) => item.parent_id === selectedLocation.id).map((item) => <span key={item.id} title={item.id}>{displayLocationName(item.name, item.id)}</span>)}
                     {locations.filter((item) => item.parent_id === selectedLocation.id).length === 0 && <span>No direct child locations</span>}
                   </div>
+                  {canManageAssets && (
+                    <>
+                      <div className="sec-label">Assigned Operators</div>
+                      <div className="asset-operator-list in-drawer">
+                        {selectedDrawerOperators.map(({ user }) => (
+                          <div className="asset-operator-row" key={user.id}>
+                            <span className={`user-status-dot ${operatorStatusTone(user.status)}`} aria-label={statusLabel(user.status)} />
+                            <span>
+                              <b>{user.full_name}</b>
+                              <small>{user.email}</small>
+                            </span>
+                            <button className="btn btn-small" type="button" onClick={() => setEditingOperator(user)}>
+                              <Icon name="settings" />
+                              <span>Edit</span>
+                            </button>
+                          </div>
+                        ))}
+                        {selectedDrawerOperators.length === 0 && <span className="asset-operator-empty">No operators assigned to this location.</span>}
+                      </div>
+                    </>
+                  )}
                   {canViewModelCoverage && (
                     <>
                       <div className="sec-label">Model Usage</div>
@@ -909,6 +1004,28 @@ export function AssetsPage() {
             </div>
           </aside>
         </>
+      )}
+
+      {editingOperator && (
+        <UserEditModal
+          user={editingOperator}
+          currentEmail={currentUser?.email.toLowerCase() ?? ""}
+          currentUserIsGlobalAdmin={Boolean(currentUser?.isGlobalAdmin)}
+          locations={locations}
+          allowDelete={false}
+          lockRole="Operator"
+          onClose={() => setEditingOperator(null)}
+          onLocationsDiscovered={(newLocations) => {
+            setLocations((current) => {
+              const existing = new Set(current.map((location) => location.id));
+              return [...current, ...newLocations.filter((location) => !existing.has(location.id))];
+            });
+          }}
+          onSaved={(updated) => {
+            setUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
+            setMessage(`${updated.full_name} was updated.`);
+          }}
+        />
       )}
     </main>
   );
