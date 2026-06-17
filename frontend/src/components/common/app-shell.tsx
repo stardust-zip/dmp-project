@@ -8,12 +8,9 @@ import { Icon } from "@/components/common/icons";
 import { MAIN_NAV, hasAnyRole } from "@/lib/rbac";
 import { useSettingsStore } from "@/lib/settings-store";
 
-const DATE_RANGES = ["Last 24 hours", "Last 7 days", "Last 30 days", "This month", "Quarter to date", "Custom range..."];
-
 function routeLabel(pathname: string) {
   if (pathname.startsWith("/anomaly")) return "Anomaly Detection";
   if (pathname.startsWith("/forecast")) return "Forecasting";
-  if (pathname.startsWith("/prediction")) return "Prediction";
   if (pathname.startsWith("/models")) return "AI Engineering";
   if (pathname.startsWith("/assets")) return "Assets";
   if (pathname.startsWith("/users")) return "User Management";
@@ -26,8 +23,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const { session, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
-  const [dateRange, setDateRange] = useState("Last 24 hours");
-  const [dateOpen, setDateOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const meta = useMemo(() => routeLabel(pathname), [pathname]);
   const user = session?.user;
@@ -46,16 +41,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   useSettingsStore();
 
   useEffect(() => {
-    const close = () => {
-      setDateOpen(false);
-      setProfileOpen(false);
-    };
-    if (dateOpen || profileOpen) {
-      window.addEventListener("click", close);
-      return () => window.removeEventListener("click", close);
-    }
-    return undefined;
-  }, [dateOpen, profileOpen]);
+    if (!profileOpen) return;
+    const close = () => setProfileOpen(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [profileOpen]);
 
   if (pathname === "/login") {
     return children;
@@ -116,44 +106,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <div className="topbar-spacer" />
 
-          <div className="search">
-            <Icon name="search" />
-            <input placeholder="Search buildings, meters, alerts..." />
-            <kbd>Ctrl K</kbd>
-          </div>
-
-          <div style={{ position: "relative" }} onClick={(event) => event.stopPropagation()}>
-            <div
-              className="daterange"
-              onClick={() => {
-                setDateOpen((open) => !open);
-                setProfileOpen(false);
-              }}
-            >
-              <Icon name="calendar" />
-              <span>{dateRange}</span>
-              <Icon name="chevDown" className="chev" />
-            </div>
-            {dateOpen && (
-              <div style={{ position: "absolute", top: 40, right: 0, width: 196, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "var(--shadow-lg)", padding: 5, zIndex: 40 }}>
-                {DATE_RANGES.map((range) => (
-                  <button
-                    key={range}
-                    className="sb-item"
-                    style={{ height: 32, fontSize: 12.5, color: range === dateRange ? "var(--accent-600)" : "var(--ink-2)", fontWeight: range === dateRange ? 600 : 500 }}
-                    onClick={() => {
-                      setDateRange(range);
-                      setDateOpen(false);
-                    }}
-                  >
-                    <span>{range}</span>
-                    {range === dateRange && <Icon name="check" style={{ width: 15, height: 15, marginLeft: "auto" }} />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
           <button className="icon-btn" title="Alerts" style={{ position: "relative" }}>
             <Icon name="bell" />
             <span style={{ position: "absolute", top: 6, right: 6, width: 7, height: 7, borderRadius: "50%", background: "var(--red)", boxShadow: "0 0 0 2px var(--topbar-bg)" }} />
@@ -163,10 +115,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div style={{ position: "relative" }} onClick={(event) => event.stopPropagation()}>
             <div
               className="profile"
-              onClick={() => {
-                setProfileOpen((open) => !open);
-                setDateOpen(false);
-              }}
+              onClick={() => setProfileOpen((open) => !open)}
             >
               <div className="avatar">{initials}</div>
               <div className="profile-meta">
@@ -183,9 +132,8 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{user?.roleLabel}</div>
                 </div>
                 {[
-                  ["users", "Account", "/settings"],
                   ["settings", "Preferences", "/settings"],
-                  ["help", "Help & docs", "#"],
+                  ["help", "Help & docs", "https://github.com/stardust-zip/dmp-project"],
                 ].map(([icon, label, href]) => (
                   <button
                     key={label}

@@ -4832,8 +4832,8 @@ table.tbl tbody tr:last-child td {
     overflow: auto;
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: #111827;
-    color: #d1fae5;
+    background: #060a10;
+    color: #ffffff;
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
     font-size: 12px;
     line-height: 1.6;
