@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@/components/common/primitives";
@@ -15,7 +16,6 @@ type DateRange = "all" | "2017" | "2016" | "scored";
 type SortKey = "severity" | "newest" | "oldest";
 type SpeedOption = "1" | "6" | "24";
 type SimBounds = { start: number; end: number };
-type PendingOpen = "primaryUsage" | "building" | null;
 
 type Filters = {
   site: string;
@@ -38,8 +38,35 @@ const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
   { value: "24", label: "24h/s" },
 ];
 const SEVERITY_RANK: Record<AnomalySeverity, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+const DEFAULT_FILTERS: Filters = { site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" };
+const DATE_RANGES = new Set<DateRange>(["all", "2017", "2016", "scored"]);
+const SORT_KEYS = new Set<SortKey>(["severity", "newest", "oldest"]);
 
 const EMPTY_TIMELINE: AnomalyTimelineResponse = { items: [], points: [], gaps: [] };
+
+function queryValue(search: URLSearchParams, ...keys: string[]) {
+  for (const key of keys) {
+    const value = search.get(key)?.trim();
+    if (value) return value;
+  }
+  return "all";
+}
+
+function filtersFromSearch(search: string): Filters {
+  const params = new URLSearchParams(search);
+  const range = queryValue(params, "range");
+  const sort = queryValue(params, "sort");
+  return {
+    ...DEFAULT_FILTERS,
+    site: queryValue(params, "site", "site_id"),
+    building: queryValue(params, "building", "building_id"),
+    primaryUsage: queryValue(params, "primaryUsage", "primary_usage", "primaryspaceusage"),
+    severity: queryValue(params, "severity"),
+    type: queryValue(params, "type"),
+    range: DATE_RANGES.has(range as DateRange) ? (range as DateRange) : DEFAULT_FILTERS.range,
+    sort: SORT_KEYS.has(sort as SortKey) ? (sort as SortKey) : DEFAULT_FILTERS.sort,
+  };
+}
 
 function rangeQuery(range: DateRange) {
   if (range === "scored") return { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" };
@@ -237,8 +264,17 @@ function SimulationControls({
   );
 }
 
+function timelineDisabledReason(loading: boolean, bounds: SimBounds | null, simNow: number | null) {
+  if (loading) return null;
+  if (!bounds || simNow == null) return "No replay data is available for this building and date range.";
+  if (bounds.end <= bounds.start) return "Replay needs more than one timestamp in the selected date range.";
+  return null;
+}
+
 export function AnomalyPage() {
-  const [filters, setFilters] = useState<Filters>({ site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
+  const searchParams = useSearchParams();
+  const searchParamString = searchParams.toString();
+  const [filters, setFilters] = useState<Filters>(() => (typeof window === "undefined" ? DEFAULT_FILTERS : filtersFromSearch(window.location.search)));
   const [page, setPage] = useState(1);
   const [facets, setFacets] = useState<AnomalyFacets>({ sites: [], buildings: [], severities: ["Critical", "High", "Medium", "Low"], types: [], primary_usage_types: [] });
   const [siteFacetsBySite, setSiteFacetsBySite] = useState<Record<string, AnomalyFacets>>({});
@@ -248,11 +284,9 @@ export function AnomalyPage() {
   const [simNow, setSimNow] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<SpeedOption>("6");
-  const [pendingOpen, setPendingOpen] = useState<PendingOpen>(null);
-  const [primaryUsageOpenSignal, setPrimaryUsageOpenSignal] = useState(0);
-  const [buildingOpenSignal, setBuildingOpenSignal] = useState(0);
   const [selected, setSelected] = useState<AnomalyEvent | null>(null);
   const [loading, setLoading] = useState(false);
+  const [timelineLoaded, setTimelineLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { statuses, acknowledge, resolve, reopen } = useAlerts();
 
@@ -266,6 +300,7 @@ export function AnomalyPage() {
   }), [filters.site, filters.building, filters.severity, filters.type, filters.range]);
 
   const isGated = filters.building === "all";
+  const replayDisabledReason = timelineLoaded ? timelineDisabledReason(loading, simBounds, simNow) : null;
   const visibleTimeline = useMemo(() => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)), [rawTimeline, simNow]);
   const visibleOverview = useMemo(() => overviewFromEvents(visibleTimeline.items), [visibleTimeline.items]);
   const filteredItems = useMemo(
@@ -287,17 +322,42 @@ export function AnomalyPage() {
   const filteredPrimaryUsages = useMemo(
     () => {
       const fromFacets = activeFacets.primary_usage_types.filter(Boolean);
-      if (fromFacets.length > 0) return fromFacets;
-      return [...new Set(siteEvents.map((event) => event.primary_space_usage).filter(Boolean))].sort() as string[];
+      const usages = fromFacets.length > 0
+        ? fromFacets
+        : [...new Set(siteEvents.map((event) => event.primary_space_usage).filter(Boolean))].sort() as string[];
+      return filters.primaryUsage !== "all" && !usages.includes(filters.primaryUsage)
+        ? [filters.primaryUsage, ...usages]
+        : usages;
     },
-    [activeFacets.primary_usage_types, siteEvents],
+    [activeFacets.primary_usage_types, filters.primaryUsage, siteEvents],
   );
   const filteredBuildings = useMemo(() => {
-    if (filters.primaryUsage === "all") return activeFacets.buildings;
+    const withSelected = (buildings: string[]) => (
+      filters.building !== "all" && !buildings.includes(filters.building)
+        ? [filters.building, ...buildings]
+        : buildings
+    );
+    if (filters.primaryUsage === "all") return withSelected(activeFacets.buildings);
     const source = siteEvents.filter((event) => event.primary_space_usage === filters.primaryUsage);
     const fromEvents = [...new Set(source.map((event) => event.building_id))].sort();
-    return fromEvents.length > 0 ? fromEvents : activeFacets.buildings;
-  }, [activeFacets.buildings, filters.primaryUsage, siteEvents]);
+    return withSelected(fromEvents.length > 0 ? fromEvents : activeFacets.buildings);
+  }, [activeFacets.buildings, filters.building, filters.primaryUsage, siteEvents]);
+
+  useEffect(() => {
+    const nextFilters = filtersFromSearch(searchParamString ? `?${searchParamString}` : "");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFilters(nextFilters);
+    setPage(1);
+    setSelected(null);
+    setIsPlaying(false);
+    setTimelineLoaded(false);
+    setRawTimeline(EMPTY_TIMELINE);
+    setSimBounds(null);
+    setSimNow(null);
+    window.requestAnimationFrame(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+  }, [searchParamString]);
 
   // Load all facets on mount
   useEffect(() => {
@@ -314,7 +374,7 @@ export function AnomalyPage() {
 
   // Cache site-level events so primary usage and building options can be derived locally.
   useEffect(() => {
-    if (filters.site === "all" || siteEventsBySite[filters.site]) return;
+    if (filters.site === "all" || filters.building !== "all" || siteEventsBySite[filters.site]) return;
 
     const controller = new AbortController();
     getAnomalyTimeline({ site: filters.site, limit: 1500 }, controller.signal)
@@ -325,7 +385,7 @@ export function AnomalyPage() {
         if (err.name !== "AbortError") console.error(err);
       });
     return () => controller.abort();
-  }, [filters.site, siteEventsBySite]);
+  }, [filters.building, filters.site, siteEventsBySite]);
 
   // Load site-scoped facets for dropdown options; this is not limited by the timeline page size.
   useEffect(() => {
@@ -342,24 +402,6 @@ export function AnomalyPage() {
     return () => controller.abort();
   }, [filters.site, siteFacetsBySite]);
 
-  useEffect(() => {
-    if (pendingOpen !== "primaryUsage" || filters.site === "all" || filteredPrimaryUsages.length === 0) return;
-    const timeout = window.setTimeout(() => {
-      setPrimaryUsageOpenSignal((value) => value + 1);
-      setPendingOpen(null);
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [filteredPrimaryUsages.length, filters.site, pendingOpen]);
-
-  useEffect(() => {
-    if (pendingOpen !== "building" || filters.primaryUsage === "all" || filteredBuildings.length === 0) return;
-    const timeout = window.setTimeout(() => {
-      setBuildingOpenSignal((value) => value + 1);
-      setPendingOpen(null);
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [filteredBuildings.length, filters.primaryUsage, pendingOpen]);
-
   // Fetch event data only once a specific building is chosen
   useEffect(() => {
     if (replayQuery.building === "all") {
@@ -368,6 +410,7 @@ export function AnomalyPage() {
     const controller = new AbortController();
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
+    setTimelineLoaded(false);
     setError(null);
     getAnomalyTimeline(replayQuery, controller.signal)
       .then((nextTimeline) => {
@@ -380,7 +423,12 @@ export function AnomalyPage() {
       .catch((err: Error) => {
         if (err.name !== "AbortError") setError(err.message);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setTimelineLoaded(true);
+        }
+      });
 
     return () => controller.abort();
   }, [replayQuery]);
@@ -404,8 +452,10 @@ export function AnomalyPage() {
     setPage(1);
     setSelected(null);
     setIsPlaying(false);
+    setTimelineLoaded(false);
   };
 
+  const siteOptions = filters.site !== "all" && !facets.sites.includes(filters.site) ? [filters.site, ...facets.sites] : facets.sites;
   const primaryUsageOptions = filters.site === "all"
     ? []
     : [{ value: "all" as const, label: "All Usage Types" }, ...filteredPrimaryUsages.map((usage) => ({ value: usage, label: usage }))];
@@ -430,11 +480,10 @@ export function AnomalyPage() {
           <button
             className="btn btn-sm btn-ghost"
             onClick={() => {
-              setFilters({ site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" });
+              setFilters(DEFAULT_FILTERS);
               setPage(1);
               setSelected(null);
               setIsPlaying(false);
-              setPendingOpen(null);
             }}
           >
             <Icon name="refresh" /> Reset
@@ -450,9 +499,8 @@ export function AnomalyPage() {
                 set("site", value);
                 set("primaryUsage", "all");
                 set("building", "all");
-                setPendingOpen(value === "all" ? null : "primaryUsage");
               }}
-              options={[{ value: "all", label: "All Sites" }, ...facets.sites.map((site) => ({ value: site, label: site }))]}
+              options={[{ value: "all", label: "All Sites" }, ...siteOptions.map((site) => ({ value: site, label: site }))]}
               searchable
               searchPlaceholder="Search sites..."
             />
@@ -463,11 +511,9 @@ export function AnomalyPage() {
               onChange={(value) => {
                 set("primaryUsage", value);
                 set("building", "all");
-                setPendingOpen(value === "all" ? null : "building");
               }}
               disabled={filters.site === "all" || primaryUsageOptions.length === 0}
               options={primaryUsageOptions}
-              openSignal={primaryUsageOpenSignal}
               searchable
               searchPlaceholder="Search usage..."
             />
@@ -478,7 +524,6 @@ export function AnomalyPage() {
               onChange={(value) => set("building", value)}
               disabled={filters.site === "all" || buildingOptions.length === 0}
               options={buildingOptions}
-              openSignal={buildingOpenSignal}
               searchable
               searchPlaceholder="Search buildings..."
             />
@@ -554,6 +599,12 @@ export function AnomalyPage() {
                 }}
                 onSpeedChange={setSpeed}
               />
+              {replayDisabledReason && (
+                <div className="empty compact anomaly-replay-note">
+                  <Icon name="info" />
+                  <span>{replayDisabledReason}</span>
+                </div>
+              )}
               {loading ? (
                 <div className="empty"><Spinner /> Loading timeline...</div>
               ) : (
