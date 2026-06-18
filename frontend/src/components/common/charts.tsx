@@ -553,6 +553,111 @@ export function buildForecastChart(horizon: "day" | "week" | "month"): ChartBuil
   };
 }
 
+export interface ForecastVsActualChartPoint {
+  timestamp: string;
+  actual: number | null;
+  forecast: number | null;
+}
+
+/**
+ * Build an actual-vs-forecast line chart from the merged timeline returned by
+ * `POST /forecast/vs-actual`. ``actual`` is a solid line over the input window;
+ * ``forecast`` is a dashed line that spans the honest H-ahead overlay *and* the
+ * recursive future. A vertical mark line at ``dividerTimestamp`` (input_end)
+ * splits the recent past from the forecast future.
+ */
+export function buildForecastVsActualChart(
+  points: ForecastVsActualChartPoint[],
+  dividerTimestamp: string,
+): ChartBuilder {
+  return (theme) => {
+    const actual = points
+      .filter((point) => point.actual != null)
+      .map((point) => [new Date(point.timestamp).getTime(), point.actual as number]);
+    const forecast = points
+      .filter((point) => point.forecast != null)
+      .map((point) => [new Date(point.timestamp).getTime(), point.forecast as number]);
+    const dividerMs = new Date(dividerTimestamp).getTime();
+    const lastMs = forecast.length ? forecast[forecast.length - 1][0] : dividerMs;
+
+    return {
+      grid: { left: 8, right: 16, top: 18, bottom: 28, containLabel: true },
+      tooltip: {
+        trigger: "axis",
+        ...tooltipStyle(theme),
+        axisPointer: { type: "line", lineStyle: { color: theme.border2 } },
+      },
+      xAxis: {
+        type: "time",
+        boundaryGap: false,
+        axisLine: { lineStyle: { color: theme.grid } },
+        axisTick: { show: false },
+        axisLabel: {
+          color: theme.muted,
+          fontSize: 11,
+          hideOverlap: true,
+          formatter: (value: number) =>
+            new Date(value).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric" }),
+        },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: "value",
+        scale: true,
+        axisLabel: {
+          color: theme.muted,
+          fontSize: 11,
+          fontFamily: MONO,
+          formatter: (value: number) => `${value.toFixed(0)}`,
+        },
+        splitLine: { lineStyle: { color: theme.grid, type: "dashed" } },
+        axisLine: { show: false },
+        axisTick: { show: false },
+      },
+      series: [
+        {
+          name: "Actual",
+          type: "line",
+          smooth: 0.2,
+          showSymbol: false,
+          data: actual,
+          lineStyle: { width: 2.2, color: theme.accent },
+          itemStyle: { color: theme.accent },
+          z: 3,
+          markArea: {
+            silent: true,
+            itemStyle: { color: theme.dark ? "rgba(124,58,237,.08)" : "rgba(124,58,237,.05)" },
+            data: [[{ xAxis: dividerMs }, { xAxis: lastMs }]],
+          },
+          markLine: {
+            silent: true,
+            symbol: "none",
+            lineStyle: { color: theme.border2, type: "solid", width: 1 },
+            label: {
+              show: true,
+              position: "insideStartTop",
+              formatter: "Now",
+              color: theme.muted,
+              fontSize: 10,
+            },
+            data: [{ xAxis: dividerMs }],
+          },
+        },
+        {
+          name: "Forecast",
+          type: "line",
+          smooth: 0.2,
+          showSymbol: false,
+          data: forecast,
+          lineStyle: { width: 2.2, color: "#7c3aed", type: [6, 5] },
+          itemStyle: { color: "#7c3aed" },
+          z: 4,
+        },
+      ],
+    };
+  };
+}
+
 export function buildMiniTrend(series: number[], color: string): ChartBuilder {
   return (theme) => ({
     grid: { left: 2, right: 2, top: 6, bottom: 4 },

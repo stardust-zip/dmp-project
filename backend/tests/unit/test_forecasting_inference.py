@@ -134,7 +134,7 @@ def test_forecast_for_building_recursive(monkeypatch):
     assert all(np.isfinite(p["forecast"]) and p["forecast"] >= 0 for p in future_pts)
     # Future timestamps are contiguous hourly steps.
     future_ts = [pd.Timestamp(p["timestamp"]) for p in future_pts]
-    diffs = (pd.Series(future_ts).diff().dropna()).unique()
+    diffs = pd.unique(pd.Series(future_ts).diff().dropna())
     assert len(diffs) == 1 and diffs[0] == pd.Timedelta(hours=1)
 
     # Overlay: first timestamp with BOTH actual+forecast == input_start + 168h + 24h.
@@ -186,7 +186,7 @@ def test_forecast_for_building_no_production_model(monkeypatch):
     )
     input_start = pd.Timestamp("2017-01-01 00:00", tz="UTC")
     input_end = input_start + pd.Timedelta(hours=400)
-    with pytest.raises_compat(ForecastError) as exc:
+    with pytest.raises(ForecastError) as exc:
         forecast_for_building(
             db=None,
             building_id="B0",
@@ -196,10 +196,3 @@ def test_forecast_for_building_no_production_model(monkeypatch):
             forecast_hours=24,
         )
     assert exc.value.status_code == 404
-
-
-# `pytest.raises` referenced indirectly so the import stays explicit and obvious.
-def pytest_raises_compat(exc):
-    import pytest
-
-    return pytest.raises(exc)

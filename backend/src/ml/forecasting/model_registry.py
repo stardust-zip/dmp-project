@@ -71,6 +71,11 @@ class ForecastingMlflowRegistry:
             pipeline,
             artifact_path="model",
             registered_model_name=MODEL_NAME,
+            # MLflow 3.x defaults to the `skops` flavor, which refuses to
+            # serialize sklearn pipelines referencing `numpy.dtype` (an
+            # "untrusted type"). Use cloudpickle (the historical default) so
+            # logging + loading both succeed. Inference loads via the same flavor.
+            serialization_format=mlflow.sklearn.SERIALIZATION_FORMAT_CLOUDPICKLE,
         )
 
         versions = self._client.get_latest_versions(MODEL_NAME, stages=["None"])

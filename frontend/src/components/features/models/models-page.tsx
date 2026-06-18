@@ -51,6 +51,12 @@ const DATA_SOURCE_OPTIONS: Array<{ value: TrainingDataSource; label: string }> =
   { value: "db", label: "Database" },
 ];
 
+const FORECAST_ALGORITHM_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "xgboost", label: "XGBoost" },
+  { value: "lightgbm", label: "LightGBM" },
+  { value: "linear_regression", label: "Linear Regression" },
+];
+
 const LOCATION_INDEX_LIMIT = 1000;
 const MIN_TRAINING_DAYS = 30;
 
@@ -281,6 +287,8 @@ export function ModelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [modelTask, setModelTask] = useState<ModelTask>("prediction");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
+  const [forecastAlgorithm, setForecastAlgorithm] = useState("xgboost");
+  const [forecastHorizon, setForecastHorizon] = useState(24);
   const [locationId, setLocationId] = useState("");
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [locationQuery, setLocationQuery] = useState("");
@@ -524,10 +532,11 @@ export function ModelsPage() {
   const selectedMetricsKey = selectedMetrics.join(",");
   const selectedTaskLabel = MODEL_TASK_OPTIONS.find((option) => option.value === modelTask)?.label ?? modelTask;
   const trainingTaskImplemented =
-    modelTask === "prediction" || modelTask === "anomaly_detection";
+    modelTask === "prediction" || modelTask === "anomaly_detection" || modelTask === "forecasting";
   const metricSelectionValid =
-    modelTask !== "prediction" || selectedMetrics.length === 1;
+    modelTask === "prediction" || modelTask === "forecasting" ? selectedMetrics.length === 1 : true;
   const isAnomalyDetection = modelTask === "anomaly_detection";
+  const isForecasting = modelTask === "forecasting";
   const validationInputReady = isAnomalyDetection
     ? Boolean(startDate && endDate)
     : Boolean(locationId.trim() && selectedMetrics.length && startDate && endDate);
@@ -543,8 +552,22 @@ export function ModelsPage() {
       time_range_end: isoFromDateInput(endDate, true),
       model_task: modelTask,
       data_source: dataSource,
+      ...(isForecasting
+        ? { algorithm: forecastAlgorithm, forecast_horizon_hours: forecastHorizon }
+        : {}),
     }),
-    [dataSource, endDate, isAnomalyDetection, locationId, modelTask, selectedMetrics, startDate],
+    [
+      dataSource,
+      endDate,
+      forecastAlgorithm,
+      forecastHorizon,
+      isAnomalyDetection,
+      isForecasting,
+      locationId,
+      modelTask,
+      selectedMetrics,
+      startDate,
+    ],
   );
   const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && dateRangeValid && !submitting && !validationLoading && trainingValidation?.valid !== false;
 
@@ -1086,6 +1109,27 @@ export function ModelsPage() {
                     </span>
                   )}
                 </Field>
+                {isForecasting && (
+                  <>
+                    <Field label="Algorithm">
+                      <Select value={forecastAlgorithm} onChange={setForecastAlgorithm} options={FORECAST_ALGORITHM_OPTIONS} />
+                    </Field>
+                    <Field label="Forecast horizon (hours)">
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        max={168}
+                        value={forecastHorizon}
+                        onChange={(event) =>
+                          setForecastHorizon(
+                            Math.max(1, Math.min(168, Number(event.target.value) || 24)),
+                          )
+                        }
+                      />
+                    </Field>
+                  </>
+                )}
               </div>
               {!trainingTaskImplemented ? (
                 <div className="training-validation is-invalid">
@@ -1100,7 +1144,7 @@ export function ModelsPage() {
               ) : !metricSelectionValid ? (
                 <div className="training-validation is-invalid">
                   <Icon name="alert" />
-                  <span>Prediction training requires exactly one metric per model.</span>
+                  <span>{selectedTaskLabel} training requires exactly one metric per model.</span>
                 </div>
               ) : (
                 <TrainingValidationPanel

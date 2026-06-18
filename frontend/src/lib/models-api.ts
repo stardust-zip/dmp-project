@@ -135,6 +135,10 @@ export interface TrainModelPayload {
   model_task: ModelTask;
   data_source: TrainingDataSource;
   csv_path?: string | null;
+  /** Forecasting only: linear_regression / xgboost / lightgbm. */
+  algorithm?: string | null;
+  /** Forecasting only: direct forecast horizon in hours (defines the model). */
+  forecast_horizon_hours?: number;
 }
 
 export interface TrainModelResponse {
@@ -405,6 +409,38 @@ export interface AnomalyBackfillResponse {
 
 export function backfillAnomalyInference(payload: AnomalyBackfillPayload, signal?: AbortSignal) {
   return apiPost<AnomalyBackfillResponse>("/api/v1/models/anomaly/backfill", payload, signal);
+}
+
+export interface ForecastVsActualPoint {
+  timestamp: string;
+  actual: number | null;
+  forecast: number | null;
+}
+
+export interface ForecastVsActualResponse {
+  building_id: string;
+  site_id?: string | null;
+  metric_type: string;
+  horizon_hours: number;
+  model_run_id: string;
+  input_start: string;
+  input_end: string;
+  forecast_hours: number;
+  divider_timestamp: string;
+  points: ForecastVsActualPoint[];
+}
+
+export interface ForecastGeneratePayload {
+  building_id: string;
+  metric_type: string;
+  input_start: string;
+  input_end: string;
+  forecast_hours: number;
+}
+
+/** Generate a real future forecast (sync) and overlay it on recent actuals. */
+export function generateForecastVsActual(payload: ForecastGeneratePayload, signal?: AbortSignal) {
+  return apiPost<ForecastVsActualResponse>("/api/v1/forecast/vs-actual", payload, signal);
 }
 
 export async function downloadModelFile(

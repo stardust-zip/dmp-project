@@ -1,177 +1,314 @@
 "use client";
 
-import { useState } from "react";
-import { buildForecastChart, buildMiniTrend, EChart } from "@/components/common/charts";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { buildForecastVsActualChart, EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
-import { Card, Select, Spinner, toneStyle } from "@/components/common/primitives";
-import { BUILDINGS, FC_KPIS, FORECAST, MODEL_PERF, PERF_TREND } from "@/lib/mock-data";
+import { Card, Field, Select, Spinner } from "@/components/common/primitives";
 import { fmt } from "@/lib/format";
+import { useAuth } from "@/components/auth/auth-provider";
+import {
+  generateForecastVsActual,
+  getLocationOptions,
+  getMetricOptions,
+  type ForecastVsActualResponse,
+  type LocationOption,
+  type MetricOption,
+} from "@/lib/models-api";
 
-type Horizon = "day" | "week" | "month";
+const FORECAST_LENGTH_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "24", label: "1 day" },
+  { value: "48", label: "2 days" },
+  { value: "72", label: "3 days" },
+  { value: "168", label: "7 days" },
+];
 
-function FcKpiCard({ c }: { c: (typeof FC_KPIS)[number] }) {
-  const positive = (c.delta ?? 0) > 0;
-  const good = c.invertGood ? !positive : positive;
-  return (
-    <div className="kpi">
-      <div className="kpi-top">
-        <span className="kpi-label">{c.label}</span>
-        <span className="kpi-ic" style={toneStyle(c.tone)}>
-          <Icon name={c.icon} />
-        </span>
-      </div>
-      <div className="row" style={{ alignItems: "baseline", gap: 0 }}>
-        <span className="kpi-val" style={{ fontSize: c.key === "model" ? 21 : "var(--kpi-val)" }}>{c.value}</span>
-        {c.unit && <span className="kpi-unit">{c.unit}</span>}
-      </div>
-      <div className="kpi-foot">
-        {c.delta != null && (
-          <span className={`delta ${good ? "down" : "up"}`}>
-            <Icon name={positive ? "arrowUp" : "arrowDown"} style={{ width: 12, height: 12 }} />
-            {positive ? "+" : ""}{c.delta}{c.key === "mape" ? " pts" : c.unit === "%" ? "%" : c.key === "model" ? "" : "%"}
-          </span>
-        )}
-        {c.delta != null && <span style={{ color: "var(--muted-2)" }}>.</span>}
-        <span>{c.text || c.sub}</span>
-      </div>
-    </div>
-  );
+const MIN_INPUT_DAYS = 7; // 168h needed for lag/rolling-168h features
+
+function defaultInputStart() {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - 14);
+  return date.toISOString().slice(0, 10);
 }
 
-function ModelPerfCard({ m }: { m: (typeof MODEL_PERF)[number] }) {
-  const color = m.tone === "violet" ? "#7c3aed" : m.tone === "green" ? "var(--green)" : "var(--accent-600)";
-  const series = PERF_TREND[m.key];
-  return (
-    <div className="card" style={{ padding: 0 }}>
-      <div style={{ padding: "14px 16px 8px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <div style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 550 }}>{m.label}</div>
-            <div style={{ fontSize: 11, color: "var(--muted-2)" }}>{m.desc}</div>
-          </div>
-          <span className={`delta ${m.delta < 0 ? "down" : "up"}`} style={{ fontSize: 11 }}>
-            <Icon name={m.delta < 0 ? "arrowDown" : "arrowUp"} style={{ width: 11, height: 11 }} />
-            {m.delta}{m.unit === "%" ? "pts" : "%"}
-          </span>
-        </div>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 0, marginTop: 8 }}>
-          <span className="kpi-val" style={{ fontSize: 24 }}>{m.value}</span>
-          <span className="kpi-unit">{m.unit}</span>
-        </div>
-      </div>
-      <EChart build={buildMiniTrend(series, color)} deps={[]} themeKey={m.key} height={44} />
-    </div>
-  );
+function defaultInputEnd() {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function toIsoUtc(date: string, endOfDay = false) {
+  return `${date}T${endOfDay ? "23:59:59" : "00:00:00"}Z`;
+}
+
+function optionLabel(options: Array<{ id?: string; value?: string; name?: string; label?: string }>, id: string) {
+  const match = options.find((option) => (option.id ?? option.value) === id);
+  return match?.name ?? match?.label ?? id;
 }
 
 export function ForecastPage() {
-  const [building, setBuilding] = useState("all");
-  const [horizon, setHorizon] = useState<Horizon>("week");
-  const [toast, setToast] = useState<string | null>(null);
-  const rows = FORECAST[horizon];
+  const { session } = useAuth();
+  const user = session?.user;
 
-  const showToast = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 2200);
-  };
+  const [sites, setSites] = useState<LocationOption[]>([]);
+  const [buildings, setBuildings] = useState<LocationOption[]>([]);
+  const [metrics, setMetrics] = useState<MetricOption[]>([]);
+  const [optionsLoading, setOptionsLoading] = useState(true);
+
+  const [siteId, setSiteId] = useState("");
+  const [buildingId, setBuildingId] = useState("");
+  const [metricType, setMetricType] = useState("electricity");
+  const [inputStart, setInputStart] = useState(defaultInputStart());
+  const [inputEnd, setInputEnd] = useState(defaultInputEnd());
+  const [forecastHours, setForecastHours] = useState("48");
+
+  const [result, setResult] = useState<ForecastVsActualResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load accessible sites + metrics once.
+  useEffect(() => {
+    const controller = new AbortController();
+    setOptionsLoading(true);
+    Promise.all([
+      getLocationOptions({ locationType: "site" }, controller.signal),
+      getMetricOptions(controller.signal),
+    ])
+      .then(([siteData, metricData]) => {
+        setSites(siteData.locations);
+        setMetrics(metricData.metrics);
+        if (siteData.locations[0]) setSiteId(siteData.locations[0].id);
+        if (metricData.metrics[0]) setMetricType(metricData.metrics[0].id);
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          setError(err instanceof Error ? err.message : "Unable to load forecast options.");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setOptionsLoading(false);
+      });
+    return () => controller.abort();
+  }, []);
+
+  // Load buildings whenever the selected site changes.
+  useEffect(() => {
+    if (!siteId) {
+      setBuildings([]);
+      setBuildingId("");
+      return;
+    }
+    const controller = new AbortController();
+    getLocationOptions({ parentId: siteId, locationType: "building" }, controller.signal)
+      .then((data) => {
+        setBuildings(data.locations);
+        setBuildingId(data.locations[0]?.id ?? "");
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          setBuildings([]);
+          setBuildingId("");
+          setError(err instanceof Error ? err.message : "Unable to load buildings for this site.");
+        }
+      });
+    return () => controller.abort();
+  }, [siteId]);
+
+  const inputDays = useMemo(() => {
+    if (!inputStart || !inputEnd) return 0;
+    return Math.round((new Date(inputEnd).getTime() - new Date(inputStart).getTime()) / 86_400_000);
+  }, [inputStart, inputEnd]);
+
+  const canGenerate =
+    !optionsLoading &&
+    Boolean(buildingId && metricType && inputStart && inputEnd && inputDays >= MIN_INPUT_DAYS) &&
+    !loading;
+
+  const onGenerate = useCallback(async () => {
+    if (!buildingId || !metricType) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const response = await generateForecastVsActual({
+        building_id: buildingId,
+        metric_type: metricType,
+        input_start: toIsoUtc(inputStart),
+        input_end: toIsoUtc(inputEnd, true),
+        forecast_hours: Number(forecastHours),
+      });
+      setResult(response);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Forecast generation failed.");
+    } finally {
+      setLoading(false);
+    }
+  }, [buildingId, metricType, inputStart, inputEnd, forecastHours]);
+
+  const actualCount = result?.points.filter((point) => point.actual != null).length ?? 0;
+  const forecastCount = result?.points.filter((point) => point.forecast != null).length ?? 0;
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <h1 className="page-title">Forecasting</h1>
-          <p className="page-sub">Forecast future electricity consumption and support capacity planning</p>
+          <p className="page-sub">Run the production forecasting model to predict future consumption for a building.</p>
         </div>
-        <div className="page-head-actions">
-          <div style={{ width: 168 }}>
-            <Select value={building} onChange={setBuilding} options={[{ value: "all", label: "All Buildings" }, ...BUILDINGS.map((entry) => ({ value: entry.id, label: entry.name }))]} />
-          </div>
-          <div className="seg">
-            {[
-              { value: "day", label: "Next Day" },
-              { value: "week", label: "Next Week" },
-              { value: "month", label: "Next Month" },
-            ].map((option) => (
-              <button key={option.value} className={horizon === option.value ? "on" : ""} onClick={() => setHorizon(option.value as Horizon)}>
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid forecast-kpi-grid" style={{ marginBottom: "var(--gap)" }}>
-        {FC_KPIS.map((kpi) => <FcKpiCard key={kpi.key} c={kpi} />)}
       </div>
 
       <Card
-        title="Forecast Visualization"
+        title="Generate Forecast"
         icon="trend"
         iconTone="violet"
-        sub="Historical consumption with forecast and 95% confidence interval"
-        actions={
-          <div className="legend">
-            <span className="leg" style={{ color: "var(--accent-600)" }}><i style={{ background: "var(--accent-600)" }} /> Historical</span>
-            <span className="leg" style={{ color: "#7c3aed" }}><i className="dash" style={{ color: "#7c3aed" }} /> Forecast</span>
-            <span className="leg"><i className="area" style={{ background: "rgba(124,58,237,.3)" }} /> 95% Interval</span>
+        sub="Pick a building, a window of recent actuals (≥ 7 days), and how far ahead to forecast."
+        style={{ marginBottom: "var(--gap)" }}
+      >
+        <div className="train-model-form">
+          <Field label="Site">
+            <Select
+              value={siteId}
+              onChange={setSiteId}
+              disabled={optionsLoading}
+              options={sites.map((site) => ({ value: site.id, label: site.name || site.id }))}
+            />
+          </Field>
+          <Field label="Building">
+            <Select
+              value={buildingId}
+              onChange={setBuildingId}
+              disabled={optionsLoading || !siteId}
+              options={buildings.map((building) => ({ value: building.id, label: building.name || building.id }))}
+            />
+          </Field>
+          <Field label="Metric">
+            <Select
+              value={metricType}
+              onChange={setMetricType}
+              options={metrics.map((metric) => ({ value: metric.id, label: metric.id }))}
+            />
+          </Field>
+          <Field label="Input window (recent actuals)">
+            <div className="date-range-row">
+              <div className="date-range-segment">
+                <Icon name="calendar" />
+                <div className="date-range-segment-body">
+                  <span>From</span>
+                  <input type="date" value={inputStart} onChange={(event) => setInputStart(event.target.value)} />
+                </div>
+              </div>
+              <div className="date-range-segment">
+                <Icon name="calendar" />
+                <div className="date-range-segment-body">
+                  <span>To</span>
+                  <input type="date" value={inputEnd} onChange={(event) => setInputEnd(event.target.value)} />
+                </div>
+              </div>
+            </div>
+            {inputDays > 0 && inputDays < MIN_INPUT_DAYS && (
+              <span className="date-range-error">
+                <Icon name="alert" />
+                At least {MIN_INPUT_DAYS} days of actuals are required ({inputDays} selected).
+              </span>
+            )}
+          </Field>
+          <Field label="Forecast length">
+            <Select value={forecastHours} onChange={setForecastHours} options={FORECAST_LENGTH_OPTIONS} />
+          </Field>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+          <button className="btn btn-primary" type="button" onClick={onGenerate} disabled={!canGenerate}>
+            <Icon name={loading ? "refresh" : "play"} className={loading ? "spin" : undefined} />
+            <span>{loading ? "Forecasting..." : "Generate Forecast"}</span>
+          </button>
+        </div>
+        {user && (
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 8 }}>
+            Signed in as <b>{user.roleLabel}</b>. Buildings are limited to your assigned sites.
           </div>
+        )}
+      </Card>
+
+      {error && (
+        <Card title="Forecast Error" icon="alert" style={{ marginBottom: "var(--gap)" }}>
+          <div className="training-validation is-invalid">
+            <Icon name="alert" />
+            <span>{error}</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted-2)", marginTop: 8 }}>
+            If no production forecasting model exists yet, an AI Engineer must train one first from the Models page.
+          </div>
+        </Card>
+      )}
+
+      <Card
+        title="Forecast vs Actual"
+        icon="trend"
+        iconTone="violet"
+        sub={
+          result
+            ? `${optionLabel(buildings, result.building_id)} · ${result.metric_type} · horizon ${result.horizon_hours}h · forecasting ${result.forecast_hours}h ahead`
+            : "Generate a forecast to see actual vs predicted consumption."
+        }
+        actions={
+          result ? (
+            <div className="legend">
+              <span className="leg" style={{ color: "var(--accent-600)" }}><i style={{ background: "var(--accent-600)" }} /> Actual</span>
+              <span className="leg" style={{ color: "#7c3aed" }}><i className="dash" style={{ color: "#7c3aed" }} /> Forecast</span>
+            </div>
+          ) : null
         }
         style={{ marginBottom: "var(--gap)" }}
       >
-        <EChart build={buildForecastChart(horizon)} deps={[horizon]} themeKey={horizon} height={324} />
+        {loading ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: 48 }}>
+            <Spinner size={22} />
+          </div>
+        ) : result ? (
+          <>
+            <EChart
+              build={buildForecastVsActualChart(result.points, result.divider_timestamp)}
+              deps={[result]}
+              themeKey={`forecast-${result.building_id}`}
+              height={340}
+            />
+            <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 12, fontSize: 12, color: "var(--muted)" }}>
+              <span><b className="mono" style={{ color: "var(--ink-2)" }}>{actualCount}</b> actual points</span>
+              <span><b className="mono" style={{ color: "var(--ink-2)" }}>{forecastCount}</b> forecast points</span>
+              <span>model run <b className="mono" style={{ color: "var(--ink-2)" }}>{result.model_run_id.slice(0, 8)}</b></span>
+            </div>
+          </>
+        ) : (
+          <div className="empty" style={{ padding: 48, textAlign: "center", color: "var(--muted-2)" }}>
+            No forecast yet. Configure the inputs above and click <b>Generate Forecast</b>.
+          </div>
+        )}
       </Card>
 
-      <div className="grid forecast-detail-grid" style={{ marginBottom: "var(--gap)" }}>
-        <Card title="Forecast Detail" icon="table" sub={`${rows.length}-day projection with confidence bounds`} actions={<span className="tag-cap">{horizon === "day" ? "Next Day" : horizon === "week" ? "Next 7 Days" : "Next 30 Days"}</span>} noBody>
+      {result && result.points.some((point) => point.forecast != null) && (
+        <Card title="Forecast Detail" icon="table" sub="Future hourly forecast values" noBody>
           <div className="table-scroll" style={{ maxHeight: 320 }}>
             <table className="tbl">
               <thead>
                 <tr>
-                  <th>Date</th>
-                  <th style={{ textAlign: "right" }}>Forecast (kWh)</th>
-                  <th style={{ textAlign: "right" }}>Lower Bound</th>
-                  <th style={{ textAlign: "right" }}>Upper Bound</th>
-                  <th style={{ textAlign: "right" }}>Interval</th>
+                  <th>Timestamp</th>
+                  <th style={{ textAlign: "right" }}>Forecast ({result.metric_type})</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr key={row.t}>
-                    <td className="t-strong">{new Date(row.t).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</td>
-                    <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmt(row.yhat)}</td>
-                    <td className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{fmt(row.lower)}</td>
-                    <td className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{fmt(row.upper)}</td>
-                    <td className="mono" style={{ textAlign: "right", color: "var(--muted-2)", fontSize: 11.5 }}>+/-{fmt((row.upper - row.lower) / 2)}</td>
-                  </tr>
-                ))}
+                {result.points
+                  .filter((point) => point.forecast != null && new Date(point.timestamp).getTime() > new Date(result.divider_timestamp).getTime())
+                  .map((point) => (
+                    <tr key={point.timestamp}>
+                      <td className="t-strong">
+                        {new Date(point.timestamp).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{fmt(point.forecast ?? 0)}</td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>
         </Card>
-
-        <Card title="Model Performance" icon="cpu" iconTone="violet" sub="Accuracy metrics - last 14 evaluation windows">
-          <div className="grid" style={{ gap: 12 }}>
-            {MODEL_PERF.map((metric) => <ModelPerfCard key={metric.key} m={metric} />)}
-          </div>
-        </Card>
-      </div>
-
-      <Card title="Export & Reports" icon="download" sub="Download forecast data and model reports for stakeholders">
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-          <button className="btn" onClick={() => showToast("Exporting forecast.csv...")}><Icon name="doc" /> Export CSV</button>
-          <button className="btn" onClick={() => showToast("Exporting forecast.xlsx...")}><Icon name="excel" /> Export Excel</button>
-          <button className="btn btn-primary" onClick={() => showToast("Generating Forecast Report (PDF)...")}><Icon name="download" /> Download Forecast Report</button>
-          <div className="divider" style={{ margin: "0 4px" }} />
-          <div style={{ fontSize: 11.5, color: "var(--muted)", display: "flex", alignItems: "center", gap: 7 }}>
-            <Icon name="cpu" style={{ width: 14, height: 14 }} /> Model <b className="mono" style={{ color: "var(--ink-2)" }}>v2.4.1</b> - TFT - last retrained 2 days ago
-          </div>
-        </div>
-      </Card>
-
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--ink)", color: "var(--surface)", padding: "11px 18px", borderRadius: 10, fontSize: 13, fontWeight: 550, boxShadow: "var(--shadow-lg)", zIndex: 60, display: "flex", alignItems: "center", gap: 9 }}>
-          <Spinner size={14} /> {toast}
-        </div>
       )}
     </div>
   );
