@@ -192,6 +192,8 @@ def train_model_task(
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     selected_algorithm = algorithm_for_task(ModelTask(request.model_task))
+    if getattr(request, "algorithm", None):
+        selected_algorithm = MLAlgorithm(request.algorithm)
     model_task_value = ModelTask(request.model_task).value
     mlflow.set_experiment(f"dmp_energy_{model_task_value}")
 
@@ -292,6 +294,22 @@ def train_model_task(
                     if isinstance(value, (int, float)) and not isinstance(value, bool)
                 }
                 message_prefix = "Anomaly detection"
+            elif ModelTask(request.model_task) == ModelTask.Forecasting:
+                from src.ml.forecasting.training import train_forecasting_model
+
+                forecast_result = train_forecasting_model(
+                    request=request,
+                    db=db,
+                    mlflow_run=run,
+                    pipeline_log=pipeline_log,
+                    append_log=lambda msg: _append_terminal_log(db, pipeline_log, msg),
+                )
+                metrics = {
+                    key: float(value)
+                    for key, value in forecast_result.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
+                message_prefix = "Forecasting"
             else:
                 _append_terminal_log(
                     db,

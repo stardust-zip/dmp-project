@@ -427,7 +427,7 @@ async def trigger_training(
             detail=training_error_detail(validation),
         )
 
-    selected_algorithm = algorithm_for_task(ModelTask(request.model_task))
+    selected_algorithm = request.algorithm or algorithm_for_task(ModelTask(request.model_task))
     if (
         ModelTask(request.model_task) == ModelTask.Prediction
         and len(request.metrics) != 1

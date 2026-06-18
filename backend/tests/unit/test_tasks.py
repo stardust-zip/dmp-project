@@ -45,9 +45,9 @@ def test_registered_model_name_separates_sites_and_metrics():
     )
 
 
-def test_prediction_uses_random_forest_without_changing_other_tasks():
+def test_algorithm_for_task_returns_expected_defaults():
     assert algorithm_for_task(ModelTask.Prediction) == MLAlgorithm.RandomForest
-    assert algorithm_for_task(ModelTask.Forecasting) == MLAlgorithm.RandomForest
+    assert algorithm_for_task(ModelTask.Forecasting) == MLAlgorithm.XGBoost
     assert algorithm_for_task(ModelTask.AnomalyDetection) == MLAlgorithm.LightGBM
 
 

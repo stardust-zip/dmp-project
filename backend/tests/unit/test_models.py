@@ -186,7 +186,13 @@ def test_trigger_training_rejects_multi_metric_prediction(mock_delay):
     mock_delay.assert_not_called()
 
 
-def test_trigger_training_rejects_client_selected_algorithm():
+@patch("src.api.v1.endpoints.models.train_model_task.delay")
+def test_trigger_training_forecasting_accepts_algorithm_selection(mock_delay):
+    class MockTask:
+        id = "mock-fc-task-001"
+
+    mock_delay.return_value = MockTask()
+
     payload = {
         "site_id": "SiteA",
         "metrics": ["electricity"],
@@ -199,7 +205,12 @@ def test_trigger_training_rejects_client_selected_algorithm():
 
     response = client.post("/api/v1/models/train", json=payload)
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert response.json()["model_task"] == "forecasting"
+    assert response.json()["algorithm"] == "lightgbm"
+    training_request = mock_delay.call_args.kwargs["training_request"]
+    assert training_request["algorithm"] == "lightgbm"
+    assert training_request["model_task"] == "forecasting"
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")

@@ -34,6 +34,7 @@ class MLAlgorithm(str, Enum):
     RandomForest = "random_forest"
     LinearRegression = "linear_regression"
     LightGBM = "lightgbm"
+    XGBoost = "xgboost"
 
 
 class BaseSchema(BaseModel):
@@ -184,6 +185,22 @@ class ModelTrainingRequest(BaseSchema):
     csv_path: str | None = Field(
         default=None,
         description="Optional CSV path when data_source is csv.",
+    )
+    algorithm: Optional[MLAlgorithm] = Field(
+        default=None,
+        description="Forecasting: algorithm to train (linear_regression/xgboost/lightgbm). "
+        "Ignored by other tasks. Defaults to xgboost when omitted.",
+    )
+    forecast_horizon_hours: int = Field(
+        default=24,
+        ge=1,
+        le=168,
+        description="Forecasting: direct forecast horizon in hours. "
+        "A forecasting model is horizon-specific; this value is logged to MLflow.",
+    )
+    weather_mode: str = Field(
+        default="none",
+        description="Forecasting: weather feature mode. MVP supports 'none' only.",
     )
 
     @field_validator("metrics")
@@ -409,6 +426,46 @@ class ForecastResponse(BaseModel):
     metric_type: str
     model_version_used: str
     forecast: List[ForecastDataPoint]
+
+
+class ForecastGenerateRequest(BaseSchema):
+    """Operator request: forecast the FUTURE for one building.
+
+    ``input_start``/``input_end`` bound a window of *actual* telemetry (>= 168h,
+    needed for lag/rolling-168h features). ``forecast_hours`` is how many hours
+    of the future (after ``input_end``) to predict.
+    """
+
+    building_id: str = Field(..., min_length=1)
+    metric_type: str = Field("electricity", min_length=1)
+    input_start: datetime
+    input_end: datetime
+    forecast_hours: int = Field(24, ge=1, le=168)
+
+
+class ForecastVsActualPoint(BaseModel):
+    """One timestamp on the merged actual-vs-forecast timeline.
+
+    Either side may be null: the recent-past tail has only ``actual`` before the
+    overlay starts, the far future has only ``forecast``.
+    """
+
+    timestamp: datetime
+    actual: Optional[float] = None
+    forecast: Optional[float] = None
+
+
+class ForecastVsActualResponse(BaseSchema):
+    building_id: str
+    site_id: Optional[str] = None
+    metric_type: str
+    horizon_hours: int
+    model_run_id: str
+    input_start: datetime
+    input_end: datetime
+    forecast_hours: int
+    divider_timestamp: datetime
+    points: List[ForecastVsActualPoint]
 
 
 # Prediction

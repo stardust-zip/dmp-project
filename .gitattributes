@@ -1,0 +1,5 @@
+# Shell scripts must always use LF line endings.
+# Windows checkouts with core.autocrlf=true otherwise convert them to CRLF,
+# which breaks the shebang when Docker COPYs the script into a Linux image
+# (exec: no such file or directory).
+*.sh text eol=lf

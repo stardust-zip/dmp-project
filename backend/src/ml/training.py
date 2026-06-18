@@ -76,7 +76,7 @@ def legacy_training_request(
 
 def algorithm_for_task(model_task: ModelTask) -> MLAlgorithm:
     return {
-        ModelTask.Forecasting: MLAlgorithm.RandomForest,
+        ModelTask.Forecasting: MLAlgorithm.XGBoost,
         ModelTask.AnomalyDetection: MLAlgorithm.LightGBM,
         ModelTask.Prediction: MLAlgorithm.RandomForest,
     }[model_task]
