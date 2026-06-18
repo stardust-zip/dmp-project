@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
+import { Modal } from "@/components/common/primitives";
+import { SettingsContent } from "@/components/features/settings/settings-page";
 import { MAIN_NAV, hasAnyRole } from "@/lib/rbac";
 import { useSettingsStore } from "@/lib/settings-store";
 
@@ -12,7 +14,7 @@ function routeLabel(pathname: string) {
   if (pathname.startsWith("/anomaly")) return "Anomaly Detection";
   if (pathname.startsWith("/forecast")) return "Forecasting";
   if (pathname.startsWith("/models")) return "AI Engineering";
-  if (pathname.startsWith("/assets")) return "Assets";
+  if (pathname.startsWith("/assets")) return "Dashboard";
   if (pathname.startsWith("/users")) return "User Management";
   if (pathname.startsWith("/settings")) return "Settings";
   return "Dashboard";
@@ -20,10 +22,10 @@ function routeLabel(pathname: string) {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
   const { session, signOut } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const meta = useMemo(() => routeLabel(pathname), [pathname]);
   const user = session?.user;
   const navItems = useMemo(() => MAIN_NAV.filter((item) => hasAnyRole(user, item.roles)), [user]);
@@ -78,14 +80,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           })}
         </nav>
 
-        <div className="sb-section">Workspace</div>
-        <nav className="sb-nav">
-          <Link className={`sb-item${pathname === "/settings" ? " active" : ""}`} href="/settings" title="Settings">
-            <Icon name="settings" />
-            <span>Settings</span>
-          </Link>
-        </nav>
-
         <div className="sb-foot">
           <i className="sb-dot" />
           <span className="sb-foot-txt">
@@ -112,7 +106,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </button>
           <div className="divider" />
 
-          <div style={{ position: "relative" }} onClick={(event) => event.stopPropagation()}>
+          <div className="account-menu-wrap" onClick={(event) => event.stopPropagation()}>
             <div
               className="profile"
               onClick={() => setProfileOpen((open) => !open)}
@@ -125,31 +119,36 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Icon name="chevDown" style={{ width: 14, height: 14, color: "var(--muted)" }} />
             </div>
             {profileOpen && (
-              <div style={{ position: "absolute", top: 44, right: 0, width: 210, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "var(--shadow-lg)", padding: 5, zIndex: 40 }}>
-                <div style={{ padding: "8px 11px 9px", borderBottom: "1px solid var(--border)", marginBottom: 4 }}>
-                  <div style={{ fontWeight: 650, fontSize: 13 }}>{user?.fullName ?? "User"}</div>
-                  <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{user?.email}</div>
-                  <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{user?.roleLabel}</div>
+              <div className="account-menu">
+                <div className="account-menu-head">
+                  <div className="account-menu-name">{user?.fullName ?? "User"}</div>
+                  <div>{user?.email}</div>
+                  <div>{user?.roleLabel}</div>
                 </div>
-                {[
-                  ["settings", "Preferences", "/settings"],
-                  ["help", "Help & docs", "https://github.com/stardust-zip/dmp-project"],
-                ].map(([icon, label, href]) => (
-                  <button
-                    key={label}
-                    className="sb-item"
-                    style={{ height: 32, fontSize: 12.5 }}
-                    onClick={() => {
-                      if (href !== "#") router.push(href);
-                      setProfileOpen(false);
-                    }}
-                  >
-                    <Icon name={icon as "users" | "settings" | "help"} />
-                    <span>{label}</span>
-                  </button>
-                ))}
-                <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 4 }}>
-                  <button className="sb-item" style={{ height: 32, fontSize: 12.5, color: "var(--red)" }} onClick={signOut}>
+                <button
+                  className="account-menu-item"
+                  type="button"
+                  onClick={() => {
+                    setProfileOpen(false);
+                    setSettingsOpen(true);
+                  }}
+                >
+                  <Icon name="settings" />
+                  <span>Preferences</span>
+                </button>
+                <button
+                  className="account-menu-item"
+                  type="button"
+                  onClick={() => {
+                    window.open("https://github.com/stardust-zip/dmp-project", "_blank", "noopener,noreferrer");
+                    setProfileOpen(false);
+                  }}
+                >
+                  <Icon name="help" />
+                  <span>Help & docs</span>
+                </button>
+                <div className="account-menu-sep">
+                  <button className="account-menu-item danger" type="button" onClick={signOut}>
                     <Icon name="external" />
                     <span>Sign out</span>
                   </button>
@@ -161,6 +160,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <div className="scroll">{children}</div>
       </div>
+      {settingsOpen && (
+        <Modal
+          title="Preferences"
+          description="Tune this workspace without leaving what you were doing."
+          className="settings-modal"
+          onClose={() => setSettingsOpen(false)}
+        >
+          <SettingsContent />
+        </Modal>
+      )}
     </div>
   );
 }

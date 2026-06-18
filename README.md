@@ -171,14 +171,50 @@ After standing up the architecture for the first time, your local PostgreSQL dat
 Run the seeder script through the backend container:
 
 ```bash
-# Quick Seed: Loads lookup tables, metadata, and 1,000 rows per metric for fast local testing
+# Quick Seed: Loads reference data + 1,000 telemetry rows per metric
 docker compose exec backend python -m src.seeder
 
-# Custom Seed: Specify an exact number of rows to load per metric type
+# Custom Seed: Load everything with a specific row cap per metric
 docker compose exec backend python -m src.seeder --limit 5000
 
-# Full Seed: Bypasses the limit and loads the entire historical dataset
+# Full Seed: Loads the entire historical dataset
 docker compose exec backend python -m src.seeder --full
+
+```
+
+### Selective / Phased Seeding
+
+You can seed reference data and telemetry independently, and limit which metrics to load:
+
+```bash
+# Phase 1 — Reference data only (locations, devices, metric types)
+docker compose exec backend python -m src.seeder --phase reference
+
+# Phase 2 — Telemetry: specific metrics, full dataset
+docker compose exec backend python -m src.seeder --phase telemetry \
+    --metrics electricity,water,gas --full
+
+# Tune chunk/batch sizes for memory-constrained environments
+docker compose exec backend python -m src.seeder --full \
+    --chunk-size 5000 --batch-size 5000
+
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--phase` | `all` | `reference` / `telemetry` / `weather` / `all` |
+| `--metrics` | all 8 | Comma-separated: `electricity,water,gas` |
+| `--chunk-size` | 10,000 | CSV rows per pandas chunk (lower = less RAM) |
+| `--batch-size` | 10,000 | DB rows per bulk insert |
+| `--limit` | 1,000 | Dev-mode row cap per metric |
+| `--full` | off | Overrides `--limit` — loads everything |
+
+### Weather data
+
+To seed weather data
+
+```bash
+docker compose exec backend python -m src.seeder --phase weather
 
 ```
 

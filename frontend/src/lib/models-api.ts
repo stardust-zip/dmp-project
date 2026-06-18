@@ -12,6 +12,8 @@ export interface RegisteredModel {
     run_id?: string | null;
     current_stage?: string | null;
     status?: string | null;
+    model_task?: ModelTask | null;
+    tags?: Record<string, string>;
   } | null;
   latest_versions: Array<{
     version: string;
