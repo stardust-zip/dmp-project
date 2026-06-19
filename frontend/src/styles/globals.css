@@ -4777,6 +4777,42 @@ table.tbl tbody tr:last-child td {
     gap: 7px;
 }
 
+.training-mode-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.training-mode-toggle button {
+    display: grid;
+    place-items: center;
+    padding: 9px 18px;
+    border: 0;
+    border-right: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 550;
+    line-height: 1.3;
+    cursor: pointer;
+    transition: background .12s, color .12s;
+}
+
+.training-mode-toggle button:last-child {
+    border-right: 0;
+}
+
+.training-mode-toggle button:hover {
+    background: var(--surface-3);
+    color: var(--ink-2);
+}
+
+.training-mode-toggle button.is-active {
+    background: var(--accent);
+    color: #fff;
+}
+
 .model-combobox {
     position: relative;
     min-width: 0;

@@ -134,18 +134,32 @@ function osmEmbedUrl(point: GeoPoint, zoom = 17) {
 }
 
 function modelMatches(model: RegisteredModel, terms: string[]) {
+  const lowerTerms = terms.filter(Boolean).map((t) => t.toLowerCase());
+  if (!lowerTerms.length) return false;
+
+  // If the model targets a specific building, require an exact match on that building.
+  const tags = { ...(model.tags ?? {}), ...(model.production_version?.tags ?? {}) };
+  const buildingId = tags.building_id?.toLowerCase();
+  if (buildingId) {
+    return lowerTerms.includes(buildingId);
+  }
+  const siteId = tags.site_id?.toLowerCase();
+  if (siteId) {
+    return lowerTerms.includes(siteId);
+  }
+
+  // Fall back to substring match on model name + metadata (global models, legacy).
   const haystack = [
     model.name,
     model.description ?? "",
     model.production_version?.run_id ?? "",
     model.production_version?.model_task ?? "",
-    ...Object.entries(model.production_version?.tags ?? {}).flatMap(([key, value]) => [key, value]),
-    ...Object.entries(model.tags ?? {}).flatMap(([key, value]) => [key, value]),
+    ...Object.entries(tags).flatMap(([key, value]) => [key, value]),
   ]
     .join(" ")
     .toLowerCase();
 
-  return terms.some((term) => term && haystack.includes(term.toLowerCase()));
+  return lowerTerms.some((term) => haystack.includes(term));
 }
 
 function modelTask(model: RegisteredModel) {
@@ -263,8 +277,8 @@ export function AssetsPage() {
     const source = query && mapSearchedLocations ? mapSearchedLocations : locations;
     const filtered = query && !mapSearchedLocations
       ? source.filter((location) =>
-          `${locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : undefined)} ${location.archived ? "archived" : "active"}`.includes(query),
-        )
+        `${locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : undefined)} ${location.archived ? "archived" : "active"}`.includes(query),
+      )
       : source;
 
     return filtered.map((location) => ({ location, point: locationPoint(location) })).slice(0, 10);
@@ -943,58 +957,58 @@ export function AssetsPage() {
           className="asset-modal"
           onClose={closeAssetModal}
         >
-              {activeModal === "site" && (
-                <form className="asset-form" onSubmit={handleCreateSite}>
-                  <Field label="Site ID">
-                    <input className="input" value={siteId} onChange={(event) => setSiteId(event.target.value)} placeholder="Panther" required />
-                  </Field>
-                  <Field label="Name">
-                    <input className="input" value={siteName} onChange={(event) => setSiteName(event.target.value)} placeholder="Panther" required />
-                  </Field>
-                  <Field label="Metadata JSON">
-                    <textarea className="textarea" value={siteMetadata} onChange={(event) => setSiteMetadata(event.target.value)} placeholder='{"timezone":"UTC"}' />
-                  </Field>
-                  {assetFormError && <FormMessage tone="error">{assetFormError}</FormMessage>}
-                  <button
-                    className="btn btn-primary"
-                    type="submit"
-                    disabled={submitting === "site"}
-                  >
-                    <Icon name={submitting === "site" ? "refresh" : "plus"} className={submitting === "site" ? "spin" : undefined} />
-                    <span>{submitting === "site" ? "Creating..." : "Create Site"}</span>
-                  </button>
-                </form>
-              )}
-              {activeModal === "building" && (
-                <form className="asset-form" onSubmit={handleCreateBuilding}>
-                  <Field label="Building ID">
-                    <input className="input" value={buildingId} onChange={(event) => setBuildingId(event.target.value)} placeholder="Panther_lodging_Cora" required />
-                  </Field>
-                  <Field label="Site">
-                    <select className="input" value={buildingSiteId} onChange={(event) => setBuildingSiteId(event.target.value)} required>
-                      <option value="">Select site</option>
-                      {siteOptions.map((site) => (
-                        <option value={site.id} key={site.id}>{site.id}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Name">
-                    <input className="input" value={buildingName} onChange={(event) => setBuildingName(event.target.value)} required />
-                  </Field>
-                  <Field label="Metadata JSON">
-                    <textarea className="textarea" value={buildingMetadata} onChange={(event) => setBuildingMetadata(event.target.value)} />
-                  </Field>
-                  {assetFormError && <FormMessage tone="error">{assetFormError}</FormMessage>}
-                  <button
-                    className="btn btn-primary"
-                    type="submit"
-                    disabled={submitting === "building"}
-                  >
-                    <Icon name={submitting === "building" ? "refresh" : "plus"} className={submitting === "building" ? "spin" : undefined} />
-                    <span>{submitting === "building" ? "Creating..." : "Create Building"}</span>
-                  </button>
-                </form>
-              )}
+          {activeModal === "site" && (
+            <form className="asset-form" onSubmit={handleCreateSite}>
+              <Field label="Site ID">
+                <input className="input" value={siteId} onChange={(event) => setSiteId(event.target.value)} placeholder="Panther" required />
+              </Field>
+              <Field label="Name">
+                <input className="input" value={siteName} onChange={(event) => setSiteName(event.target.value)} placeholder="Panther" required />
+              </Field>
+              <Field label="Metadata JSON">
+                <textarea className="textarea" value={siteMetadata} onChange={(event) => setSiteMetadata(event.target.value)} placeholder='{"timezone":"UTC"}' />
+              </Field>
+              {assetFormError && <FormMessage tone="error">{assetFormError}</FormMessage>}
+              <button
+                className="btn btn-primary"
+                type="submit"
+                disabled={submitting === "site"}
+              >
+                <Icon name={submitting === "site" ? "refresh" : "plus"} className={submitting === "site" ? "spin" : undefined} />
+                <span>{submitting === "site" ? "Creating..." : "Create Site"}</span>
+              </button>
+            </form>
+          )}
+          {activeModal === "building" && (
+            <form className="asset-form" onSubmit={handleCreateBuilding}>
+              <Field label="Building ID">
+                <input className="input" value={buildingId} onChange={(event) => setBuildingId(event.target.value)} placeholder="Panther_lodging_Cora" required />
+              </Field>
+              <Field label="Site">
+                <select className="input" value={buildingSiteId} onChange={(event) => setBuildingSiteId(event.target.value)} required>
+                  <option value="">Select site</option>
+                  {siteOptions.map((site) => (
+                    <option value={site.id} key={site.id}>{site.id}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Name">
+                <input className="input" value={buildingName} onChange={(event) => setBuildingName(event.target.value)} required />
+              </Field>
+              <Field label="Metadata JSON">
+                <textarea className="textarea" value={buildingMetadata} onChange={(event) => setBuildingMetadata(event.target.value)} />
+              </Field>
+              {assetFormError && <FormMessage tone="error">{assetFormError}</FormMessage>}
+              <button
+                className="btn btn-primary"
+                type="submit"
+                disabled={submitting === "building"}
+              >
+                <Icon name={submitting === "building" ? "refresh" : "plus"} className={submitting === "building" ? "spin" : undefined} />
+                <span>{submitting === "building" ? "Creating..." : "Create Building"}</span>
+              </button>
+            </form>
+          )}
         </Modal>
       )}
 

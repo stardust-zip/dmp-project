@@ -4,16 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
 import { ModelDetailModal } from "@/components/features/models/model-detail-modal";
-import { displayModelName, humanizeIdentifier } from "@/lib/format";
+import { displayLocationName, displayModelName, humanizeIdentifier } from "@/lib/format";
 import {
   backfillAnomalyInference,
   cancelPipelineLog,
+  getLocationOptions,
   getMetricOptions,
   getPipelineLogs,
   getRegisteredModels,
   trainModel,
   validateTrainingRequest,
   type AnomalyBackfillPayload,
+  type LocationOption,
   type MetricOption,
   type ModelTask,
   type PipelineLog,
@@ -297,6 +299,11 @@ export function ModelsPage() {
   const [backfillStartDate, setBackfillStartDate] = useState("2017-10-01");
   const [backfillEndDate, setBackfillEndDate] = useState("2017-12-31");
   const [backfillSubmitting, setBackfillSubmitting] = useState(false);
+  const [trainingMode, setTrainingMode] = useState<"all" | "single">("all");
+  const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(null);
+  const [buildingOptions, setBuildingOptions] = useState<LocationOption[]>([]);
+  const [buildingQuery, setBuildingQuery] = useState("");
+  const [buildingsLoading, setBuildingsLoading] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -395,9 +402,64 @@ export function ModelsPage() {
     };
   }, [detailLog, pipelineModalOpen, refreshLogs, submitting]);
 
+  // Load building options when training modal opens in single-building mode
+  useEffect(() => {
+    if (!trainModalOpen || trainingMode !== "single") return;
+
+    const controller = new AbortController();
+    setBuildingsLoading(true);
+    getLocationOptions({ limit: 200 }, controller.signal)
+      .then((data) => setBuildingOptions(data.locations))
+      .catch(() => { })
+      .finally(() => {
+        if (!controller.signal.aborted) setBuildingsLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [trainModalOpen, trainingMode]);
+
+  // Reset building selection when switching to "all buildings" mode
+  useEffect(() => {
+    if (trainingMode === "all") {
+      setSelectedBuildingId(null);
+      setBuildingQuery("");
+    }
+  }, [trainingMode]);
+
   const filteredMetrics = metricOptions
     .filter((metric) => `${metric.id} ${metric.description ?? ""}`.toLowerCase().includes(metricQuery.toLowerCase()))
     .slice(0, 8);
+  const filteredBuildings = useMemo(() => {
+    const query = buildingQuery.trim().toLowerCase();
+    if (!query) return buildingOptions.slice(0, 50);
+    return buildingOptions
+      .filter(
+        (loc) =>
+          loc.id.toLowerCase().includes(query) ||
+          loc.name.toLowerCase().includes(query),
+      )
+      .slice(0, 50);
+  }, [buildingOptions, buildingQuery]);
+  const buildingSelectOptions = useMemo(
+    () =>
+      buildingOptions
+        .filter((loc) => loc.parent_id != null) // buildings only, not sites
+        .map((loc) => ({
+          value: loc.id,
+          label: displayLocationName(loc.name, loc.id),
+        })),
+    [buildingOptions],
+  );
+
+  const metricSelectOptions = useMemo(
+    () =>
+      metricOptions.map((metric) => ({
+        value: metric.id,
+        label: humanizeIdentifier(metric.id),
+      })),
+    [metricOptions],
+  );
+
   const detailModel = models.find((model) => model.name === detailModelName) ?? null;
   const modelMetricOptions = useMemo(() => {
     const metrics = [...new Set(models.map(inferModelMetric).filter((metric) => metric && metric !== "unknown"))].sort((left, right) => left.localeCompare(right));
@@ -434,6 +496,7 @@ export function ModelsPage() {
   const trainingPayload = useMemo<TrainModelPayload>(
     () => ({
       site_id: null,
+      building_id: trainingMode === "single" ? selectedBuildingId : null,
       metrics: isAnomalyDetection ? ["electricity"] : selectedMetrics,
       time_range_start: isoFromDateInput(startDate),
       time_range_end: isoFromDateInput(endDate, true),
@@ -451,11 +514,14 @@ export function ModelsPage() {
       isAnomalyDetection,
       isForecasting,
       modelTask,
+      selectedBuildingId,
       selectedMetrics,
       startDate,
+      trainingMode,
     ],
   );
-  const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && dateRangeValid && !submitting && !validationLoading && trainingValidation?.valid !== false;
+  const buildingSelectionValid = trainingMode === "all" || Boolean(selectedBuildingId);
+  const canTrain = trainingTaskImplemented && metricSelectionValid && validationInputReady && dateRangeValid && buildingSelectionValid && !submitting && !validationLoading && trainingValidation?.valid !== false;
 
   useEffect(() => {
     if (!terminalLogRef.current) return;
@@ -774,23 +840,45 @@ export function ModelsPage() {
                   <Select value={dataSource} onChange={setDataSource} options={DATA_SOURCE_OPTIONS} />
                 </Field>
                 {!isAnomalyDetection && (
-                  <Field label="Metrics">
-                    <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder={`Choose one metric for ${selectedTaskLabel.toLowerCase()} training`} />
-                    <div className="metric-choice-list">
-                      {filteredMetrics.map((metric) => (
-                        <button key={metric.id} type="button" className={selectedMetrics.includes(metric.id) ? "is-selected" : ""} onClick={() => toggleMetric(metric.id)}>
-                          {humanizeIdentifier(metric.id)}
-                        </button>
-                      ))}
+                  <Field label="Training scope">
+                    <div className="training-mode-toggle">
+                      <button
+                        type="button"
+                        className={trainingMode === "all" ? "is-active" : ""}
+                        onClick={() => setTrainingMode("all")}
+                      >
+                        All Buildings
+                      </button>
+                      <button
+                        type="button"
+                        className={trainingMode === "single" ? "is-active" : ""}
+                        onClick={() => setTrainingMode("single")}
+                      >
+                        Single Building
+                      </button>
                     </div>
-                    <div className="metric-chip-list">
-                      {selectedMetrics.map((metric) => (
-                        <button key={metric} type="button" onClick={() => toggleMetric(metric)}>
-                          {humanizeIdentifier(metric)}
-                          <Icon name="x" />
-                        </button>
-                      ))}
-                    </div>
+                  </Field>
+                )}
+                {!isAnomalyDetection && trainingMode === "single" && (
+                  <Field label="Building">
+                    <Select
+                      value={selectedBuildingId ?? ""}
+                      onChange={setSelectedBuildingId}
+                      options={buildingSelectOptions}
+                      searchable
+                      searchPlaceholder="Search by ID or name..."
+                    />
+                  </Field>
+                )}
+                {!isAnomalyDetection && (
+                  <Field label="Metric">
+                    <Select
+                      value={selectedMetrics[0] ?? ""}
+                      onChange={(metric) => setSelectedMetrics(metric ? [metric] : [])}
+                      options={metricSelectOptions}
+                      searchable
+                      searchPlaceholder="Search metrics..."
+                    />
                   </Field>
                 )}
                 <Field label="Date range">
