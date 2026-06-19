@@ -426,9 +426,12 @@ def _datasource_label(request: ModelTrainingRequest) -> str:
 
 def _registered_model_name(request: ModelTrainingRequest) -> str:
     if ModelTask(request.model_task) == ModelTask.Forecasting:
-        from src.ml.forecasting.types import MODEL_NAME
+        from src.ml.forecasting.types import forecast_model_name
 
-        return MODEL_NAME
+        return forecast_model_name(
+            building_id=request.building_id or None,
+            metric=request.metrics[0] if request.metrics else None,
+        )
 
     if ModelTask(request.model_task) == ModelTask.AnomalyDetection:
         from src.ml.anomaly.model_registry import MODEL_NAME
