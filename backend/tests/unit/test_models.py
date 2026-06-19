@@ -43,7 +43,9 @@ def _override_training_validation_db(
     def query(column):
         query_mock = Mock()
         query_mock.filter.return_value = query_mock
+        query_mock.order_by.return_value = query_mock
         if column is Location.id:
+            query_mock.all.return_value = [(location,) for location in known_locations]
             query_mock.one_or_none.side_effect = lambda: (
                 ("location",)
                 if _query_filter_contains(query_mock, known_locations)
@@ -96,17 +98,17 @@ def test_trigger_training_success(mock_delay):
     assert response.status_code == 200
     assert response.json()["task_id"] == "mock-task-uuid-123"
     assert (
-        response.json()["message"] == "prediction training job queued using csv data."
+        response.json()["message"] == "forecasting training job queued using csv data."
     )
-    assert response.json()["model_task"] == "prediction"
+    assert response.json()["model_task"] == "forecasting"
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["site_id"] == "TestBuilding"
     assert training_request["building_id"] == "TestBuilding"
     assert training_request["metrics"] == ["water"]
     assert training_request["data_source"] == "csv"
-    assert training_request["model_task"] == "prediction"
+    assert training_request["model_task"] == "forecasting"
     assert "algorithm" not in training_request
-    assert response.json()["algorithm"] == "random_forest"
+    assert response.json()["algorithm"] == "xgboost"
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
@@ -135,19 +137,17 @@ def test_trigger_training_queues_anomaly_training(mock_delay):
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
-def test_trigger_training_accepts_popup_payload(mock_delay):
+def test_trigger_training_accepts_global_forecasting_payload(mock_delay):
     class MockTask:
         id = "mock-task-uuid-789"
 
     mock_delay.return_value = MockTask()
 
     payload = {
-        "site_id": "SiteA",
-        "building_id": "BuildingA",
         "metrics": [" electricity "],
         "time_range_start": "2026-06-01T00:00:00Z",
         "time_range_end": "2026-06-07T00:00:00Z",
-        "model_task": "prediction",
+        "model_task": "forecasting",
         "data_source": "csv",
         "csv_path": "/tmp/site-a.csv",
     }
@@ -155,25 +155,23 @@ def test_trigger_training_accepts_popup_payload(mock_delay):
     response = client.post("/api/v1/models/train", json=payload)
 
     assert response.status_code == 200
-    assert response.json()["model_task"] == "prediction"
-    assert response.json()["site_id"] == "SiteA"
-    assert response.json()["building_id"] == "BuildingA"
+    assert response.json()["model_task"] == "forecasting"
+    assert response.json()["site_id"] is None
+    assert response.json()["building_id"] is None
     assert response.json()["metrics"] == ["electricity"]
-    assert response.json()["algorithm"] == "random_forest"
+    assert response.json()["algorithm"] == "xgboost"
     training_request = mock_delay.call_args.kwargs["training_request"]
     assert training_request["csv_path"] == "/tmp/site-a.csv"
     assert "algorithm" not in training_request
 
 
 @patch("src.api.v1.endpoints.models.train_model_task.delay")
-def test_trigger_training_rejects_multi_metric_prediction(mock_delay):
+def test_trigger_training_rejects_multi_metric_forecasting(mock_delay):
     payload = {
-        "site_id": "SiteA",
-        "building_id": "BuildingA",
         "metrics": ["electricity", "water"],
         "time_range_start": "2026-06-01T00:00:00Z",
         "time_range_end": "2026-06-07T00:00:00Z",
-        "model_task": "prediction",
+        "model_task": "forecasting",
         "data_source": "csv",
     }
 
@@ -181,7 +179,7 @@ def test_trigger_training_rejects_multi_metric_prediction(mock_delay):
 
     assert response.status_code == 422
     assert response.json()["detail"] == (
-        "Prediction training requires exactly one metric per model."
+        "forecasting training requires exactly one metric per model."
     )
     mock_delay.assert_not_called()
 
@@ -194,7 +192,6 @@ def test_trigger_training_forecasting_accepts_algorithm_selection(mock_delay):
     mock_delay.return_value = MockTask()
 
     payload = {
-        "site_id": "SiteA",
         "metrics": ["electricity"],
         "time_range_start": "2026-06-01T00:00:00Z",
         "time_range_end": "2026-06-07T00:00:00Z",

@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
-import mlflow
 import mlflow.sklearn
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
-
 from src.ml.forecasting.types import CAT_FEATURES, DEFAULT_METRIC_TYPE, MODEL_NAME
+
+import mlflow
 
 
 class ForecastingModelRegistry(Protocol):
@@ -28,10 +28,13 @@ class ForecastingModelRegistry(Protocol):
         horizon: int,
         algorithm: str,
         weather_mode: str,
+        model_name: str = MODEL_NAME,
     ) -> str | None: ...
 
     def find_production_version(self, model_name: str = MODEL_NAME): ...
-    def promote_version(self, version: str, model_name: str = MODEL_NAME, alias: str = "production") -> None: ...
+    def promote_version(
+        self, version: str, model_name: str = MODEL_NAME, alias: str = "production"
+    ) -> None: ...
     def load_production_forecast_model(self, model_name: str = MODEL_NAME): ...
 
 
@@ -51,6 +54,7 @@ class ForecastingMlflowRegistry:
         horizon: int,
         algorithm: str,
         weather_mode: str,
+        model_name: str = MODEL_NAME,
     ) -> str | None:
         mlflow.log_params(
             {
@@ -70,7 +74,7 @@ class ForecastingMlflowRegistry:
         mlflow.sklearn.log_model(
             pipeline,
             artifact_path="model",
-            registered_model_name=MODEL_NAME,
+            registered_model_name=model_name,
             # MLflow 3.x defaults to the `skops` flavor, which refuses to
             # serialize sklearn pipelines referencing `numpy.dtype` (an
             # "untrusted type"). Use cloudpickle (the historical default) so
@@ -78,11 +82,15 @@ class ForecastingMlflowRegistry:
             serialization_format=mlflow.sklearn.SERIALIZATION_FORMAT_CLOUDPICKLE,
         )
 
-        versions = self._client.get_latest_versions(MODEL_NAME, stages=["None"])
+        versions = self._client.get_latest_versions(model_name, stages=["None"])
         if not versions:
             return None
         version = versions[-1]
-        metric_tag = ",".join(request.metrics) if getattr(request, "metrics", None) else DEFAULT_METRIC_TYPE
+        metric_tag = (
+            ",".join(request.metrics)
+            if getattr(request, "metrics", None)
+            else DEFAULT_METRIC_TYPE
+        )
         tags = {
             "model_task": "forecasting",
             "feature_set": ",".join(feature_cols),
@@ -90,12 +98,17 @@ class ForecastingMlflowRegistry:
             "algorithm": algorithm,
             "metric": metric_tag,
         }
-        self._tag_version(str(version.version), tags)
+        building_id = getattr(request, "building_id", None)
+        if building_id:
+            tags["building_id"] = building_id
+        self._tag_version(str(version.version), tags, model_name=model_name)
         return str(version.version)
 
-    def _tag_version(self, version_id: str, tags: dict[str, str]) -> None:
+    def _tag_version(
+        self, version_id: str, tags: dict[str, str], *, model_name: str = MODEL_NAME
+    ) -> None:
         for key, value in tags.items():
-            self._client.set_model_version_tag(MODEL_NAME, version_id, key, value)
+            self._client.set_model_version_tag(model_name, version_id, key, value)
 
     def promote_version(
         self, version: str, model_name: str = MODEL_NAME, alias: str = "production"
@@ -128,7 +141,9 @@ class ForecastingMlflowRegistry:
         ]
         if not production:
             return None
-        return max(production, key=lambda v: getattr(v, "last_updated_timestamp", 0) or 0)
+        return max(
+            production, key=lambda v: getattr(v, "last_updated_timestamp", 0) or 0
+        )
 
     def load_production_forecast_model(self, model_name: str = MODEL_NAME):
         """Load the production forecasting pipeline + metadata.
@@ -153,7 +168,11 @@ class ForecastingMlflowRegistry:
         feature_set = tags.get("feature_set", "")
         feature_cols = [f.strip() for f in feature_set.split(",") if f.strip()]
         if not feature_cols:
-            feature_names = getattr(getattr(pipeline, "named_steps", {}).get("model"), "feature_names_in_", None)
+            feature_names = getattr(
+                getattr(pipeline, "named_steps", {}).get("model"),
+                "feature_names_in_",
+                None,
+            )
             if feature_names is not None:
                 feature_cols = [str(f) for f in feature_names]
         if not feature_cols:

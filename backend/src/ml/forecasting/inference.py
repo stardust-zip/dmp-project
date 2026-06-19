@@ -28,7 +28,6 @@ import logging
 from typing import Any
 
 import pandas as pd
-
 from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
 from src.ml.forecasting.store import ForecastResultStore, _ensure_meter_device
@@ -85,20 +84,29 @@ def forecast_for_building(
     """
     input_start = _to_utc_ts(input_start)
     input_end = _to_utc_ts(input_end)
+    # UI date inputs often arrive as end-of-day ``23:59:59`` while telemetry is
+    # hourly. Align to the feature matrix frequency so issue-time lookups match.
+    input_start = input_start.floor("h")
+    input_end = input_end.floor("h")
 
     if input_end <= input_start:
         raise ForecastError("input_end must be after input_start.")
-    if (input_end - input_start) < pd.Timedelta(hours=LOOKBACK_HOURS):
-        raise ForecastError(
-            f"Input window must be at least {LOOKBACK_HOURS}h to compute "
-            "lag/rolling-168h features.",
-        )
     if not 1 <= forecast_hours <= LOOKBACK_HOURS:
         raise ForecastError(
             f"forecast_hours must be between 1 and {LOOKBACK_HOURS}.",
         )
 
-    loaded = ForecastingMlflowRegistry().load_production_forecast_model()
+    # Try building-specific model first, then fall back to global
+    from src.ml.forecasting.types import forecast_model_name
+
+    building_model = forecast_model_name(building_id=building_id, metric=metric_type_id)
+    loaded = ForecastingMlflowRegistry().load_production_forecast_model(
+        model_name=building_model
+    )
+    used_model_name = building_model
+    if loaded is None:
+        loaded = ForecastingMlflowRegistry().load_production_forecast_model()
+        used_model_name = "dmp_energy_forecasting"
     if loaded is None:
         raise ForecastError(
             "No production forecasting model is available. Train one first.",
@@ -120,6 +128,12 @@ def forecast_for_building(
 
     H = horizon
     H_td = pd.Timedelta(hours=H)
+    required_history_hours = LOOKBACK_HOURS + H
+    if (input_end - input_start) < pd.Timedelta(hours=required_history_hours):
+        raise ForecastError(
+            f"Input window must be at least {required_history_hours}h for a "
+            f"{H}h-horizon model to compute lag/rolling features.",
+        )
 
     # --- Load actuals for this building across the input window ---
     from src.ml.anomaly.telemetry_loaders import query_telemetry_window
@@ -165,9 +179,18 @@ def forecast_for_building(
         wave_t_issue = wave_targets - H_td
 
         feat, _, _ = build_forecast_feature_matrix(
-            series_df, forecast_horizon_hours=H, weather_mode="none", include_target=False
+            series_df,
+            forecast_horizon_hours=H,
+            weather_mode="none",
+            include_target=False,
         )
         avail = feat[feat["timestamp"].isin(wave_t_issue)]
+        if avail.empty:
+            missing = [t for t in wave_t_issue]
+            raise ForecastError(
+                "Could not build features for the forecast window "
+                f"(missing issue times: {missing}). The input window may have gaps.",
+            )
         pred_by_t = dict(
             zip(avail["timestamp"], pipeline.predict(avail[feature_cols]).clip(min=0))
         )
@@ -240,6 +263,7 @@ def forecast_for_building(
         "site_id": static["site_id"],
         "metric_type": metric_type_id,
         "horizon_hours": H,
+        "model_name": used_model_name,
         "model_run_id": run_id,
         "input_start": input_start.to_pydatetime(),
         "input_end": input_end.to_pydatetime(),

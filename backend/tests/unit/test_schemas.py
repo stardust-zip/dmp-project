@@ -68,15 +68,15 @@ def test_location_create_metadata_optional():
 
 def test_model_training_request_normalizes_metrics():
     payload = ModelTrainingRequest(
-        site_id="SiteA",
         metrics=[" Electricity ", "WATER"],
         time_range_start="2026-06-01T00:00:00Z",
         time_range_end="2026-06-02T00:00:00Z",
     )
 
     assert payload.metrics == ["electricity", "water"]
+    assert payload.site_id is None
     assert payload.building_id is None
-    assert payload.model_task == "prediction"
+    assert payload.model_task == "forecasting"
     assert payload.data_source == "csv"
 
 
@@ -92,7 +92,6 @@ def test_model_training_request_rejects_invalid_time_range():
 
 def test_model_training_request_accepts_algorithm_selection():
     payload = ModelTrainingRequest(
-        site_id="SiteA",
         metrics=["electricity"],
         time_range_start="2026-06-01T00:00:00Z",
         time_range_end="2026-06-02T00:00:00Z",
@@ -103,6 +102,16 @@ def test_model_training_request_accepts_algorithm_selection():
     assert payload.algorithm == "lightgbm"
     assert payload.forecast_horizon_hours == 24
     assert payload.weather_mode == "none"
+
+
+def test_model_training_request_requires_site_for_prediction_only():
+    with pytest.raises(ValidationError, match="site_id is required for prediction"):
+        ModelTrainingRequest(
+            metrics=["electricity"],
+            time_range_start="2026-06-01T00:00:00Z",
+            time_range_end="2026-06-02T00:00:00Z",
+            model_task="prediction",
+        )
 
 
 def test_prediction_scenario_accepts_legacy_energy_rate_alias():

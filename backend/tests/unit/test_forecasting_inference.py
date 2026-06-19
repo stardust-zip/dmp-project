@@ -72,7 +72,7 @@ def _install_mocks(monkeypatch, pipeline, feature_cols, cat_features, df):
     monkeypatch.setattr(
         inference_module.ForecastingMlflowRegistry,
         "load_production_forecast_model",
-        lambda self: (pipeline, feature_cols, cat_features, 24, "electricity", "run-123"),
+        lambda self, model_name="dmp_energy_forecasting": (pipeline, feature_cols, cat_features, 24, "electricity", "run-123"),
     )
     monkeypatch.setattr(
         inference_module.ForecastResultStore,
@@ -144,6 +144,27 @@ def test_forecast_for_building_recursive(monkeypatch):
     assert min(pd.Timestamp(p["timestamp"]) for p in both) == overlay_start
 
 
+def test_forecast_for_building_floors_end_of_day_input(monkeypatch):
+    pipeline, feature_cols, cat_features, df = _train_pipeline()
+    _install_mocks(monkeypatch, pipeline, feature_cols, cat_features, df)
+
+    input_start = pd.Timestamp("2017-01-01 00:00:00", tz="UTC")
+    input_end = pd.Timestamp("2017-01-17 16:59:59", tz="UTC")
+
+    result = forecast_for_building(
+        db=None,
+        building_id="B0",
+        metric_type_id="electricity",
+        input_start=input_start,
+        input_end=input_end,
+        forecast_hours=24,
+    )
+
+    assert pd.Timestamp(result["divider_timestamp"]) == pd.Timestamp(
+        "2017-01-17 16:00:00", tz="UTC"
+    )
+
+
 def test_forecast_for_building_rejects_short_input_window(monkeypatch):
     pipeline, feature_cols, cat_features, df = _train_pipeline()
     _install_mocks(monkeypatch, pipeline, feature_cols, cat_features, df)
@@ -151,6 +172,23 @@ def test_forecast_for_building_rejects_short_input_window(monkeypatch):
     input_start = pd.Timestamp("2017-01-01 00:00", tz="UTC")
     input_end = input_start + pd.Timedelta(hours=100)  # < 168h
     with pytest.raises(ForecastError):
+        forecast_for_building(
+            db=None,
+            building_id="B0",
+            metric_type_id="electricity",
+            input_start=input_start,
+            input_end=input_end,
+            forecast_hours=24,
+        )
+
+
+def test_forecast_for_building_requires_lag_plus_model_horizon(monkeypatch):
+    pipeline, feature_cols, cat_features, df = _train_pipeline()
+    _install_mocks(monkeypatch, pipeline, feature_cols, cat_features, df)
+
+    input_start = pd.Timestamp("2017-01-01 00:00", tz="UTC")
+    input_end = input_start + pd.Timedelta(hours=180)  # >= 168h but < 168h + 24h
+    with pytest.raises(ForecastError, match="at least 192h"):
         forecast_for_building(
             db=None,
             building_id="B0",
@@ -182,7 +220,7 @@ def test_forecast_for_building_no_production_model(monkeypatch):
     monkeypatch.setattr(
         inference_module.ForecastingMlflowRegistry,
         "load_production_forecast_model",
-        lambda self: None,
+        lambda self, model_name="dmp_energy_forecasting": None,
     )
     input_start = pd.Timestamp("2017-01-01 00:00", tz="UTC")
     input_end = input_start + pd.Timedelta(hours=400)

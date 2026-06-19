@@ -12,18 +12,25 @@ from src.tasks import (
 )
 
 
-def test_registered_model_name_includes_task_site_and_metric():
+def test_registered_model_name_uses_global_forecasting_model():
     request = ModelTrainingRequest(
-        site_id="Site 1",
         metrics=[" Electricity "],
         time_range_start="2026-06-01T00:00:00Z",
         time_range_end="2026-06-02T00:00:00Z",
     )
 
-    assert (
-        _registered_model_name(request)
-        == "dmp_energy_prediction_Site_1_electricity"
+    assert _registered_model_name(request) == "dmp_energy_forecasting"
+
+
+def test_registered_model_name_uses_global_anomaly_model():
+    request = ModelTrainingRequest(
+        metrics=["electricity"],
+        time_range_start="2026-06-01T00:00:00Z",
+        time_range_end="2026-06-02T00:00:00Z",
+        model_task="anomaly_detection",
     )
+
+    assert _registered_model_name(request) == "dmp_energy_anomaly_detection"
 
 
 def test_registered_model_name_separates_sites_and_metrics():
@@ -32,12 +39,14 @@ def test_registered_model_name_separates_sites_and_metrics():
         metrics=["electricity"],
         time_range_start="2026-06-01T00:00:00Z",
         time_range_end="2026-06-02T00:00:00Z",
+        model_task="prediction",
     )
     site_2_steam = ModelTrainingRequest(
         site_id="Site 2",
         metrics=["steam"],
         time_range_start="2026-06-01T00:00:00Z",
         time_range_end="2026-06-02T00:00:00Z",
+        model_task="prediction",
     )
 
     assert _registered_model_name(site_1_electricity) != _registered_model_name(

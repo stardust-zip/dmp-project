@@ -424,6 +424,7 @@ export interface ForecastVsActualResponse {
   site_id?: string | null;
   metric_type: string;
   horizon_hours: number;
+  model_name: string;
   model_run_id: string;
   input_start: string;
   input_end: string;
@@ -438,6 +439,24 @@ export interface ForecastGeneratePayload {
   input_start: string;
   input_end: string;
   forecast_hours: number;
+}
+
+export interface ForecastAvailabilityResponse {
+  building_id: string;
+  metric_type: string;
+  first_timestamp?: string | null;
+  last_timestamp?: string | null;
+  row_count: number;
+  recommended_input_start?: string | null;
+  recommended_input_end?: string | null;
+}
+
+export function getForecastAvailability(buildingId: string, metricType: string, signal?: AbortSignal) {
+  const search = new URLSearchParams({
+    building_id: buildingId,
+    metric_type: metricType,
+  });
+  return apiGet<ForecastAvailabilityResponse>(`/api/v1/forecast/availability?${search.toString()}`, signal);
 }
 
 /** Generate a real future forecast (sync) and overlay it on recent actuals. */

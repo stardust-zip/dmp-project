@@ -29,15 +29,13 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from lightgbm import LGBMRegressor
-from sqlalchemy.orm import Session
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
-from xgboost import XGBRegressor
-
+from sqlalchemy.orm import Session
 from src.ml.anomaly.telemetry_loaders import load_telemetry_for_training
 from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
@@ -45,12 +43,13 @@ from src.ml.forecasting.types import (
     DEFAULT_FORECAST_HORIZON,
     DEFAULT_WEATHER_MODE,
     LOOKBACK_HOURS,
-    MODEL_NAME,
     RANDOM_STATE,
+    forecast_model_name,
 )
 from src.ml.training import algorithm_for_task
 from src.models import AIPipelineLog
 from src.schemas import MLAlgorithm, ModelTask, ModelTrainingRequest
+from xgboost import XGBRegressor
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +89,9 @@ def _make_estimator(algorithm: MLAlgorithm):
     raise ValueError(f"Unsupported forecasting algorithm: {algorithm}")
 
 
-def _build_preprocessor(cat_features: list[str], num_features: list[str]) -> ColumnTransformer:
+def _build_preprocessor(
+    cat_features: list[str], num_features: list[str]
+) -> ColumnTransformer:
     return ColumnTransformer(
         transformers=[
             (
@@ -143,7 +144,9 @@ def _fit_and_evaluate(
         fit_kwargs["eval_set"] = [(x_val, y_val)]
         if algorithm == MLAlgorithm.LightGBM:
             fit_kwargs["callbacks"] = [
-                lgb.early_stopping(EARLY_STOPPING_ROUNDS, first_metric_only=True, verbose=False),
+                lgb.early_stopping(
+                    EARLY_STOPPING_ROUNDS, first_metric_only=True, verbose=False
+                ),
                 lgb.log_evaluation(0),
             ]
     estimator.fit(x_train, y_train, **fit_kwargs)
@@ -186,6 +189,23 @@ def train_forecasting_model(
         else algorithm_for_task(ModelTask.Forecasting)
     )
 
+    # --- Determine whether we're training per-building or globally ---
+    target_building_id = request.building_id or None
+    is_per_building = bool(target_building_id)
+
+    # --- Compute dynamic model name ---
+    model_name = forecast_model_name(
+        building_id=target_building_id,
+        metric=request.metrics[0],
+    )
+    if is_per_building:
+        append_log(
+            f"Per-building training for building={target_building_id} "
+            f"-> model name: {model_name}"
+        )
+    else:
+        append_log(f"Global training (all buildings) -> model name: {model_name}")
+
     # --- Load telemetry (reuse anomaly loader: CSV/DB + 168h lookback + metadata) ---
     append_log(
         f"Loading telemetry for metric={request.metrics[0]} "
@@ -194,16 +214,43 @@ def train_forecasting_model(
     df = load_telemetry_for_training(db, request)
     if df.empty:
         raise ValueError("No telemetry data found for the requested date range.")
-    append_log(f"Loaded {len(df):,} rows, {df['building_id'].nunique()} buildings.")
+
+    # --- Filter to single building if per-building training ---
+    if is_per_building:
+        df = df[df["building_id"] == target_building_id].copy()
+        if df.empty:
+            raise ValueError(
+                f"No telemetry for building '{target_building_id}' "
+                f"in the requested date range."
+            )
+        append_log(f"Filtered to building '{target_building_id}': {len(df):,} rows.")
+    else:
+        append_log(f"Loaded {len(df):,} rows, {df['building_id'].nunique()} buildings.")
 
     # --- Feature matrix (single shared builder; used by inference too) ---
-    append_log(f"Building feature matrix (horizon={horizon}h, weather={weather_mode})...")
-    feature_df, feature_cols, cat_features = build_forecast_feature_matrix(df, horizon, weather_mode)
+    append_log(
+        f"Building feature matrix (horizon={horizon}h, weather={weather_mode})..."
+    )
+    feature_df, feature_cols, cat_features = build_forecast_feature_matrix(
+        df, horizon, weather_mode
+    )
     if feature_df.empty:
         raise ValueError(
-            "Feature matrix is empty after lag warmup + null drop; provide a wider time range."
+            "Feature matrix is empty after lag warmup + null drop; "
+            "provide a wider time range."
         )
-    append_log(f"Feature matrix: {len(feature_df):,} rows x {len(feature_cols)} features.")
+
+    # --- For per-building training, drop building_id from categorical features ---
+    # (there is only one building, so it provides no signal)
+    if is_per_building and "building_id" in cat_features:
+        cat_features = [c for c in cat_features if c != "building_id"]
+        if "building_id" in feature_cols:
+            feature_cols = [c for c in feature_cols if c != "building_id"]
+        append_log("Dropped 'building_id' from features (single-building mode).")
+
+    append_log(
+        f"Feature matrix: {len(feature_df):,} rows x {len(feature_cols)} features."
+    )
 
     # --- Temporal split (70/15/15 of the requested range) ---
     start = pd.Timestamp(request.time_range_start)
@@ -214,7 +261,9 @@ def train_forecasting_model(
     train_df = _split_by_timestamps(feature_df, start, train_end)
     val_df = _split_by_timestamps(feature_df, train_end, test_start)
     test_df = _split_by_timestamps(feature_df, test_start, end)
-    append_log(f"Split -> train={len(train_df):,} val={len(val_df):,} test={len(test_df):,}.")
+    append_log(
+        f"Split -> train={len(train_df):,} val={len(val_df):,} test={len(test_df):,}."
+    )
     if train_df.empty or test_df.empty:
         raise ValueError("Train or test split is empty; provide a wider time range.")
     if algorithm != MLAlgorithm.LinearRegression and val_df.empty:
@@ -243,12 +292,13 @@ def train_forecasting_model(
         horizon=horizon,
         algorithm=algorithm.value,
         weather_mode=weather_mode,
+        model_name=model_name,
     )
-    append_log(f"Model registered as {MODEL_NAME}.")
+    append_log(f"Model registered as {model_name}.")
     # Auto-promote the freshly trained version to production so inference can
     # load it immediately (no manual MLflow UI step required).
     if version:
-        registry.promote_version(version)
+        registry.promote_version(version, model_name=model_name)
         append_log(f"Promoted version {version} to the 'production' alias.")
 
     return {

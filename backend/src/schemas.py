@@ -90,8 +90,14 @@ class UserCreate(BaseSchema):
     def validate_access_scope(self) -> "UserCreate":
         if self.role != UserRole.Admin and self.is_global_admin:
             raise ValueError("Only Admin users can be global admins")
-        if self.role in {UserRole.Admin, UserRole.Operator} and not self.is_global_admin and not self.assigned_site_ids:
-            raise ValueError("Assigned sites are required for scoped Admin and Operator users")
+        if (
+            self.role in {UserRole.Admin, UserRole.Operator}
+            and not self.is_global_admin
+            and not self.assigned_site_ids
+        ):
+            raise ValueError(
+                "Assigned sites are required for scoped Admin and Operator users"
+            )
         if self.role == UserRole.AIEngineer:
             self.assigned_site_ids = []
             self.is_global_admin = False
@@ -170,7 +176,7 @@ class ModelTrainingRequest(BaseSchema):
     site_id: str | None = Field(
         default=None,
         min_length=1,
-        description="Site to train on. Required for prediction/forecasting; omit for anomaly_detection (trains across all buildings).",
+        description="Optional site to train on. Forecasting and anomaly_detection train globally when omitted.",
     )
     building_id: str | None = Field(
         default=None,
@@ -180,7 +186,7 @@ class ModelTrainingRequest(BaseSchema):
     metrics: list[str] = Field(..., min_length=1, description="Metrics to include.")
     time_range_start: datetime
     time_range_end: datetime
-    model_task: ModelTask = ModelTask.Prediction
+    model_task: ModelTask = ModelTask.Forecasting
     data_source: TrainingDataSource = TrainingDataSource.CSV
     csv_path: str | None = Field(
         default=None,
@@ -212,9 +218,9 @@ class ModelTrainingRequest(BaseSchema):
         return metrics
 
     @model_validator(mode="after")
-    def site_id_required_for_non_anomaly(self) -> "ModelTrainingRequest":
-        if ModelTask(self.model_task) != ModelTask.AnomalyDetection and not self.site_id:
-            raise ValueError("site_id is required for prediction and forecasting tasks")
+    def site_id_required_for_prediction(self) -> "ModelTrainingRequest":
+        if ModelTask(self.model_task) == ModelTask.Prediction and not self.site_id:
+            raise ValueError("site_id is required for prediction training")
         return self
 
     @model_validator(mode="after")
@@ -460,6 +466,7 @@ class ForecastVsActualResponse(BaseSchema):
     site_id: Optional[str] = None
     metric_type: str
     horizon_hours: int
+    model_name: str
     model_run_id: str
     input_start: datetime
     input_end: datetime

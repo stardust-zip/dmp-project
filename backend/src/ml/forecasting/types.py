@@ -7,9 +7,39 @@ but builds its own feature matrix (see :mod:`src.ml.forecasting.feature_engineer
 
 from __future__ import annotations
 
-# Registered MLflow model name. Like anomaly, a single global model (building_id is a
-# categorical feature), ignoring the per-site name computed in tasks.py.
+import re
+
+# Base registered MLflow model name. When training on all buildings this is used
+# directly. When training on a specific building the name becomes
+# ``dmp_energy_forecasting_{building_id}_{metric}``.
 MODEL_NAME = "dmp_energy_forecasting"
+
+
+def forecast_model_name(
+    base_name: str = MODEL_NAME,
+    *,
+    building_id: str | None = None,
+    metric: str | None = None,
+) -> str:
+    """Compute the MLflow registered model name for a forecasting model.
+
+    - ``building_id=None``  → global model (``base_name``).
+    - ``building_id`` given  → per-building model ``{base_name}_{building_id}_{metric}``.
+    """
+    if not building_id:
+        return base_name
+    safe_building = _safe_name(building_id)
+    safe_metric = _safe_name(metric or "")
+    parts = [base_name, safe_building]
+    if safe_metric:
+        parts.append(safe_metric)
+    return "_".join(parts)
+
+
+def _safe_name(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return normalized.strip("._-") or "unknown"
+
 
 # Target column produced by the telemetry loader (= the meter reading we forecast).
 TARGET_COL = "consumption"

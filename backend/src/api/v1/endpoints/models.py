@@ -428,7 +428,7 @@ async def trigger_training(
     ),
     metric_type: str = Query("electricity"),
     model_task: ModelTask = Query(
-        ModelTask.Prediction,
+        ModelTask.Forecasting,
         description="ML task to train.",
     ),
     data_source: TrainingDataSource = Query(
@@ -455,13 +455,16 @@ async def trigger_training(
         )
 
     selected_algorithm = request.algorithm or algorithm_for_task(ModelTask(request.model_task))
-    if (
-        ModelTask(request.model_task) == ModelTask.Prediction
-        and len(request.metrics) != 1
-    ):
+    if ModelTask(request.model_task) in {
+        ModelTask.Prediction,
+        ModelTask.Forecasting,
+    } and len(request.metrics) != 1:
         raise HTTPException(
             status_code=422,
-            detail="Prediction training requires exactly one metric per model.",
+            detail=(
+                f"{ModelTask(request.model_task).value} training requires "
+                "exactly one metric per model."
+            ),
         )
 
     pipeline_log = create_queued_pipeline_log(db, request)
