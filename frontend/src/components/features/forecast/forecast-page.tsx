@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildForecastVsActualChart, EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select, Spinner } from "@/components/common/primitives";
-import { fmt } from "@/lib/format";
+import { displayModelName, fmt } from "@/lib/format";
 import { useAuth } from "@/components/auth/auth-provider";
 import {
   getForecastAvailability,
@@ -198,6 +198,7 @@ export function ForecastPage() {
 
   const actualCount = result?.points.filter((point) => point.actual != null).length ?? 0;
   const forecastCount = result?.points.filter((point) => point.forecast != null).length ?? 0;
+  const canSeeModelDetails = user?.role === "Admin" || user?.role === "AI_Engineer";
 
   return (
     <div className="page">
@@ -343,7 +344,10 @@ export function ForecastPage() {
             <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 12, fontSize: 12, color: "var(--muted)" }}>
               <span><b className="mono" style={{ color: "var(--ink-2)" }}>{actualCount}</b> actual points</span>
               <span><b className="mono" style={{ color: "var(--ink-2)" }}>{forecastCount}</b> forecast points</span>
-              <span>model run <b className="mono" style={{ color: "var(--ink-2)" }}>{result.model_run_id.slice(0, 8)}</b></span>
+              {canSeeModelDetails && result.model_name && (
+                <span>model <b style={{ color: "var(--ink-2)" }}>{displayModelName(result.model_name)}</b></span>
+              )}
+              <span>run <b className="mono" style={{ color: "var(--ink-2)" }}>{result.model_run_id.slice(0, 8)}</b></span>
             </div>
           </>
         ) : (

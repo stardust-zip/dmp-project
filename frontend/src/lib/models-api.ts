@@ -424,6 +424,7 @@ export interface ForecastVsActualResponse {
   site_id?: string | null;
   metric_type: string;
   horizon_hours: number;
+  model_name: string;
   model_run_id: string;
   input_start: string;
   input_end: string;
