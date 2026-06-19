@@ -35,12 +35,12 @@ import polars as pl
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from forecasting_module.config import GOLD_DIR, REPORT_DIR
+from forecasting_module.dataset_builder import DatasetBuilder
+from forecasting_module.feature_engineering import FeatureEngineer
 from forecasting_module.ingestion import DataIngestion
 from forecasting_module.outlier import OutlierDetector
 from forecasting_module.preprocessing import Preprocessor
 from forecasting_module.validation import DataValidator
-from forecasting_module.feature_engineering import FeatureEngineer
-from forecasting_module.dataset_builder import DatasetBuilder
 
 
 class ForecastingPipeline:
@@ -78,8 +78,7 @@ class ForecastingPipeline:
         if weather_mode == "forecast":
             return bronze
         raise ValueError(
-            f"Unsupported weather_mode '{weather_mode}'. "
-            "Choose 'none' or 'forecast'."
+            f"Unsupported weather_mode '{weather_mode}'. Choose 'none' or 'forecast'."
         )
 
     # ------------------------------------------------------------------
@@ -93,6 +92,7 @@ class ForecastingPipeline:
         reload_gold_before_outlier: bool = True,
         skip_feature_engineering: bool = False,
         skip_dataset_builder: bool = False,
+        building_id: str | None = None,
     ) -> pl.DataFrame | None:
         t0 = time.perf_counter()
         run_tag = f"h{forecast_horizon_hours}_{weather_mode}"
@@ -115,18 +115,50 @@ class ForecastingPipeline:
                 header_name="column",
                 column_names=["null_rate"],
             )
-            null_summary.write_csv(
-                REPORT_DIR / f"bronze_{name}_null_summary.csv"
-            )
+            null_summary.write_csv(REPORT_DIR / f"bronze_{name}_null_summary.csv")
 
         # Apply weather mode at ingestion
         print(f"\n  Applying weather_mode='{weather_mode}' at ingestion ...")
         bronze = self._apply_weather_mode(bronze, weather_mode)
         if weather_mode == "none":
-            print("  Weather table replaced with stub — "
-                  "no weather columns will enter Silver.")
+            print(
+                "  Weather table replaced with stub — "
+                "no weather columns will enter Silver."
+            )
         else:
             print(f"  Weather table kept ({bronze['weather'].shape[0]:,} rows).")
+
+        # ── Building filter (for per-building training) ───────────
+        if building_id:
+            print(f"\n  Filtering to single building: {building_id}")
+            before_elec = bronze["electricity"].shape[0]
+            bronze["electricity"] = bronze["electricity"].filter(
+                pl.col("building_id") == building_id
+            )
+            after_elec = bronze["electricity"].shape[0]
+            print(f"    Electricity: {before_elec:,} → {after_elec:,} rows")
+
+            before_meta = bronze["metadata"].shape[0]
+            bronze["metadata"] = bronze["metadata"].filter(
+                pl.col("building_id") == building_id
+            )
+            after_meta = bronze["metadata"].shape[0]
+            print(f"    Metadata:    {before_meta:,} → {after_meta:,} rows")
+
+            if after_elec == 0:
+                raise ValueError(
+                    f"No electricity data for building '{building_id}'. "
+                    f"Check the building_id or data availability."
+                )
+            if after_meta == 0:
+                print(
+                    f"    WARNING: No metadata for building '{building_id}'. "
+                    f"Merged data will have null metadata columns."
+                )
+
+            # Update run_tag to include building for output file naming
+            safe_building = building_id.replace("/", "_").replace("\\", "_")
+            run_tag = f"{run_tag}_{safe_building}"
 
         # Extract lightweight ID Series for the validator NOW,
         # before bronze is freed — avoids keeping 27M-row electricity
@@ -134,13 +166,13 @@ class ForecastingPipeline:
         elec_building_ids = bronze["electricity"]["building_id"].unique()
         meta_building_ids = bronze["metadata"]["building_id"].unique()
         weather_site_ids = (
-            bronze["weather"]["site_id"].unique()
-            if weather_mode != "none"
-            else None
+            bronze["weather"]["site_id"].unique() if weather_mode != "none" else None
         )
-        print(f"  Extracted validator ID Series "
-              f"({len(elec_building_ids)} elec buildings, "
-              f"{len(meta_building_ids)} meta buildings).")
+        print(
+            f"  Extracted validator ID Series "
+            f"({len(elec_building_ids)} elec buildings, "
+            f"{len(meta_building_ids)} meta buildings)."
+        )
 
         print("\nIngestion done.")
 
@@ -173,9 +205,9 @@ class ForecastingPipeline:
 
         if skip_outlier:
             elapsed = time.perf_counter() - t0
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"DONE (stopped after Stage 3) in {elapsed:.1f}s")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             return gold
 
         del gold
@@ -184,8 +216,7 @@ class ForecastingPipeline:
         gold_path = GOLD_DIR / f"validated_{run_tag}.parquet"
         if not gold_path.exists():
             raise FileNotFoundError(
-                f"Gold file not found: {gold_path}. "
-                "Validation did not save Gold."
+                f"Gold file not found: {gold_path}. Validation did not save Gold."
             )
         print(f"  Reloading Gold from disk: {gold_path}")
         gold = pl.read_parquet(gold_path)
@@ -206,10 +237,12 @@ class ForecastingPipeline:
 
         if skip_feature_engineering:
             elapsed = time.perf_counter() - t0
-            print(f"\n{'='*60}")
-            print(f"DONE (stopped after Stage 4) in {elapsed:.1f}s  "
-                  f"— {final.shape[0]:,} rows × {final.shape[1]} cols")
-            print(f"{'='*60}")
+            print(f"\n{'=' * 60}")
+            print(
+                f"DONE (stopped after Stage 4) in {elapsed:.1f}s  "
+                f"— {final.shape[0]:,} rows × {final.shape[1]} cols"
+            )
+            print(f"{'=' * 60}")
             return final
 
         # ── Stage 5: Feature Engineering ──────────────────────────
@@ -219,8 +252,7 @@ class ForecastingPipeline:
         gold_v2_path = GOLD_DIR / f"validated_v2_{run_tag}.parquet"
         if not gold_v2_path.exists():
             raise FileNotFoundError(
-                f"Gold v2 file not found: {gold_v2_path}. "
-                "Run Stage 4 (Outlier) first."
+                f"Gold v2 file not found: {gold_v2_path}. Run Stage 4 (Outlier) first."
             )
         print(f"\n  Reloading Gold v2 from disk: {gold_v2_path}")
         gold_v2 = pl.read_parquet(gold_v2_path)
@@ -236,9 +268,9 @@ class ForecastingPipeline:
 
         if skip_dataset_builder:
             elapsed = time.perf_counter() - t0
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"DONE (stopped after Stage 5) in {elapsed:.1f}s")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             return None
 
         # ── Stage 6: Dataset Builder ───────────────────────────────
@@ -254,9 +286,9 @@ class ForecastingPipeline:
         DatasetBuilder(subfolder=subfolder).run(features)
 
         elapsed = time.perf_counter() - t0
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"DONE [{run_tag}] in {elapsed:.1f}s")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         return None
 
 
@@ -297,6 +329,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Stop after Stage 5 (Feature Engineering).",
     )
+    parser.add_argument(
+        "--building-id",
+        type=str,
+        default=None,
+        help="Process a single building only (for per-building model training).",
+    )
     return parser.parse_args()
 
 
@@ -308,4 +346,5 @@ if __name__ == "__main__":
         skip_outlier=args.skip_outlier,
         skip_feature_engineering=args.skip_feature_engineering,
         skip_dataset_builder=args.skip_dataset_builder,
+        building_id=args.building_id,
     )
