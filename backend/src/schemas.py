@@ -90,8 +90,14 @@ class UserCreate(BaseSchema):
     def validate_access_scope(self) -> "UserCreate":
         if self.role != UserRole.Admin and self.is_global_admin:
             raise ValueError("Only Admin users can be global admins")
-        if self.role in {UserRole.Admin, UserRole.Operator} and not self.is_global_admin and not self.assigned_site_ids:
-            raise ValueError("Assigned sites are required for scoped Admin and Operator users")
+        if (
+            self.role in {UserRole.Admin, UserRole.Operator}
+            and not self.is_global_admin
+            and not self.assigned_site_ids
+        ):
+            raise ValueError(
+                "Assigned sites are required for scoped Admin and Operator users"
+            )
         if self.role == UserRole.AIEngineer:
             self.assigned_site_ids = []
             self.is_global_admin = False
@@ -460,6 +466,7 @@ class ForecastVsActualResponse(BaseSchema):
     site_id: Optional[str] = None
     metric_type: str
     horizon_hours: int
+    model_name: str
     model_run_id: str
     input_start: datetime
     input_end: datetime
