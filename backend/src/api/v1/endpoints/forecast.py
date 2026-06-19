@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from src.api.v1.deps import get_current_user, user_can_access_site
 from src.database import get_db
@@ -40,7 +39,9 @@ def _latest_contiguous_hourly_window(
     if not timestamps:
         return None, None
 
-    ordered = sorted({ts.replace(minute=0, second=0, microsecond=0) for ts in timestamps})
+    ordered = sorted(
+        {ts.replace(minute=0, second=0, microsecond=0) for ts in timestamps}
+    )
     segments: list[tuple[datetime, datetime, int]] = []
     start = ordered[0]
     previous = ordered[0]
