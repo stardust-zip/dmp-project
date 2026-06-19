@@ -7,9 +7,11 @@ import { Card, Field, Select, Spinner } from "@/components/common/primitives";
 import { fmt } from "@/lib/format";
 import { useAuth } from "@/components/auth/auth-provider";
 import {
+  getForecastAvailability,
   generateForecastVsActual,
   getLocationOptions,
   getMetricOptions,
+  type ForecastAvailabilityResponse,
   type ForecastVsActualResponse,
   type LocationOption,
   type MetricOption,
@@ -22,7 +24,7 @@ const FORECAST_LENGTH_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "168", label: "7 days" },
 ];
 
-const MIN_INPUT_DAYS = 7; // 168h needed for lag/rolling-168h features
+const MIN_INPUT_DAYS = 14; // 168h lag warmup + up to 168h model horizon.
 
 function defaultInputStart() {
   const date = new Date();
@@ -38,6 +40,10 @@ function defaultInputEnd() {
 
 function toIsoUtc(date: string, endOfDay = false) {
   return `${date}T${endOfDay ? "23:59:59" : "00:00:00"}Z`;
+}
+
+function datePart(value?: string | null) {
+  return value?.slice(0, 10) ?? null;
 }
 
 function optionLabel(options: Array<{ id?: string; value?: string; name?: string; label?: string }>, id: string) {
@@ -62,6 +68,8 @@ export function ForecastPage() {
   const [forecastHours, setForecastHours] = useState("48");
 
   const [result, setResult] = useState<ForecastVsActualResponse | null>(null);
+  const [availability, setAvailability] = useState<ForecastAvailabilityResponse | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,13 +103,15 @@ export function ForecastPage() {
     if (!siteId) {
       setBuildings([]);
       setBuildingId("");
+      setAvailability(null);
       return;
     }
     const controller = new AbortController();
-    getLocationOptions({ parentId: siteId, locationType: "building" }, controller.signal)
+    getLocationOptions({ parentId: siteId, limit: 1000 }, controller.signal)
       .then((data) => {
-        setBuildings(data.locations);
-        setBuildingId(data.locations[0]?.id ?? "");
+        const childBuildings = data.locations.filter((location) => location.id !== siteId);
+        setBuildings(childBuildings);
+        setBuildingId(childBuildings[0]?.id ?? "");
       })
       .catch((err) => {
         if (!controller.signal.aborted) {
@@ -113,6 +123,37 @@ export function ForecastPage() {
     return () => controller.abort();
   }, [siteId]);
 
+  useEffect(() => {
+    if (!buildingId || !metricType) {
+      setAvailability(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setAvailabilityLoading(true);
+    getForecastAvailability(buildingId, metricType, controller.signal)
+      .then((data) => {
+        setAvailability(data);
+        if (data.recommended_input_start) {
+          setInputStart(data.recommended_input_start.slice(0, 10));
+        }
+        if (data.recommended_input_end) {
+          setInputEnd(data.recommended_input_end.slice(0, 10));
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          setAvailability(null);
+          setError(err instanceof Error ? err.message : "Unable to load telemetry availability.");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setAvailabilityLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [buildingId, metricType]);
+
   const inputDays = useMemo(() => {
     if (!inputStart || !inputEnd) return 0;
     return Math.round((new Date(inputEnd).getTime() - new Date(inputStart).getTime()) / 86_400_000);
@@ -120,7 +161,8 @@ export function ForecastPage() {
 
   const canGenerate =
     !optionsLoading &&
-    Boolean(buildingId && metricType && inputStart && inputEnd && inputDays >= MIN_INPUT_DAYS) &&
+    !availabilityLoading &&
+    Boolean(buildingId && metricType && inputStart && inputEnd && inputDays >= MIN_INPUT_DAYS && (availability?.row_count ?? 0) > 0) &&
     !loading;
 
   const onGenerate = useCallback(async () => {
@@ -128,12 +170,22 @@ export function ForecastPage() {
     setLoading(true);
     setError(null);
     setResult(null);
+    const recommendedStart = availability?.recommended_input_start;
+    const recommendedEnd = availability?.recommended_input_end;
+    const requestInputStart =
+      recommendedStart && datePart(recommendedStart) === inputStart
+        ? recommendedStart
+        : toIsoUtc(inputStart);
+    const requestInputEnd =
+      recommendedEnd && datePart(recommendedEnd) === inputEnd
+        ? recommendedEnd
+        : toIsoUtc(inputEnd, true);
     try {
       const response = await generateForecastVsActual({
         building_id: buildingId,
         metric_type: metricType,
-        input_start: toIsoUtc(inputStart),
-        input_end: toIsoUtc(inputEnd, true),
+        input_start: requestInputStart,
+        input_end: requestInputEnd,
         forecast_hours: Number(forecastHours),
       });
       setResult(response);
@@ -142,7 +194,7 @@ export function ForecastPage() {
     } finally {
       setLoading(false);
     }
-  }, [buildingId, metricType, inputStart, inputEnd, forecastHours]);
+  }, [availability, buildingId, metricType, inputStart, inputEnd, forecastHours]);
 
   const actualCount = result?.points.filter((point) => point.actual != null).length ?? 0;
   const forecastCount = result?.points.filter((point) => point.forecast != null).length ?? 0;
@@ -160,7 +212,7 @@ export function ForecastPage() {
         title="Generate Forecast"
         icon="trend"
         iconTone="violet"
-        sub="Pick a building, a window of recent actuals (≥ 7 days), and how far ahead to forecast."
+        sub="Pick a building, a window of recent actuals, and how far ahead to forecast."
         style={{ marginBottom: "var(--gap)" }}
       >
         <div className="train-model-form">
@@ -204,6 +256,23 @@ export function ForecastPage() {
                 </div>
               </div>
             </div>
+            {availabilityLoading && (
+              <span className="date-range-error">
+                <Icon name="refresh" className="spin" />
+                Checking telemetry coverage...
+              </span>
+            )}
+            {!availabilityLoading && availability && availability.row_count > 0 && (
+              <span style={{ display: "block", color: "var(--muted)", fontSize: 12, marginTop: 8 }}>
+                Available {availability.first_timestamp?.slice(0, 10) ?? "unknown"} to {availability.last_timestamp?.slice(0, 10) ?? "unknown"} · {availability.row_count.toLocaleString()} rows.
+              </span>
+            )}
+            {!availabilityLoading && availability && availability.row_count === 0 && (
+              <span className="date-range-error">
+                <Icon name="alert" />
+                No telemetry exists for this building and metric.
+              </span>
+            )}
             {inputDays > 0 && inputDays < MIN_INPUT_DAYS && (
               <span className="date-range-error">
                 <Icon name="alert" />

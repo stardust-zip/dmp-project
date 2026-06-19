@@ -170,7 +170,7 @@ class ModelTrainingRequest(BaseSchema):
     site_id: str | None = Field(
         default=None,
         min_length=1,
-        description="Site to train on. Required for prediction/forecasting; omit for anomaly_detection (trains across all buildings).",
+        description="Optional site to train on. Forecasting and anomaly_detection train globally when omitted.",
     )
     building_id: str | None = Field(
         default=None,
@@ -180,7 +180,7 @@ class ModelTrainingRequest(BaseSchema):
     metrics: list[str] = Field(..., min_length=1, description="Metrics to include.")
     time_range_start: datetime
     time_range_end: datetime
-    model_task: ModelTask = ModelTask.Prediction
+    model_task: ModelTask = ModelTask.Forecasting
     data_source: TrainingDataSource = TrainingDataSource.CSV
     csv_path: str | None = Field(
         default=None,
@@ -212,9 +212,9 @@ class ModelTrainingRequest(BaseSchema):
         return metrics
 
     @model_validator(mode="after")
-    def site_id_required_for_non_anomaly(self) -> "ModelTrainingRequest":
-        if ModelTask(self.model_task) != ModelTask.AnomalyDetection and not self.site_id:
-            raise ValueError("site_id is required for prediction and forecasting tasks")
+    def site_id_required_for_prediction(self) -> "ModelTrainingRequest":
+        if ModelTask(self.model_task) == ModelTask.Prediction and not self.site_id:
+            raise ValueError("site_id is required for prediction training")
         return self
 
     @model_validator(mode="after")

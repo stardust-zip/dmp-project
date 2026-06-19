@@ -85,14 +85,13 @@ def forecast_for_building(
     """
     input_start = _to_utc_ts(input_start)
     input_end = _to_utc_ts(input_end)
+    # UI date inputs often arrive as end-of-day ``23:59:59`` while telemetry is
+    # hourly. Align to the feature matrix frequency so issue-time lookups match.
+    input_start = input_start.floor("h")
+    input_end = input_end.floor("h")
 
     if input_end <= input_start:
         raise ForecastError("input_end must be after input_start.")
-    if (input_end - input_start) < pd.Timedelta(hours=LOOKBACK_HOURS):
-        raise ForecastError(
-            f"Input window must be at least {LOOKBACK_HOURS}h to compute "
-            "lag/rolling-168h features.",
-        )
     if not 1 <= forecast_hours <= LOOKBACK_HOURS:
         raise ForecastError(
             f"forecast_hours must be between 1 and {LOOKBACK_HOURS}.",
@@ -120,6 +119,12 @@ def forecast_for_building(
 
     H = horizon
     H_td = pd.Timedelta(hours=H)
+    required_history_hours = LOOKBACK_HOURS + H
+    if (input_end - input_start) < pd.Timedelta(hours=required_history_hours):
+        raise ForecastError(
+            f"Input window must be at least {required_history_hours}h for a "
+            f"{H}h-horizon model to compute lag/rolling features.",
+        )
 
     # --- Load actuals for this building across the input window ---
     from src.ml.anomaly.telemetry_loaders import query_telemetry_window
@@ -168,6 +173,12 @@ def forecast_for_building(
             series_df, forecast_horizon_hours=H, weather_mode="none", include_target=False
         )
         avail = feat[feat["timestamp"].isin(wave_t_issue)]
+        if avail.empty:
+            missing = [t for t in wave_t_issue]
+            raise ForecastError(
+                "Could not build features for the forecast window "
+                f"(missing issue times: {missing}). The input window may have gaps.",
+            )
         pred_by_t = dict(
             zip(avail["timestamp"], pipeline.predict(avail[feature_cols]).clip(min=0))
         )

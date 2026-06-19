@@ -4,18 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, Select } from "@/components/common/primitives";
 import { ModelDetailModal } from "@/components/features/models/model-detail-modal";
-import { displayLocationName, displayModelName, humanizeIdentifier, locationSearchText } from "@/lib/format";
+import { displayModelName, humanizeIdentifier } from "@/lib/format";
 import {
   backfillAnomalyInference,
   cancelPipelineLog,
-  getLocationOptions,
   getMetricOptions,
   getPipelineLogs,
   getRegisteredModels,
   trainModel,
   validateTrainingRequest,
   type AnomalyBackfillPayload,
-  type LocationOption,
   type MetricOption,
   type ModelTask,
   type PipelineLog,
@@ -28,7 +26,6 @@ import {
 const MODEL_TASK_OPTIONS: Array<{ value: ModelTask; label: string }> = [
   { value: "forecasting", label: "Forecasting" },
   { value: "anomaly_detection", label: "Anomaly Detection" },
-  { value: "prediction", label: "Prediction" },
 ];
 const MODEL_FILTER_TASK_OPTIONS: Array<{ value: "all" | ModelTask | "unknown"; label: string }> = [
   { value: "all", label: "All Tasks" },
@@ -52,7 +49,6 @@ const FORECAST_ALGORITHM_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "linear_regression", label: "Linear Regression" },
 ];
 
-const LOCATION_INDEX_LIMIT = 1000;
 const MIN_TRAINING_DAYS = 30;
 
 function defaultStartDate() {
@@ -266,23 +262,19 @@ function TrainingValidationPanel({
 }
 
 export function ModelsPage() {
-  const locationPickerRef = useRef<HTMLDivElement | null>(null);
   const terminalLogRef = useRef<HTMLPreElement | null>(null);
   const registryRefreshRunIdsRef = useRef<Set<string>>(new Set());
   const [models, setModels] = useState<RegisteredModel[]>([]);
   const [logs, setLogs] = useState<PipelineLog[]>([]);
-  const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
   const [metricOptions, setMetricOptions] = useState<MetricOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [logsLoading, setLogsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [modelTask, setModelTask] = useState<ModelTask>("prediction");
+  const [modelTask, setModelTask] = useState<ModelTask>("forecasting");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
   const [forecastAlgorithm, setForecastAlgorithm] = useState("xgboost");
   const [forecastHorizon, setForecastHorizon] = useState(24);
-  const [locationId, setLocationId] = useState("");
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
-  const [locationQuery, setLocationQuery] = useState("");
   const [metricQuery, setMetricQuery] = useState("");
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(defaultEndDate);
@@ -292,8 +284,6 @@ export function ModelsPage() {
   const [validationLoading, setValidationLoading] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [trainMessage, setTrainMessage] = useState<string | null>(null);
-  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
-  const [locationSearchLoading, setLocationSearchLoading] = useState(false);
   const [detailModelName, setDetailModelName] = useState<string | null>(null);
   const [trainModalOpen, setTrainModalOpen] = useState(false);
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
@@ -316,10 +306,9 @@ export function ModelsPage() {
       setError(null);
 
       try {
-        const [modelData, logData, locationData, metricData] = await Promise.all([
+        const [modelData, logData, metricData] = await Promise.all([
           getRegisteredModels(controller.signal),
           getPipelineLogs(controller.signal),
-          getLocationOptions({ limit: LOCATION_INDEX_LIMIT }, controller.signal),
           getMetricOptions(controller.signal),
         ]);
         setModels(modelData.models);
@@ -328,7 +317,6 @@ export function ModelsPage() {
           logData.logs.filter(isSuccessfulPipelineLog).map((log) => log.mlflow_run_id as string),
         );
         setSelectedModelName((current) => current || modelData.models[0]?.name || "");
-        setLocationOptions(locationData.locations);
         setMetricOptions(metricData.metrics);
       } catch (err) {
         if (!controller.signal.aborted) {
@@ -345,19 +333,6 @@ export function ModelsPage() {
     void load();
     return () => controller.abort();
   }, []);
-
-  useEffect(() => {
-    if (!locationPickerOpen) return;
-
-    const closeIfOutside = (event: PointerEvent) => {
-      if (!locationPickerRef.current?.contains(event.target as Node)) {
-        setLocationPickerOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", closeIfOutside);
-    return () => document.removeEventListener("pointerdown", closeIfOutside);
-  }, [locationPickerOpen]);
 
   useEffect(() => {
     if (!detailModelName) return;
@@ -423,13 +398,6 @@ export function ModelsPage() {
   const filteredMetrics = metricOptions
     .filter((metric) => `${metric.id} ${metric.description ?? ""}`.toLowerCase().includes(metricQuery.toLowerCase()))
     .slice(0, 8);
-  const locationById = useMemo(() => new Map(locationOptions.map((location) => [location.id, location])), [locationOptions]);
-  const filteredLocationOptions = useMemo(() => {
-    const query = locationQuery.trim().toLowerCase();
-    return locationOptions
-      .filter((location) => !query || locationSearchText(location, location.parent_id ? locationById.get(location.parent_id) : null).includes(query))
-      .slice(0, 12);
-  }, [locationById, locationOptions, locationQuery]);
   const detailModel = models.find((model) => model.name === detailModelName) ?? null;
   const modelMetricOptions = useMemo(() => {
     const metrics = [...new Set(models.map(inferModelMetric).filter((metric) => metric && metric !== "unknown"))].sort((left, right) => left.localeCompare(right));
@@ -451,21 +419,21 @@ export function ModelsPage() {
   const selectedMetricsKey = selectedMetrics.join(",");
   const selectedTaskLabel = MODEL_TASK_OPTIONS.find((option) => option.value === modelTask)?.label ?? modelTask;
   const trainingTaskImplemented =
-    modelTask === "prediction" || modelTask === "anomaly_detection" || modelTask === "forecasting";
+    modelTask === "anomaly_detection" || modelTask === "forecasting";
   const metricSelectionValid =
-    modelTask === "prediction" || modelTask === "forecasting" ? selectedMetrics.length === 1 : true;
+    modelTask === "forecasting" ? selectedMetrics.length === 1 : true;
   const isAnomalyDetection = modelTask === "anomaly_detection";
   const isForecasting = modelTask === "forecasting";
   const validationInputReady = isAnomalyDetection
     ? Boolean(startDate && endDate)
-    : Boolean(locationId.trim() && selectedMetrics.length && startDate && endDate);
+    : Boolean(selectedMetrics.length && startDate && endDate);
   const dateRangeDays = startDate && endDate
     ? Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86_400_000)
     : 0;
   const dateRangeValid = dateRangeDays >= MIN_TRAINING_DAYS;
   const trainingPayload = useMemo<TrainModelPayload>(
     () => ({
-      site_id: isAnomalyDetection ? null : locationId.trim(),
+      site_id: null,
       metrics: isAnomalyDetection ? ["electricity"] : selectedMetrics,
       time_range_start: isoFromDateInput(startDate),
       time_range_end: isoFromDateInput(endDate, true),
@@ -482,7 +450,6 @@ export function ModelsPage() {
       forecastHorizon,
       isAnomalyDetection,
       isForecasting,
-      locationId,
       modelTask,
       selectedMetrics,
       startDate,
@@ -494,29 +461,6 @@ export function ModelsPage() {
     if (!terminalLogRef.current) return;
     terminalLogRef.current.scrollTop = terminalLogRef.current.scrollHeight;
   }, [detailTerminalLog]);
-
-  useEffect(() => {
-    if (!trainModalOpen) return;
-
-    const query = locationQuery.trim();
-    const controller = new AbortController();
-    const timeout = window.setTimeout(async () => {
-      setLocationSearchLoading(true);
-      try {
-        const data = await getLocationOptions({ q: query || undefined, limit: LOCATION_INDEX_LIMIT }, controller.signal);
-        setLocationOptions(data.locations);
-      } catch {
-        if (!controller.signal.aborted) setLocationOptions([]);
-      } finally {
-        if (!controller.signal.aborted) setLocationSearchLoading(false);
-      }
-    }, query ? 180 : 0);
-
-    return () => {
-      controller.abort();
-      window.clearTimeout(timeout);
-    };
-  }, [locationQuery, trainModalOpen]);
 
   useEffect(() => {
     if (!trainModalOpen || !trainingTaskImplemented || !metricSelectionValid || !validationInputReady || isAnomalyDetection) {
@@ -554,12 +498,6 @@ export function ModelsPage() {
     };
   }, [isAnomalyDetection, metricSelectionValid, selectedMetricsKey, trainModalOpen, trainingPayload, trainingTaskImplemented, validationInputReady]);
 
-  function chooseLocation(location: LocationOption) {
-    setLocationId(location.id);
-    setLocationQuery(displayLocationName(location.name, location.id));
-    setLocationPickerOpen(false);
-  }
-
   function toggleMetric(metricId: string) {
     setSelectedMetrics((current) => (current.includes(metricId) ? current.filter((metric) => metric !== metricId) : [...current, metricId]));
   }
@@ -576,14 +514,8 @@ export function ModelsPage() {
     }
 
     if (!isAnomalyDetection) {
-      const resolvedLocationId = locationId.trim();
       const knownMetricIds = new Set(metricOptions.map((metric) => metric.id));
       const invalidMetrics = selectedMetrics.filter((metric) => !knownMetricIds.has(metric));
-
-      if (!resolvedLocationId) {
-        setError("Select a location from the search results before training.");
-        return;
-      }
 
       if (!selectedMetrics.length) {
         setError("At least one metric is required.");
@@ -591,7 +523,7 @@ export function ModelsPage() {
       }
 
       if (!metricSelectionValid) {
-        setError("Prediction training requires exactly one metric per model.");
+        setError(`${selectedTaskLabel} training requires exactly one metric per model.`);
         return;
       }
 
@@ -842,43 +774,8 @@ export function ModelsPage() {
                   <Select value={dataSource} onChange={setDataSource} options={DATA_SOURCE_OPTIONS} />
                 </Field>
                 {!isAnomalyDetection && (
-                  <Field label="Location">
-                    <div className="model-combobox" ref={locationPickerRef}>
-                      <input
-                        className="input"
-                        value={locationQuery}
-                        onFocus={() => setLocationPickerOpen(true)}
-                        onChange={(event) => {
-                          setLocationQuery(event.target.value);
-                          setLocationId("");
-                          setLocationPickerOpen(true);
-                        }}
-                        placeholder="Search site or building by name or ID"
-                      />
-                      {locationPickerOpen && (
-                        <div className="model-picker-list">
-                          {locationSearchLoading ? (
-                            <div className="model-picker-empty">Searching locations...</div>
-                          ) : filteredLocationOptions.length ? (
-                            filteredLocationOptions.map((location) => (
-                              <button key={location.id} type="button" onClick={() => chooseLocation(location)}>
-                                <b title={location.id}>{displayLocationName(location.name, location.id)}</b>
-                                <span title={location.id}>
-                                  {location.parent_id ? `Site ${location.parent_id} · ` : ""}{location.id}
-                                </span>
-                              </button>
-                            ))
-                          ) : (
-                            <div className="model-picker-empty">No locations found.</div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </Field>
-                )}
-                {!isAnomalyDetection && (
                   <Field label="Metrics">
-                    <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder="Choose one metric for prediction training" />
+                    <input className="input" value={metricQuery} onChange={(event) => setMetricQuery(event.target.value)} placeholder={`Choose one metric for ${selectedTaskLabel.toLowerCase()} training`} />
                     <div className="metric-choice-list">
                       {filteredMetrics.map((metric) => (
                         <button key={metric.id} type="button" className={selectedMetrics.includes(metric.id) ? "is-selected" : ""} onClick={() => toggleMetric(metric.id)}>

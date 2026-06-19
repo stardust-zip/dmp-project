@@ -176,7 +176,7 @@ def train_model_task(
     target_building_id: str | None = None,
     metric_type: str | None = None,
     data_source: str = TrainingDataSource.CSV.value,
-    model_task: str = ModelTask.Prediction.value,
+    model_task: str = ModelTask.Forecasting.value,
     pipeline_log_id: str | None = None,
 ):
     """
@@ -425,6 +425,16 @@ def _datasource_label(request: ModelTrainingRequest) -> str:
 
 
 def _registered_model_name(request: ModelTrainingRequest) -> str:
+    if ModelTask(request.model_task) == ModelTask.Forecasting:
+        from src.ml.forecasting.types import MODEL_NAME
+
+        return MODEL_NAME
+
+    if ModelTask(request.model_task) == ModelTask.AnomalyDetection:
+        from src.ml.anomaly.model_registry import MODEL_NAME
+
+        return MODEL_NAME
+
     task = ModelTask(request.model_task).value
     metric_segment = "_".join(request.metrics)
     return _safe_model_name(f"dmp_energy_{task}_{request.site_id}_{metric_segment}")
