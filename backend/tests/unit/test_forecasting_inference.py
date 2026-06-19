@@ -72,7 +72,7 @@ def _install_mocks(monkeypatch, pipeline, feature_cols, cat_features, df):
     monkeypatch.setattr(
         inference_module.ForecastingMlflowRegistry,
         "load_production_forecast_model",
-        lambda self: (pipeline, feature_cols, cat_features, 24, "electricity", "run-123"),
+        lambda self, model_name="dmp_energy_forecasting": (pipeline, feature_cols, cat_features, 24, "electricity", "run-123"),
     )
     monkeypatch.setattr(
         inference_module.ForecastResultStore,
@@ -220,7 +220,7 @@ def test_forecast_for_building_no_production_model(monkeypatch):
     monkeypatch.setattr(
         inference_module.ForecastingMlflowRegistry,
         "load_production_forecast_model",
-        lambda self: None,
+        lambda self, model_name="dmp_energy_forecasting": None,
     )
     input_start = pd.Timestamp("2017-01-01 00:00", tz="UTC")
     input_end = input_start + pd.Timedelta(hours=400)

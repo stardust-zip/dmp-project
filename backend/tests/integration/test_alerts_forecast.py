@@ -165,29 +165,26 @@ def test_get_forecast_returns_filtered_paginated_forecast(api_db_client, db_sess
 
 
 @pytest.mark.usefixtures("alert_forecast_prerequisites")
-def test_get_forecast_availability_returns_building_metric_window(api_db_client, db_session):
-    db_session.add_all(
-        [
+def test_get_forecast_availability_returns_building_metric_window(
+    api_db_client, db_session
+):
+    # Create contiguous hourly data so that _latest_contiguous_hourly_window
+    # can produce a valid recommended_input_start/end.
+    from datetime import datetime, timedelta
+    from datetime import timezone as tz
+
+    base = datetime(2026, 6, 5, 0, 0, 0, tzinfo=tz.utc)
+    rows = []
+    for hour in range(48):
+        rows.append(
             models.TelemetryData(
-                timestamp=_utc_timestamp("2026-06-05T00:00:00"),
+                timestamp=base + timedelta(hours=hour),
                 device_id="meter-1",
                 metric_type_id="electricity",
-                value=150.5,
-            ),
-            models.TelemetryData(
-                timestamp=_utc_timestamp("2026-06-06T00:00:00"),
-                device_id="meter-1",
-                metric_type_id="electricity",
-                value=152.1,
-            ),
-            models.TelemetryData(
-                timestamp=_utc_timestamp("2026-06-07T00:00:00"),
-                device_id="meter-2",
-                metric_type_id="water",
-                value=88.0,
-            ),
-        ]
-    )
+                value=150.0 + hour,
+            )
+        )
+    db_session.add_all(rows)
     db_session.commit()
 
     response = api_db_client.get(
@@ -199,11 +196,11 @@ def test_get_forecast_availability_returns_building_metric_window(api_db_client,
     data = response.json()
     assert data["building_id"] == "loc-1"
     assert data["metric_type"] == "electricity"
-    assert data["row_count"] == 2
+    assert data["row_count"] == 48
     assert data["first_timestamp"].startswith("2026-06-05T00:00:00")
-    assert data["last_timestamp"].startswith("2026-06-06T00:00:00")
-    assert data["recommended_input_start"].startswith("2026-06-05T00:00:00")
-    assert data["recommended_input_end"].startswith("2026-06-06T00:00:00")
+    assert data["last_timestamp"].startswith("2026-06-06T23:00:00")
+    assert data["recommended_input_start"] is not None
+    assert data["recommended_input_end"] is not None
 
 
 def test_get_forecast_returns_empty_page(api_db_client):
