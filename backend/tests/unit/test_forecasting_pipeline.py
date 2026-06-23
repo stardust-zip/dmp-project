@@ -18,7 +18,8 @@ from src.ml.forecasting.feature_engineering import (
     FEATURE_COLUMNS,
     build_forecast_feature_matrix,
 )
-from src.ml.forecasting.training import _fit_and_evaluate
+from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
+from src.ml.forecasting.training import _fit_and_evaluate, _mape
 from src.schemas import MLAlgorithm
 
 
@@ -107,3 +108,95 @@ def test_fit_and_evaluate_all_algorithms(algorithm):
     preds = pipeline.predict(test_df[feature_cols])
     assert len(preds) == len(test_df)
     assert np.all(np.asarray(preds) >= 0.0)  # predictions clipped to non-negative
+
+
+# --------------------------------------------------------------------------
+# MAPE unit (returns percent, not ratio) — regression for the 458% bug.
+# --------------------------------------------------------------------------
+
+
+def test_mape_returns_percent():
+    y_true = np.array([10.0, 20.0, 30.0])
+    y_pred = np.array([11.0, 19.0, 33.0])
+    ratio = np.mean(np.abs((y_true - y_pred) / y_true))
+    result = _mape(y_true, y_pred)
+    assert np.isfinite(result)
+    assert np.isclose(result, ratio * 100.0)
+    assert 1.0 < result < 100.0  # a sensible percentage, not 0.02 nor ~400
+
+
+# --------------------------------------------------------------------------
+# Telemetry cleaning (preprocessing port).
+# --------------------------------------------------------------------------
+
+
+def _flat_telemetry(n_hours: int = 200, building: str = "B0") -> pd.DataFrame:
+    """Deterministic, slowly-drifting hourly consumption (no outliers/gaps)."""
+    ts = pd.date_range("2017-01-01", periods=n_hours, freq="h", tz="UTC")
+    return pd.DataFrame(
+        {
+            "timestamp": ts,
+            "consumption": [10.0 + 0.5 * i for i in range(n_hours)],
+            "metric_type_id": "electricity",
+            "building_id": building,
+            "site_id": "S0",
+            "sqm": 100.0,
+            "primaryspaceusage": "Office",
+            "timezone": "UTC",
+        }
+    )
+
+
+def test_clean_flags_outlier_spike():
+    df = _flat_telemetry()
+    df.loc[100, "consumption"] = 1_000_000.0  # huge spike vs neighbours ~60
+    cleaned, stats = clean_telemetry_for_forecasting(df.copy(), return_stats=True)
+    assert stats["outliers_flagged"] >= 1
+    assert cleaned.loc[100, "consumption"] < 1_000_000.0
+
+
+def test_clean_interpolates_short_gap():
+    df = _flat_telemetry()
+    df.loc[50:52, "consumption"] = np.nan  # 3h gap <= INTERP_MAX_GAP_HOURS=6
+    cleaned, stats = clean_telemetry_for_forecasting(df.copy(), return_stats=True)
+    assert cleaned.loc[50:52, "consumption"].notna().all()
+    assert stats["gaps_filled"] >= 3
+
+
+def test_clean_seasonal_fills_medium_gap():
+    df = _flat_telemetry(n_hours=300)
+    df.loc[100:109, "consumption"] = np.nan  # 10h gap in (6, 24], t-24h exists
+    cleaned, _ = clean_telemetry_for_forecasting(df.copy(), return_stats=True)
+    # Medium gaps fill from shift(24) where available.
+    assert cleaned.loc[105:109, "consumption"].notna().all()
+
+
+def test_clean_leaves_long_gap_as_nan():
+    df = _flat_telemetry(n_hours=300)
+    df.loc[100:139, "consumption"] = np.nan  # 40h gap > SEASONAL_MAX_GAP_HOURS=24
+    cleaned, _ = clean_telemetry_for_forecasting(df.copy(), return_stats=True)
+    # Long gaps stay null (feature builder drops them).
+    assert cleaned.loc[110:130, "consumption"].isna().all()
+
+
+def test_clean_drops_high_missing_building():
+    base = _flat_telemetry(building="B0")
+    bad = _flat_telemetry(building="B1")
+    bad.loc[bad.sample(frac=0.6, random_state=0).index, "consumption"] = np.nan  # 60% missing
+    df = pd.concat([base, bad], ignore_index=True)
+    cleaned, stats = clean_telemetry_for_forecasting(
+        df.copy(), drop_high_missing=True, return_stats=True
+    )
+    assert "B1" not in set(cleaned["building_id"])
+    assert "B0" in set(cleaned["building_id"])
+    assert stats["buildings_dropped"] == 1
+
+
+def test_clean_is_idempotent():
+    df = _flat_telemetry()
+    once = clean_telemetry_for_forecasting(df.copy())
+    twice = clean_telemetry_for_forecasting(once.copy())
+    a = once["consumption"].dropna().to_numpy()
+    b = twice["consumption"].dropna().to_numpy()
+    assert len(a) == len(b)
+    assert np.allclose(a, b)

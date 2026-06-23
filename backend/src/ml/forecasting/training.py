@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 from src.ml.anomaly.telemetry_loaders import load_telemetry_for_training
 from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
+from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
 from src.ml.forecasting.types import (
     DEFAULT_FORECAST_HORIZON,
     DEFAULT_WEATHER_MODE,
@@ -106,12 +107,17 @@ def _build_preprocessor(
 
 
 def _mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Mean Absolute Percentage Error, returned as a PERCENT (e.g. 2.66 == 2.66%).
+
+    Matches the frontend's ``unit: "%"`` rendering; ``test_mape`` stored in
+    MLflow is therefore a percentage, not a raw ratio.
+    """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
     mask = np.abs(y_true) > 1e-9
     if not mask.any():
         return float("nan")
-    return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])))
+    return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100.0)
 
 
 def _fit_and_evaluate(
@@ -227,6 +233,25 @@ def train_forecasting_model(
     else:
         append_log(f"Loaded {len(df):,} rows, {df['building_id'].nunique()} buildings.")
 
+    # --- Clean telemetry: hourly align, IQR outliers->null, interpolate/seasonal-fill.
+    # Single shared cleaner with inference (no train/serve skew). High-missing
+    # buildings are only dropped in global (all-buildings) mode; a single,
+    # explicitly-chosen building is never dropped here. ---
+    append_log("Cleaning telemetry (hourly align, IQR outliers, gap fill)...")
+    df, clean_stats = clean_telemetry_for_forecasting(
+        df, drop_high_missing=not is_per_building, return_stats=True
+    )
+    if df.empty:
+        raise ValueError(
+            "Telemetry is empty after cleaning (all buildings dropped or no valid "
+            "consumption); provide a wider/cleaner time range."
+        )
+    append_log(
+        f"Cleaned telemetry: {clean_stats['outliers_flagged']:,} outliers flagged, "
+        f"{clean_stats['gaps_filled']:,} gaps interpolated, "
+        f"{clean_stats['buildings_dropped']} buildings dropped (>30% missing)."
+    )
+
     # --- Feature matrix (single shared builder; used by inference too) ---
     append_log(
         f"Building feature matrix (horizon={horizon}h, weather={weather_mode})..."
@@ -278,7 +303,7 @@ def train_forecasting_model(
     )
     append_log(
         f"Test MAE={metrics['test_mae']:.4f} RMSE={metrics['test_rmse']:.4f} "
-        f"MAPE={metrics['test_mape']:.4f}"
+        f"MAPE={metrics['test_mape']:.4f}%"
     )
 
     # --- Register to MLflow ---

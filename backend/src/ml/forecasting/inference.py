@@ -30,6 +30,7 @@ from typing import Any
 import pandas as pd
 from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
+from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
 from src.ml.forecasting.store import ForecastResultStore, _ensure_meter_device
 from src.ml.forecasting.types import LOOKBACK_HOURS
 
@@ -146,6 +147,18 @@ def forecast_for_building(
             f"(metric '{metric_type_id}') in the input window.",
         )
     df = df.sort_values("timestamp").reset_index(drop=True)
+
+    # --- Clean actuals ONCE with the same logic as training (no train/serve
+    # skew). The recursive-wave predictions appended into series_df below are
+    # model outputs (already clipped >= 0) and must NOT be re-cleaned, so this
+    # runs before series_df = df.copy() and is never reapplied in the loop. ---
+    df = clean_telemetry_for_forecasting(df, drop_high_missing=False)
+    if df.empty:
+        raise ForecastError(
+            f"No usable telemetry for building '{building_id}' "
+            f"(metric '{metric_type_id}') after cleaning; the building may have "
+            f"excessive missing data in the input window.",
+        )
 
     overlay_start = input_start + pd.Timedelta(hours=LOOKBACK_HOURS) + H_td
 

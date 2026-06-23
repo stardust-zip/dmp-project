@@ -60,3 +60,10 @@ CAT_FEATURES = ["building_id", "primaryspaceusage", "timezone"]
 
 DEFAULT_METRIC_TYPE = "electricity"
 RANDOM_STATE = 42
+
+# Preprocessing (ported from forecasting_module/config.py + outlier.py + preprocessing.py).
+IQR_MULTIPLIER = 3.0            # IQR fence per (building_id, hour_of_day)
+INTERP_MAX_GAP_HOURS = 6        # linear-interpolate gaps <= this many hours
+SEASONAL_MAX_GAP_HOURS = 24     # seasonal-fill (t-24h) for gaps in (6, 24]
+MISSING_RATE_THRESHOLD = 0.30   # drop buildings whose consumption null-rate exceeds this
+TELEMETRY_FREQ = "1h"           # hourly grid used when aligning timestamps
