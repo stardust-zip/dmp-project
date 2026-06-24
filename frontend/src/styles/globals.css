@@ -6271,8 +6271,12 @@ table.tbl tbody tr:last-child td {
 }
 
 .anomaly-filter-grid {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 12px;
+}
+
+.anomaly-filter-grid .field>label {
+    text-align: left;
 }
 
 .anomaly-main-grid {

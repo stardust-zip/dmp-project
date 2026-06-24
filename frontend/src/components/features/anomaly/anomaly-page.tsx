@@ -480,22 +480,6 @@ export function AnomalyPage() {
       </div>
 
       <Card
-        icon="filter"
-        title="Filters"
-        sub={isGated ? "Select a site, primary usage, and building to begin" : `${fmt(events.total)} anomalies visible at simulated time`}
-        actions={
-          <button
-            className="btn btn-sm btn-ghost"
-            onClick={() => {
-              setFilters(DEFAULT_FILTERS);
-              setPage(1);
-              setSelected(null);
-              setIsPlaying(false);
-            }}
-          >
-            <Icon name="refresh" /> Reset
-          </button>
-        }
         style={{ marginBottom: "var(--gap)" }}
       >
         <div className="grid anomaly-filter-grid">
