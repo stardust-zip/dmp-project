@@ -219,3 +219,49 @@ def test_anomaly_event_store_serializes_rule_findings():
             "mlflow_run_id": "run-1",
         }
     ]
+
+
+def test_anomaly_event_store_insert_findings_chunks_and_reports_progress(monkeypatch):
+    import datetime as dt
+
+    findings = [
+        RuleFinding(
+            building_id=f"B{i}",
+            site_id="S1",
+            timestamp=dt.datetime(2017, 1, 1, i, 0, 0),
+            metric_type_id="electricity",
+            primary_space_usage="Office",
+            actual_value=None,
+            is_anomaly=True,
+            direction=None,
+            severity="Low",
+            source="rule_based",
+            anomaly_type="missing_reading",
+            reason="Meter reading is missing.",
+            mlflow_run_id=None,
+        )
+        for i in range(5)
+    ]
+    chunk_sizes = []
+    progress = []
+
+    monkeypatch.setattr(AnomalyEventStore, "CHUNK_SIZE", 2)
+    monkeypatch.setattr(AnomalyEventStore, "PROGRESS_INTERVAL_ROWS", 4)
+    monkeypatch.setattr(
+        AnomalyEventStore,
+        "_execute_insert_ignore",
+        lambda self, records: chunk_sizes.append(len(records)),
+    )
+
+    inserted = AnomalyEventStore(db=object()).insert_findings(
+        findings,
+        commit=False,
+        progress_cb=progress.append,
+    )
+
+    assert inserted == 5
+    assert chunk_sizes == [2, 2, 1]
+    assert progress == [
+        "  Inserting rule events: 4/5 rows written...",
+        "  Inserting rule events: 5/5 rows written...",
+    ]

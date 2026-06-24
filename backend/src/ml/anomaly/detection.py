@@ -89,8 +89,15 @@ def train_anomaly_detection_model(
     start = pd.Timestamp(request.time_range_start)
     end = pd.Timestamp(request.time_range_end)
     total = end - start
-    train_end = start + total * 0.50
+    train_end = start + total * 0.80
     test_start = end - total * 0.10
+
+    append_log(
+        f"Time splits — Train: {start.date()} → {train_end.date()} | "
+        f"Val: {train_end.date()} → {test_start.date()} | "
+        f"Test: {test_start.date()} → {end.date()} "
+        f"(total {total.days} days)."
+    )
 
     # --- Weather auto-detection ---
     use_weather = (
@@ -114,7 +121,8 @@ def train_anomaly_detection_model(
     rule_events = run_rule_based_checks(df, mlflow_run_id=mlflow_run.info.run_id, progress_cb=append_log)
     persisted_rule_events = _filter_findings_with_existing_locations(rule_events, db, append_log)
     if persisted_rule_events:
-        AnomalyEventStore(db).insert_findings(persisted_rule_events)
+        append_log(f"Persisting {len(persisted_rule_events):,} rule-based events to DB...")
+        AnomalyEventStore(db).insert_findings(persisted_rule_events, progress_cb=append_log)
     append_log(
         f"Rule-based checks complete: {len(rule_events)} events, "
         f"{len(persisted_rule_events)} persisted."
@@ -163,9 +171,9 @@ def train_anomaly_detection_model(
         gc.collect()
         append_log(f"Feature matrix: {len(feature_df):,} rows × {len(feature_cols)} features.")
 
-        append_log("Training LightGBM (4-fold CV + final model)...")
+        append_log("Training LightGBM...")
         result = train_lgbm(
-            feature_df, feature_cols, cat_features, train_end, test_start
+            feature_df, feature_cols, cat_features, train_end, test_start, append_log
         )
 
     final_model = result.final_model
@@ -186,8 +194,7 @@ def train_anomaly_detection_model(
     )
 
     # --- Residual calibration ---
-    append_log("Computing residual calibration stats...")
-    resid_stats = compute_residual_stats(early_stop_model, val_df, feature_cols)
+    resid_stats = compute_residual_stats(early_stop_model, val_df, feature_cols, append_log)
 
     append_log("Logging model to MLflow...")
     registry = MlflowModelRegistry()
@@ -203,10 +210,14 @@ def train_anomaly_detection_model(
             (feature_df["timestamp"] >= start) & (feature_df["timestamp"] <= end)
         ].dropna(subset=["consumption"])
         if not train_window.empty:
+            append_log(f"Computing anomaly rate on {len(train_window):,} training rows...")
             scored = classify_severity(
                 score_anomalies(final_model, resid_stats, train_window, feature_cols)
             )
             anomaly_rate = float(scored["is_anomaly"].mean())
+            append_log(f"Anomaly rate: {anomaly_rate:.4f} ({scored['is_anomaly'].sum():,} flagged).")
+    else:
+        append_log("Anomaly rate skipped (chunked path — full feature_df not retained).")
 
     return {
         "rmse": train_metrics["test_rmse"],

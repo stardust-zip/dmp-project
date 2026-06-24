@@ -50,7 +50,7 @@ def test_load_production_anomaly_model_reads_model_version_feature_tags(monkeypa
     )
     client = _Client(
         version_tags={
-            "feature_set": "hour,building_id,site_id,primaryspaceusage",
+            "feature_set": "hour,site_id,primaryspaceusage,sub_primaryspaceusage",
             "metrics": "electricity",
             "weather_features": "true",
         },
@@ -61,14 +61,14 @@ def test_load_production_anomaly_model_reads_model_version_feature_tags(monkeypa
         anomaly_inference.load_production_anomaly_model(client)
     )
 
-    assert feature_cols == ["hour", "building_id", "site_id", "primaryspaceusage"]
-    assert cat_features == ["building_id", "site_id", "primaryspaceusage"]
+    assert feature_cols == ["hour", "site_id", "primaryspaceusage", "sub_primaryspaceusage"]
+    assert cat_features == ["site_id", "primaryspaceusage", "sub_primaryspaceusage"]
     assert use_weather is True
     assert metrics == ["electricity"]
 
 
 def test_load_production_anomaly_model_falls_back_to_model_feature_names(monkeypatch):
-    model = _Model(["hour", "building_id", "airTemperature"])
+    model = _Model(["hour", "site_id", "airTemperature"])
     monkeypatch.setattr(model_registry.mlflow.lightgbm, "load_model", lambda uri: model)
     monkeypatch.setattr(tempfile, "TemporaryDirectory", lambda: _TempDir())
     monkeypatch.setattr(
@@ -82,7 +82,7 @@ def test_load_production_anomaly_model_falls_back_to_model_feature_names(monkeyp
         anomaly_inference.load_production_anomaly_model(client)
     )
 
-    assert feature_cols == ["hour", "building_id", "airTemperature"]
-    assert cat_features == ["building_id"]
+    assert feature_cols == ["hour", "site_id", "airTemperature"]
+    assert cat_features == ["site_id"]
     assert use_weather is True
     assert metrics == ["electricity"]

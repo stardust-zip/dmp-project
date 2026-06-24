@@ -16,19 +16,40 @@ from src.ml.anomaly.types import (
     LONG_MISSING_RUN,
     LONG_MISSING_RUN_MIN,
     LOOKBACK_HOURS,
+    LOOSE_FLATLINE_MIN_RUN,
+    LOOSE_FLATLINE_USAGES,
     MISSING_READING,
+    NEAR_ZERO_EPSILON,
+    NEAR_ZERO_FLATLINE,
+    NO_DATA_BUILDING,
+    NO_DATA_MISSING_RATE,
     RuleFinding,
     SPIKE_EXTREME,
 )
 
 logger = logging.getLogger(__name__)
 
-SPIKE_MULTIPLIER = 10.0
-
 
 # ---------------------------------------------------------------------------
 # Rule-based checks
 # ---------------------------------------------------------------------------
+
+def _missing_run_severity(hours: int) -> str:
+    if hours > 72: return "Critical"
+    if hours > 24: return "High"
+    if hours > 6:  return "Medium"
+    return "Low"
+
+
+def _flatline_severity(hours: int, psu: str | None, value: float | None) -> str:
+    near_zero = value is not None and abs(value) <= NEAR_ZERO_EPSILON
+    if near_zero and psu == "Healthcare":
+        return "Critical"
+    if hours > 72: return "Critical"
+    if hours > 24: return "High"
+    if hours > 12: return "Medium"
+    return "Low"
+
 
 def run_rule_based_checks(
     df: pd.DataFrame,
@@ -45,6 +66,23 @@ def run_rule_based_checks(
     buildings = list(df.groupby("building_id"))
     total_buildings = len(buildings)
 
+    # Compute per-building p99 and per-usage p99.9 for spike detection
+    bld_p99: dict[str, float] = {}
+    usage_vals: dict[str, list] = {}
+    for building_id, grp in buildings:
+        vals = grp["consumption"].dropna().values
+        if len(vals) > 0:
+            bld_p99[building_id] = float(np.percentile(vals, 99))
+        psu = grp["primaryspaceusage"].iloc[0] if "primaryspaceusage" in grp.columns else None
+        if psu:
+            usage_vals.setdefault(psu, []).extend(vals.tolist())
+    usage_p999: dict[str, float] = {
+        psu: float(np.percentile(vals, 99.9))
+        for psu, vals in usage_vals.items()
+        if vals
+    }
+    SPIKE_BLD_MULTIPLIER = 5
+
     for i, (building_id, grp) in enumerate(buildings, start=1):
         if progress_cb and i % 200 == 0:
             progress_cb(f"Rule-based checks: {i}/{total_buildings} buildings processed.")
@@ -55,8 +93,29 @@ def run_rule_based_checks(
 
         consumption = grp["consumption"]
         is_nan = consumption.isna()
+        total_rows = len(grp)
+        missing_rate = float(is_nan.sum()) / total_rows if total_rows > 0 else 0.0
 
-        # Missing readings
+        # No-data building (>95% missing)
+        if missing_rate > NO_DATA_MISSING_RATE:
+            events.append(RuleFinding(
+                building_id=building_id,
+                site_id=site_id or "",
+                timestamp=pd.Timestamp(grp["timestamp"].iloc[0]).to_pydatetime(),
+                metric_type_id=metric_type_id,
+                primary_space_usage=psu,
+                actual_value=None,
+                is_anomaly=True,
+                direction=None,
+                severity="Critical",
+                source="rule_based",
+                anomaly_type=NO_DATA_BUILDING,
+                reason=f"Building has >{NO_DATA_MISSING_RATE:.0%} missing data ({missing_rate:.1%}).",
+                mlflow_run_id=mlflow_run_id,
+            ))
+            continue  # skip further checks for this building
+
+        # Missing readings (isolated single NaN)
         for idx in grp.index[is_nan]:
             row = grp.loc[idx]
             events.append(RuleFinding(
@@ -68,20 +127,20 @@ def run_rule_based_checks(
                 actual_value=None,
                 is_anomaly=True,
                 direction=None,
-                severity="Medium",
+                severity="Low",
                 source="rule_based",
                 anomaly_type=MISSING_READING,
                 reason="Meter reading is missing.",
                 mlflow_run_id=mlflow_run_id,
             ))
 
-        # Long missing run (3+ consecutive NaN hours) — vectorized.
-        # One event per run (not one per row), fired at the 3rd missing hour.
+        # Long missing run (>=2 consecutive NaN hours) — one event per run
         nan_run_id = (is_nan & ~is_nan.shift(fill_value=False)).cumsum()
         nan_grp_df = grp[is_nan].copy()
         nan_grp_df["_run"] = nan_run_id[is_nan].values
         for _, run_rows in nan_grp_df.groupby("_run"):
-            if len(run_rows) >= LONG_MISSING_RUN_MIN:
+            run_len = len(run_rows)
+            if run_len >= LONG_MISSING_RUN_MIN:
                 run_start_ts = run_rows["timestamp"].iloc[0]
                 trigger_ts = run_rows["timestamp"].iloc[LONG_MISSING_RUN_MIN - 1]
                 events.append(RuleFinding(
@@ -93,23 +152,56 @@ def run_rule_based_checks(
                     actual_value=None,
                     is_anomaly=True,
                     direction=None,
-                    severity="High",
+                    severity=_missing_run_severity(run_len),
                     source="rule_based",
                     anomaly_type=LONG_MISSING_RUN,
-                    reason=f"{LONG_MISSING_RUN_MIN}+ consecutive missing readings starting {run_start_ts}.",
+                    reason=f"{run_len}h consecutive missing readings starting {run_start_ts}.",
                     mlflow_run_id=mlflow_run_id,
                 ))
 
-        # Flatline (std=0 over 3+ consecutive non-NaN hours) — vectorized.
-        # Emit one event at the START of each flatline run (not one per row).
+        # Flatline / near-zero flatline — space-usage-aware threshold
+        flatline_min = LOOSE_FLATLINE_MIN_RUN if psu in LOOSE_FLATLINE_USAGES else FLATLINE_MIN_RUN
         clean = grp.dropna(subset=["consumption"]).reset_index(drop=True)
-        if len(clean) >= FLATLINE_MIN_RUN:
-            roll_std = clean["consumption"].rolling(FLATLINE_MIN_RUN, min_periods=FLATLINE_MIN_RUN).std()
-            flatline_mask = roll_std == 0
-            # Detect rising edge: first row of each flatline run
-            flatline_starts = flatline_mask & (~flatline_mask.shift(1, fill_value=False))
-            for i in clean.index[flatline_starts]:
-                row = clean.iloc[i]
+        if len(clean) >= flatline_min:
+            non_zero = clean[clean["consumption"] != 0].reset_index(drop=True)
+            if len(non_zero) >= flatline_min:
+                change = (non_zero["consumption"] != non_zero["consumption"].shift(1)).fillna(True)
+                run_id_col = change.cumsum()
+                fl_df = pd.DataFrame({
+                    "ts": non_zero["timestamp"].values,
+                    "val": non_zero["consumption"].values,
+                    "run": run_id_col.values,
+                })
+                for _, run_rows in fl_df.groupby("run"):
+                    run_len = len(run_rows)
+                    if run_len < flatline_min:
+                        continue
+                    rv = float(run_rows["val"].iloc[0])
+                    near_zero = abs(rv) <= NEAR_ZERO_EPSILON
+                    a_type = NEAR_ZERO_FLATLINE if near_zero else FLATLINE
+                    events.append(RuleFinding(
+                        building_id=building_id,
+                        site_id=site_id or "",
+                        timestamp=pd.Timestamp(run_rows["ts"].iloc[0]).to_pydatetime(),
+                        metric_type_id=metric_type_id,
+                        primary_space_usage=psu,
+                        actual_value=rv,
+                        is_anomaly=True,
+                        direction=None,
+                        severity=_flatline_severity(run_len, psu, rv),
+                        source="rule_based",
+                        anomaly_type=a_type,
+                        reason=f"{a_type.replace('_', ' ').title()} of {run_len}h (value={rv:.4f}).",
+                        mlflow_run_id=mlflow_run_id,
+                    ))
+
+        # Spike: value > per-building p99 × 5 AND > per-usage p99.9
+        bld_thresh = bld_p99.get(building_id, float("nan")) * SPIKE_BLD_MULTIPLIER
+        use_thresh = usage_p999.get(psu or "", float("nan"))
+        if not (np.isnan(bld_thresh) or np.isnan(use_thresh)):
+            spike_mask = (consumption > bld_thresh) & (consumption > use_thresh) & ~is_nan
+            for idx in grp.index[spike_mask]:
+                row = grp.loc[idx]
                 events.append(RuleFinding(
                     building_id=building_id,
                     site_id=site_id or "",
@@ -118,36 +210,35 @@ def run_rule_based_checks(
                     primary_space_usage=psu,
                     actual_value=float(row["consumption"]),
                     is_anomaly=True,
-                    direction=None,
-                    severity="Medium",
+                    direction="over",
+                    severity="Critical",
                     source="rule_based",
-                    anomaly_type=FLATLINE,
-                    reason=f"Reading has not changed for {FLATLINE_MIN_RUN}+ consecutive hours.",
+                    anomaly_type=SPIKE_EXTREME,
+                    reason=f"Spike {float(row['consumption']):.2f} > bld_thresh {bld_thresh:.2f} & use_thresh {use_thresh:.2f}.",
                     mlflow_run_id=mlflow_run_id,
                 ))
 
-        # Extreme spike (value > rolling 24h mean × SPIKE_MULTIPLIER)
-        roll_mean = consumption.shift(1).rolling(24, min_periods=1).mean()
-        spike_mask = consumption > (roll_mean * SPIKE_MULTIPLIER)
-        for idx in grp.index[spike_mask & ~is_nan]:
-            row = grp.loc[idx]
-            events.append(RuleFinding(
-                building_id=building_id,
-                site_id=site_id or "",
-                timestamp=pd.Timestamp(row["timestamp"]).to_pydatetime(),
-                metric_type_id=metric_type_id,
-                primary_space_usage=psu,
-                actual_value=float(row["consumption"]),
-                is_anomaly=True,
-                direction="over",
-                severity="Critical",
-                source="rule_based",
-                anomaly_type=SPIKE_EXTREME,
-                reason=f"Reading is {SPIKE_MULTIPLIER}× above rolling 24h mean.",
-                mlflow_run_id=mlflow_run_id,
-            ))
-
     return events
+
+
+def _apply_quality_mask(df: pd.DataFrame, findings: list[RuleFinding]) -> pd.DataFrame:
+    """Mask spike and near-zero flatline timestamps to NaN before feature engineering."""
+    mask_types = {SPIKE_EXTREME, NEAR_ZERO_FLATLINE}
+    bad = {
+        (f.building_id, pd.Timestamp(f.timestamp).tz_localize("UTC") if pd.Timestamp(f.timestamp).tzinfo is None else pd.Timestamp(f.timestamp))
+        for f in findings
+        if f.anomaly_type in mask_types
+    }
+    if not bad:
+        return df
+    out = df.copy()
+    ts_utc = pd.to_datetime(out["timestamp"], utc=True)
+    mask = pd.Series(
+        [(row["building_id"], ts_utc.iloc[i]) in bad for i, row in out.iterrows()],
+        index=out.index,
+    )
+    out.loc[mask, "consumption"] = np.nan
+    return out
 
 
 def load_production_anomaly_model(client=None) -> tuple | None:
@@ -193,6 +284,12 @@ def run_hourly_inference(
             pd.Timestamp(lookback_start),
             pd.Timestamp(target_hour),
         )
+
+    # Run rule-based checks for the target hour's data, then apply quality mask
+    rule_findings = run_rule_based_checks(df, mlflow_run_id=None)
+    df = _apply_quality_mask(df, rule_findings)
+    if rule_findings:
+        AnomalyEventStore(db).insert_findings(rule_findings)
 
     feature_df, _, _ = build_feature_matrix(df, use_weather, weather_df, weather_feature_cols)
 

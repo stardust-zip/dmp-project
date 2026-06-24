@@ -20,7 +20,7 @@ FULL_HISTORY_REFERENCE_COLS = {
     "building_p95",
     "building_p99",
 }
-CAT_FEATURES = ["building_id", "site_id", "primaryspaceusage"]
+CAT_FEATURES = ["site_id", "primaryspaceusage", "sub_primaryspaceusage"]
 TIMEZONE_TO_COUNTRY = {
     "US/Pacific": "US",
     "US/Mountain": "US",
@@ -73,26 +73,32 @@ def _add_rolling_features(out: pd.DataFrame) -> pd.DataFrame:
     out["rolling_std_24h"] = grp.transform(lambda s: shifted_rolling_std(s, 24)).astype("float32")
     out["rolling_mean_168h"] = grp.transform(lambda s: shifted_rolling(s, LOOKBACK_HOURS)).astype("float32")
     out["rolling_std_168h"] = grp.transform(lambda s: shifted_rolling_std(s, LOOKBACK_HOURS)).astype("float32")
+    out["rolling_std_6h"] = (
+        grp.transform(lambda s: s.shift(1).rolling(6, min_periods=1).std())
+        .astype("float32")
+    )
     return out
 
 
 def _add_historical_baselines(out: pd.DataFrame) -> pd.DataFrame:
     out["hour"] = out["timestamp"].dt.hour.astype("int32")
     out["day_of_week"] = out["timestamp"].dt.dayofweek.astype("int32")
-    hist = (
-        out.groupby(["building_id", "hour"])["consumption"]
-        .agg(historical_hour_median="median", historical_hour_std="std")
-        .reset_index()
+    out["historical_hour_median"] = (
+        out.groupby(["building_id", "hour"], sort=False)["consumption"]
+        .transform(lambda s: s.shift(1).expanding().median())
+        .astype("float32")
     )
-    out = out.merge(hist, on=["building_id", "hour"], how="left")
+    out["historical_hour_std"] = (
+        out.groupby(["building_id", "hour"], sort=False)["consumption"]
+        .transform(lambda s: s.shift(1).expanding().std())
+        .astype("float32")
+    )
     out["is_weekday"] = (out["day_of_week"] < 5).astype("int8")
-    hist_daytype = (
-        out.groupby(["building_id", "hour", "is_weekday"])["consumption"]
-        .median()
-        .reset_index()
-        .rename(columns={"consumption": "historical_hour_daytype_median"})
+    out["historical_hour_daytype_median"] = (
+        out.groupby(["building_id", "hour", "is_weekday"], sort=False)["consumption"]
+        .transform(lambda s: s.shift(1).expanding().median())
+        .astype("float32")
     )
-    out = out.merge(hist_daytype, on=["building_id", "hour", "is_weekday"], how="left")
     return out.drop(columns=["is_weekday"])
 
 
@@ -164,10 +170,10 @@ def _select_features(
         "hour", "day_of_week", "month", "day_of_year", "week_of_year",
         "is_holiday", "days_to_next_holiday", "days_from_last_holiday",
         "lag_1h", "lag_24h", "lag_168h",
-        "rolling_mean_6h", "rolling_mean_24h", "rolling_std_24h",
+        "rolling_mean_6h", "rolling_mean_24h", "rolling_std_6h", "rolling_std_24h",
         "rolling_mean_168h", "rolling_std_168h",
         "historical_hour_median", "historical_hour_std", "historical_hour_daytype_median",
-        "sqm", "building_id", "site_id", "primaryspaceusage",
+        "sqm", "site_id", "primaryspaceusage", "sub_primaryspaceusage",
     ] + list(weather_feature_cols)
     feature_cols = [c for c in base_features if c in out.columns and c not in excluded]
     cat_present = [c for c in CAT_FEATURES if c in feature_cols]
