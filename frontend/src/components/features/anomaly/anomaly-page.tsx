@@ -25,7 +25,7 @@ type Filters = {
   sort: SortKey;
 };
 
-const PER_PAGE = 25;
+const PER_PAGE = 10;
 const SIMULATION_FETCH_LIMIT = 5000;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -485,13 +485,6 @@ export function AnomalyPage() {
 
   return (
     <div className="page anomaly-page">
-      <div className="page-head anomaly-head">
-        <div>
-          <h1 className="page-title">Anomaly Detection</h1>
-          <p className="page-sub">Building-level triage by site, hour, severity, and event type</p>
-        </div>
-      </div>
-
       <Card
         style={{ marginBottom: "var(--gap)" }}
       >
@@ -557,7 +550,6 @@ export function AnomalyPage() {
               title="Timeline"
               icon="pulse"
               iconTone="red"
-              sub="Oct-Dec 2017 replay reveals points and anomalies up to simulated time."
               actions={
                 <div className="legend">
                   {(["Critical", "High", "Medium", "Low"] as AnomalySeverity[]).map((severity) => (
@@ -635,7 +627,6 @@ export function AnomalyPage() {
             <Card
               title="Event Log"
               icon="table"
-              sub="Click any row to inspect the event"
               noBody
               actions={
                 loading
@@ -700,7 +691,6 @@ export function AnomalyPage() {
               title="Alerts"
               icon="bell"
               iconTone="red"
-              sub="Critical and High severity events"
               actions={openAlertCount > 0 ? <span className="alert-count-badge">{openAlertCount}</span> : undefined}
             >
               <AlertFeed
@@ -713,7 +703,7 @@ export function AnomalyPage() {
               />
             </Card>
 
-            <Card title="Type Profile" icon="layers" sub="Most common event classes">
+            <Card title="Type Profile" icon="layers">
               <div className="anomaly-type-list">
                 {typeEntries.length === 0 && <div className="empty" style={{ padding: 18 }}>No anomaly types match.</div>}
                 {typeEntries.map(([type, count]) => {

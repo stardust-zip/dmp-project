@@ -6273,10 +6273,6 @@ table.tbl tbody tr:last-child td {
     max-width: 1760px;
 }
 
-.anomaly-head {
-    margin-bottom: 14px;
-}
-
 .anomaly-filter-grid {
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 12px;
