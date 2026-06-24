@@ -12,7 +12,6 @@ import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/a
 import { clock, displayLocationName, fmt, fmtKwh } from "@/lib/format";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
-type DateRange = "all" | "2017" | "2016" | "scored";
 type SortKey = "severity" | "newest" | "oldest";
 type SpeedOption = "1" | "6" | "24";
 type SimBounds = { start: number; end: number };
@@ -23,23 +22,24 @@ type Filters = {
   primaryUsage: string;
   severity: string;
   type: string;
-  range: DateRange;
   sort: SortKey;
 };
 
-const PER_PAGE = 25;
+const PER_PAGE = 10;
 const SIMULATION_FETCH_LIMIT = 5000;
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 const MINUTE_MS = 60 * 1000;
 const TICK_MS = 250;
+const TIMELINE_ZOOM_MS = 7 * DAY_MS;
 const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
   { value: "1", label: "1h/s" },
   { value: "6", label: "6h/s" },
   { value: "24", label: "24h/s" },
 ];
+const SIMULATION_RANGE_QUERY = { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" } as const;
 const SEVERITY_RANK: Record<AnomalySeverity, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
-const DEFAULT_FILTERS: Filters = { site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" };
-const DATE_RANGES = new Set<DateRange>(["all", "2017", "2016", "scored"]);
+const DEFAULT_FILTERS: Filters = { site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", sort: "severity" };
 const SORT_KEYS = new Set<SortKey>(["severity", "newest", "oldest"]);
 
 const EMPTY_TIMELINE: AnomalyTimelineResponse = { items: [], points: [], gaps: [] };
@@ -54,25 +54,26 @@ function queryValue(search: URLSearchParams, ...keys: string[]) {
 
 function filtersFromSearch(search: string): Filters {
   const params = new URLSearchParams(search);
-  const range = queryValue(params, "range");
   const sort = queryValue(params, "sort");
-  return {
+  return normalizeFilters({
     ...DEFAULT_FILTERS,
     site: queryValue(params, "site", "site_id"),
     building: queryValue(params, "building", "building_id"),
     primaryUsage: queryValue(params, "primaryUsage", "primary_usage", "primaryspaceusage"),
     severity: queryValue(params, "severity"),
     type: queryValue(params, "type"),
-    range: DATE_RANGES.has(range as DateRange) ? (range as DateRange) : DEFAULT_FILTERS.range,
     sort: SORT_KEYS.has(sort as SortKey) ? (sort as SortKey) : DEFAULT_FILTERS.sort,
-  };
+  });
 }
 
-function rangeQuery(range: DateRange) {
-  if (range === "scored") return { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" };
-  if (range === "2017") return { start: "2017-01-01T00:00:00", end: "2017-12-31T23:00:00" };
-  if (range === "2016") return { start: "2016-01-01T00:00:00", end: "2016-12-31T23:00:00" };
-  return {};
+function normalizeFilters(filters: Filters): Filters {
+  if (filters.site === "all") {
+    return { ...filters, primaryUsage: "all", building: "all" };
+  }
+  if (filters.primaryUsage === "all") {
+    return { ...filters, building: "all" };
+  }
+  return filters;
 }
 
 function eventTime(event: AnomalyEvent) {
@@ -185,19 +186,26 @@ function eventsResponseFrom(events: AnomalyEvent[], page: number): AnomalyEvents
   };
 }
 
-function SelectionGate({ siteSelected }: { siteSelected: boolean }) {
+function SelectionGate({ siteSelected, primaryUsageSelected }: { siteSelected: boolean; primaryUsageSelected: boolean }) {
+  const title = !siteSelected
+    ? "Select a site to begin"
+    : primaryUsageSelected
+      ? "Select a building to begin"
+      : "Select primary usage to continue";
+  const description = !siteSelected
+    ? "Start by selecting a site, then choose a primary usage and building to analyze its anomaly history."
+    : primaryUsageSelected
+      ? "Choose a building from the dropdown above to load its anomaly timeline, event log, and severity distribution."
+      : "Choose a primary usage first so the building list only shows relevant assets.";
+
   return (
     <div className="anomaly-gate">
       <div className="anomaly-gate-inner">
         <div className="anomaly-gate-icon">
           <Icon name="building" />
         </div>
-        <h2 className="anomaly-gate-title">Select a building to begin</h2>
-        <p className="anomaly-gate-desc">
-          {siteSelected
-            ? "Choose a building from the dropdown above to load its anomaly timeline, event log, and severity distribution."
-            : "Start by selecting a site, then choose a specific building to analyze its anomaly history."}
-        </p>
+        <h2 className="anomaly-gate-title">{title}</h2>
+        <p className="anomaly-gate-desc">{description}</p>
       </div>
     </div>
   );
@@ -266,9 +274,18 @@ function SimulationControls({
 
 function timelineDisabledReason(loading: boolean, bounds: SimBounds | null, simNow: number | null) {
   if (loading) return null;
-  if (!bounds || simNow == null) return "No replay data is available for this building and date range.";
-  if (bounds.end <= bounds.start) return "Replay needs more than one timestamp in the selected date range.";
+  if (!bounds || simNow == null) return "No replay data is available for this building in Oct-Dec 2017.";
+  if (bounds.end <= bounds.start) return "Replay needs more than one timestamp in Oct-Dec 2017.";
   return null;
+}
+
+function followZoomWindow(bounds: SimBounds | null, simNow: number | null): SimBounds | null {
+  if (!bounds || simNow == null || bounds.end <= bounds.start) return null;
+  const windowSize = Math.min(TIMELINE_ZOOM_MS, bounds.end - bounds.start);
+  const latestStart = bounds.end - windowSize;
+  const cursorMidpointStart = simNow - windowSize / 2;
+  const start = Math.max(bounds.start, Math.min(cursorMidpointStart, latestStart));
+  return { start, end: start + windowSize };
 }
 
 export function AnomalyPage() {
@@ -296,11 +313,14 @@ export function AnomalyPage() {
     severity: filters.severity,
     type: filters.type,
     limit: SIMULATION_FETCH_LIMIT,
-    ...rangeQuery(filters.range),
-  }), [filters.site, filters.building, filters.severity, filters.type, filters.range]);
+    ...SIMULATION_RANGE_QUERY,
+  }), [filters.site, filters.building, filters.severity, filters.type]);
 
+  const isPrimaryUsageSelected = filters.primaryUsage !== "all";
   const isGated = filters.building === "all";
   const replayDisabledReason = timelineLoaded ? timelineDisabledReason(loading, simBounds, simNow) : null;
+  const timelineZoom = useMemo(() => followZoomWindow(simBounds, simNow), [simBounds, simNow]);
+  const shouldFollowTimeline = isPlaying && timelineZoom != null;
   const visibleTimeline = useMemo(() => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)), [rawTimeline, simNow]);
   const visibleOverview = useMemo(() => overviewFromEvents(visibleTimeline.items), [visibleTimeline.items]);
   const filteredItems = useMemo(
@@ -448,7 +468,7 @@ export function AnomalyPage() {
   }, [isPlaying, simBounds, speed]);
 
   const set = (key: keyof Filters, value: string) => {
-    setFilters((current) => ({ ...current, [key]: value }));
+    setFilters((current) => normalizeFilters({ ...current, [key]: value }));
     setPage(1);
     setSelected(null);
     setIsPlaying(false);
@@ -459,36 +479,13 @@ export function AnomalyPage() {
   const primaryUsageOptions = filters.site === "all"
     ? []
     : [{ value: "all" as const, label: "All Usage Types" }, ...filteredPrimaryUsages.map((usage) => ({ value: usage, label: usage }))];
-  const buildingOptions = filters.site === "all"
+  const buildingOptions = filters.site === "all" || !isPrimaryUsageSelected
     ? []
     : [{ value: "all" as const, label: "All Buildings" }, ...filteredBuildings.map((building) => ({ value: building, label: buildingLabel(building) }))];
 
   return (
     <div className="page anomaly-page">
-      <div className="page-head anomaly-head">
-        <div>
-          <h1 className="page-title">Anomaly Detection</h1>
-          <p className="page-sub">Building-level triage by site, hour, severity, and event type</p>
-        </div>
-      </div>
-
       <Card
-        icon="filter"
-        title="Filters"
-        sub={isGated ? "Select a site and building to begin" : `${fmt(events.total)} anomalies visible at simulated time`}
-        actions={
-          <button
-            className="btn btn-sm btn-ghost"
-            onClick={() => {
-              setFilters(DEFAULT_FILTERS);
-              setPage(1);
-              setSelected(null);
-              setIsPlaying(false);
-            }}
-          >
-            <Icon name="refresh" /> Reset
-          </button>
-        }
         style={{ marginBottom: "var(--gap)" }}
       >
         <div className="grid anomaly-filter-grid">
@@ -522,7 +519,7 @@ export function AnomalyPage() {
             <Select
               value={filters.building}
               onChange={(value) => set("building", value)}
-              disabled={filters.site === "all" || buildingOptions.length === 0}
+              disabled={filters.site === "all" || !isPrimaryUsageSelected || filteredBuildings.length === 0}
               options={buildingOptions}
               searchable
               searchPlaceholder="Search buildings..."
@@ -533,9 +530,6 @@ export function AnomalyPage() {
           </Field>
           <Field label="Type">
             <Select value={filters.type} onChange={(value) => set("type", value)} disabled={isGated} options={[{ value: "all", label: "All Types" }, ...facets.types.map((type) => ({ value: type, label: type }))]} />
-          </Field>
-          <Field label="Date Range">
-            <Select value={filters.range} onChange={(value) => set("range", value)} disabled={isGated} options={[{ value: "scored", label: "Oct-Dec 2017" }, { value: "2017", label: "2017" }, { value: "2016", label: "2016" }, { value: "all", label: "All Dates" }]} />
           </Field>
         </div>
       </Card>
@@ -548,7 +542,7 @@ export function AnomalyPage() {
       )}
 
       {isGated ? (
-        <SelectionGate siteSelected={filters.site !== "all"} />
+        <SelectionGate siteSelected={filters.site !== "all"} primaryUsageSelected={isPrimaryUsageSelected} />
       ) : (
         <div className="grid anomaly-main-grid">
           <div className="anomaly-workspace">
@@ -556,7 +550,6 @@ export function AnomalyPage() {
               title="Timeline"
               icon="pulse"
               iconTone="red"
-              sub="Historical replay reveals points and anomalies up to simulated time."
               actions={
                 <div className="legend">
                   {(["Critical", "High", "Medium", "Low"] as AnomalySeverity[]).map((severity) => (
@@ -613,12 +606,14 @@ export function AnomalyPage() {
                     cursorTime: simNow ?? undefined,
                     axisMin: simBounds?.start,
                     axisMax: simBounds?.end,
+                    zoomStart: shouldFollowTimeline ? timelineZoom.start : undefined,
+                    zoomEnd: shouldFollowTimeline ? timelineZoom.end : undefined,
                     futurePoints: simNow == null ? [] : rawTimeline.points.filter((p) => timeOf(p.timestamp) >= simNow && timeOf(p.timestamp) <= simNow + 6 * 60 * 60 * 1000),
                   })}
-                  deps={[visibleTimeline, simNow, simBounds?.start, simBounds?.end, rawTimeline.points]}
+                  deps={[visibleTimeline, simNow, simBounds?.start, simBounds?.end, shouldFollowTimeline, timelineZoom?.start, timelineZoom?.end, rawTimeline.points]}
                   themeKey="unified-anomaly"
                   height={312}
-                  preserveDataZoom
+                  preserveDataZoom={!shouldFollowTimeline}
                   onChartClick={(params) => {
                     const p = params as { seriesName?: string; data?: { event?: AnomalyEvent } };
                     if (p.seriesName === "Anomaly" && p.data?.event) {
@@ -632,7 +627,6 @@ export function AnomalyPage() {
             <Card
               title="Event Log"
               icon="table"
-              sub="Click any row to inspect the event"
               noBody
               actions={
                 loading
@@ -697,7 +691,6 @@ export function AnomalyPage() {
               title="Alerts"
               icon="bell"
               iconTone="red"
-              sub="Critical and High severity events"
               actions={openAlertCount > 0 ? <span className="alert-count-badge">{openAlertCount}</span> : undefined}
             >
               <AlertFeed
@@ -710,7 +703,7 @@ export function AnomalyPage() {
               />
             </Card>
 
-            <Card title="Type Profile" icon="layers" sub="Most common event classes">
+            <Card title="Type Profile" icon="layers">
               <div className="anomaly-type-list">
                 {typeEntries.length === 0 && <div className="empty" style={{ padding: 18 }}>No anomaly types match.</div>}
                 {typeEntries.map(([type, count]) => {

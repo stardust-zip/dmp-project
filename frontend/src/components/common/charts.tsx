@@ -317,7 +317,14 @@ function anomalyDotSize(severity: AnomalySeverity) {
 
 export function buildUnifiedAnomalyTimeline(
   timeline: AnomalyTimelineResponse,
-  options: { cursorTime?: number; axisMin?: number; axisMax?: number; futurePoints?: AnomalyTimelineResponse["points"] } = {},
+  options: {
+    cursorTime?: number;
+    axisMin?: number;
+    axisMax?: number;
+    zoomStart?: number;
+    zoomEnd?: number;
+    futurePoints?: AnomalyTimelineResponse["points"];
+  } = {},
 ): ChartBuilder {
   return (theme) => {
     const points = [...timeline.points].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -330,17 +337,30 @@ export function buildUnifiedAnomalyTimeline(
       new Date(point.timestamp).getTime(),
       point.actual_value == null ? null : point.actual_value,
     ]);
+    const actualLinePoints = actualData
+      .filter((point): point is [number, number] => point[1] != null)
+      .map(([timestamp, value]) => ({ timestamp, value }));
     const baselinePastData = points.map((p) => [new Date(p.timestamp).getTime(), p.expected_value ?? null]);
     const rawFuture = (options.futurePoints ?? []).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const baselineFutureData = rawFuture.map((p) => [new Date(p.timestamp).getTime(), p.expected_value ?? null]);
 
-    const markerData = markerEvents.map((e) => ({
-      value: [new Date(e.start_time).getTime(), e.actual_value!],
-      event: e,
-      symbolSize: anomalyDotSize(e.severity),
-      itemStyle: { color: anomalyColor(e.severity, theme), borderColor: theme.surface, borderWidth: 2 },
+    const markerEntries = markerEvents
+      .map((event) => {
+        const eventTime = new Date(event.start_time).getTime();
+        const point = actualLinePoints.reduce<{ timestamp: number; value: number; distance: number } | null>((best, candidate) => {
+          const distance = Math.abs(candidate.timestamp - eventTime);
+          return best == null || distance < best.distance ? { ...candidate, distance } : best;
+        }, null);
+        return point == null || point.distance > 30 * 60 * 1000 ? null : { event, timestamp: point.timestamp, value: point.value };
+      })
+      .filter((entry): entry is { event: (typeof markerEvents)[number]; timestamp: number; value: number } => entry != null);
+    const markerData = markerEntries.map(({ event, timestamp, value }) => ({
+      value: [timestamp, value],
+      event,
+      symbolSize: anomalyDotSize(event.severity),
+      itemStyle: { color: anomalyColor(event.severity, theme), borderColor: theme.surface, borderWidth: 2 },
     }));
-    const eventsByTs = new Map(markerEvents.map((e) => [new Date(e.start_time).getTime(), e]));
+    const eventsByTs = new Map(markerEntries.map(({ event, timestamp }) => [timestamp, event]));
     const gapAreas = timeline.gaps.map((gap) => [
       { xAxis: new Date(gap.start_time).getTime() },
       { xAxis: new Date(gap.end_time).getTime() },
@@ -434,8 +454,8 @@ export function buildUnifiedAnomalyTimeline(
         axisTick: { show: false },
       },
       dataZoom: [
-        { type: "inside", start: 0, end: 100, filterMode: "weakFilter" },
-        { type: "slider", start: 0, end: 100, height: 18, bottom: 14, filterMode: "weakFilter", borderColor: theme.grid, fillerColor: withAlpha(theme.accent, theme.dark ? 0.18 : 0.1), textStyle: { color: theme.muted, fontSize: 10 } },
+        { type: "inside", startValue: options.zoomStart, endValue: options.zoomEnd, filterMode: "weakFilter" },
+        { type: "slider", startValue: options.zoomStart, endValue: options.zoomEnd, height: 18, bottom: 14, filterMode: "weakFilter", borderColor: theme.grid, fillerColor: withAlpha(theme.accent, theme.dark ? 0.18 : 0.1), textStyle: { color: theme.muted, fontSize: 10 } },
       ],
       series: [
         {
