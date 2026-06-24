@@ -56,7 +56,7 @@ function filtersFromSearch(search: string): Filters {
   const params = new URLSearchParams(search);
   const range = queryValue(params, "range");
   const sort = queryValue(params, "sort");
-  return {
+  return normalizeFilters({
     ...DEFAULT_FILTERS,
     site: queryValue(params, "site", "site_id"),
     building: queryValue(params, "building", "building_id"),
@@ -65,7 +65,17 @@ function filtersFromSearch(search: string): Filters {
     type: queryValue(params, "type"),
     range: DATE_RANGES.has(range as DateRange) ? (range as DateRange) : DEFAULT_FILTERS.range,
     sort: SORT_KEYS.has(sort as SortKey) ? (sort as SortKey) : DEFAULT_FILTERS.sort,
-  };
+  });
+}
+
+function normalizeFilters(filters: Filters): Filters {
+  if (filters.site === "all") {
+    return { ...filters, primaryUsage: "all", building: "all" };
+  }
+  if (filters.primaryUsage === "all") {
+    return { ...filters, building: "all" };
+  }
+  return filters;
 }
 
 function rangeQuery(range: DateRange) {
@@ -185,19 +195,26 @@ function eventsResponseFrom(events: AnomalyEvent[], page: number): AnomalyEvents
   };
 }
 
-function SelectionGate({ siteSelected }: { siteSelected: boolean }) {
+function SelectionGate({ siteSelected, primaryUsageSelected }: { siteSelected: boolean; primaryUsageSelected: boolean }) {
+  const title = !siteSelected
+    ? "Select a site to begin"
+    : primaryUsageSelected
+      ? "Select a building to begin"
+      : "Select primary usage to continue";
+  const description = !siteSelected
+    ? "Start by selecting a site, then choose a primary usage and building to analyze its anomaly history."
+    : primaryUsageSelected
+      ? "Choose a building from the dropdown above to load its anomaly timeline, event log, and severity distribution."
+      : "Choose a primary usage first so the building list only shows relevant assets.";
+
   return (
     <div className="anomaly-gate">
       <div className="anomaly-gate-inner">
         <div className="anomaly-gate-icon">
           <Icon name="building" />
         </div>
-        <h2 className="anomaly-gate-title">Select a building to begin</h2>
-        <p className="anomaly-gate-desc">
-          {siteSelected
-            ? "Choose a building from the dropdown above to load its anomaly timeline, event log, and severity distribution."
-            : "Start by selecting a site, then choose a specific building to analyze its anomaly history."}
-        </p>
+        <h2 className="anomaly-gate-title">{title}</h2>
+        <p className="anomaly-gate-desc">{description}</p>
       </div>
     </div>
   );
@@ -299,6 +316,7 @@ export function AnomalyPage() {
     ...rangeQuery(filters.range),
   }), [filters.site, filters.building, filters.severity, filters.type, filters.range]);
 
+  const isPrimaryUsageSelected = filters.primaryUsage !== "all";
   const isGated = filters.building === "all";
   const replayDisabledReason = timelineLoaded ? timelineDisabledReason(loading, simBounds, simNow) : null;
   const visibleTimeline = useMemo(() => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)), [rawTimeline, simNow]);
@@ -448,7 +466,7 @@ export function AnomalyPage() {
   }, [isPlaying, simBounds, speed]);
 
   const set = (key: keyof Filters, value: string) => {
-    setFilters((current) => ({ ...current, [key]: value }));
+    setFilters((current) => normalizeFilters({ ...current, [key]: value }));
     setPage(1);
     setSelected(null);
     setIsPlaying(false);
@@ -459,7 +477,7 @@ export function AnomalyPage() {
   const primaryUsageOptions = filters.site === "all"
     ? []
     : [{ value: "all" as const, label: "All Usage Types" }, ...filteredPrimaryUsages.map((usage) => ({ value: usage, label: usage }))];
-  const buildingOptions = filters.site === "all"
+  const buildingOptions = filters.site === "all" || !isPrimaryUsageSelected
     ? []
     : [{ value: "all" as const, label: "All Buildings" }, ...filteredBuildings.map((building) => ({ value: building, label: buildingLabel(building) }))];
 
@@ -475,7 +493,7 @@ export function AnomalyPage() {
       <Card
         icon="filter"
         title="Filters"
-        sub={isGated ? "Select a site and building to begin" : `${fmt(events.total)} anomalies visible at simulated time`}
+        sub={isGated ? "Select a site, primary usage, and building to begin" : `${fmt(events.total)} anomalies visible at simulated time`}
         actions={
           <button
             className="btn btn-sm btn-ghost"
@@ -522,7 +540,7 @@ export function AnomalyPage() {
             <Select
               value={filters.building}
               onChange={(value) => set("building", value)}
-              disabled={filters.site === "all" || buildingOptions.length === 0}
+              disabled={filters.site === "all" || !isPrimaryUsageSelected || filteredBuildings.length === 0}
               options={buildingOptions}
               searchable
               searchPlaceholder="Search buildings..."
@@ -548,7 +566,7 @@ export function AnomalyPage() {
       )}
 
       {isGated ? (
-        <SelectionGate siteSelected={filters.site !== "all"} />
+        <SelectionGate siteSelected={filters.site !== "all"} primaryUsageSelected={isPrimaryUsageSelected} />
       ) : (
         <div className="grid anomaly-main-grid">
           <div className="anomaly-workspace">
