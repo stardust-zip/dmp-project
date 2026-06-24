@@ -35,9 +35,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _missing_run_severity(hours: int) -> str:
-    if hours > 72: return "Critical"
-    if hours > 24: return "High"
-    if hours > 6:  return "Medium"
+    if hours > 72:
+        return "Critical"
+    if hours > 24:
+        return "High"
+    if hours > 6:
+        return "Medium"
     return "Low"
 
 
@@ -45,9 +48,12 @@ def _flatline_severity(hours: int, psu: str | None, value: float | None) -> str:
     near_zero = value is not None and abs(value) <= NEAR_ZERO_EPSILON
     if near_zero and psu == "Healthcare":
         return "Critical"
-    if hours > 72: return "Critical"
-    if hours > 24: return "High"
-    if hours > 12: return "Medium"
+    if hours > 72:
+        return "Critical"
+    if hours > 24:
+        return "High"
+    if hours > 12:
+        return "Medium"
     return "Low"
 
 
