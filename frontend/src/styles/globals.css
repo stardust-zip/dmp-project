@@ -1738,6 +1738,9 @@ table.tbl tbody tr:last-child td {
 }
 
 .select-search {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     display: flex;
     align-items: center;
     gap: 7px;
@@ -1746,7 +1749,11 @@ table.tbl tbody tr:last-child td {
     padding: 0 8px;
     border: 1px solid var(--border);
     border-radius: 7px;
-    background: var(--surface-2);
+    background: var(--surface);
+    backdrop-filter: blur(8px);
+    box-shadow:
+        0 -6px 0 6px var(--surface),
+        0 6px 0 var(--surface);
     color: var(--muted);
 }
 
