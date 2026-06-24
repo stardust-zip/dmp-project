@@ -28,8 +28,10 @@ type Filters = {
 const PER_PAGE = 25;
 const SIMULATION_FETCH_LIMIT = 5000;
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 const MINUTE_MS = 60 * 1000;
 const TICK_MS = 250;
+const TIMELINE_ZOOM_MS = 7 * DAY_MS;
 const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
   { value: "1", label: "1h/s" },
   { value: "6", label: "6h/s" },
@@ -277,6 +279,15 @@ function timelineDisabledReason(loading: boolean, bounds: SimBounds | null, simN
   return null;
 }
 
+function followZoomWindow(bounds: SimBounds | null, simNow: number | null): SimBounds | null {
+  if (!bounds || simNow == null || bounds.end <= bounds.start) return null;
+  const windowSize = Math.min(TIMELINE_ZOOM_MS, bounds.end - bounds.start);
+  const latestStart = bounds.end - windowSize;
+  const cursorMidpointStart = simNow - windowSize / 2;
+  const start = Math.max(bounds.start, Math.min(cursorMidpointStart, latestStart));
+  return { start, end: start + windowSize };
+}
+
 export function AnomalyPage() {
   const searchParams = useSearchParams();
   const searchParamString = searchParams.toString();
@@ -308,6 +319,8 @@ export function AnomalyPage() {
   const isPrimaryUsageSelected = filters.primaryUsage !== "all";
   const isGated = filters.building === "all";
   const replayDisabledReason = timelineLoaded ? timelineDisabledReason(loading, simBounds, simNow) : null;
+  const timelineZoom = useMemo(() => followZoomWindow(simBounds, simNow), [simBounds, simNow]);
+  const shouldFollowTimeline = isPlaying && timelineZoom != null;
   const visibleTimeline = useMemo(() => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)), [rawTimeline, simNow]);
   const visibleOverview = useMemo(() => overviewFromEvents(visibleTimeline.items), [visibleTimeline.items]);
   const filteredItems = useMemo(
@@ -601,12 +614,14 @@ export function AnomalyPage() {
                     cursorTime: simNow ?? undefined,
                     axisMin: simBounds?.start,
                     axisMax: simBounds?.end,
+                    zoomStart: shouldFollowTimeline ? timelineZoom.start : undefined,
+                    zoomEnd: shouldFollowTimeline ? timelineZoom.end : undefined,
                     futurePoints: simNow == null ? [] : rawTimeline.points.filter((p) => timeOf(p.timestamp) >= simNow && timeOf(p.timestamp) <= simNow + 6 * 60 * 60 * 1000),
                   })}
-                  deps={[visibleTimeline, simNow, simBounds?.start, simBounds?.end, rawTimeline.points]}
+                  deps={[visibleTimeline, simNow, simBounds?.start, simBounds?.end, shouldFollowTimeline, timelineZoom?.start, timelineZoom?.end, rawTimeline.points]}
                   themeKey="unified-anomaly"
                   height={312}
-                  preserveDataZoom
+                  preserveDataZoom={!shouldFollowTimeline}
                   onChartClick={(params) => {
                     const p = params as { seriesName?: string; data?: { event?: AnomalyEvent } };
                     if (p.seriesName === "Anomaly" && p.data?.event) {
