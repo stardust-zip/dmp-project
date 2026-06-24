@@ -12,7 +12,6 @@ import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/a
 import { clock, displayLocationName, fmt, fmtKwh } from "@/lib/format";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
-type DateRange = "all" | "2017" | "2016" | "scored";
 type SortKey = "severity" | "newest" | "oldest";
 type SpeedOption = "1" | "6" | "24";
 type SimBounds = { start: number; end: number };
@@ -23,7 +22,6 @@ type Filters = {
   primaryUsage: string;
   severity: string;
   type: string;
-  range: DateRange;
   sort: SortKey;
 };
 
@@ -37,9 +35,9 @@ const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
   { value: "6", label: "6h/s" },
   { value: "24", label: "24h/s" },
 ];
+const SIMULATION_RANGE_QUERY = { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" } as const;
 const SEVERITY_RANK: Record<AnomalySeverity, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
-const DEFAULT_FILTERS: Filters = { site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", range: "scored", sort: "severity" };
-const DATE_RANGES = new Set<DateRange>(["all", "2017", "2016", "scored"]);
+const DEFAULT_FILTERS: Filters = { site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", sort: "severity" };
 const SORT_KEYS = new Set<SortKey>(["severity", "newest", "oldest"]);
 
 const EMPTY_TIMELINE: AnomalyTimelineResponse = { items: [], points: [], gaps: [] };
@@ -54,7 +52,6 @@ function queryValue(search: URLSearchParams, ...keys: string[]) {
 
 function filtersFromSearch(search: string): Filters {
   const params = new URLSearchParams(search);
-  const range = queryValue(params, "range");
   const sort = queryValue(params, "sort");
   return normalizeFilters({
     ...DEFAULT_FILTERS,
@@ -63,7 +60,6 @@ function filtersFromSearch(search: string): Filters {
     primaryUsage: queryValue(params, "primaryUsage", "primary_usage", "primaryspaceusage"),
     severity: queryValue(params, "severity"),
     type: queryValue(params, "type"),
-    range: DATE_RANGES.has(range as DateRange) ? (range as DateRange) : DEFAULT_FILTERS.range,
     sort: SORT_KEYS.has(sort as SortKey) ? (sort as SortKey) : DEFAULT_FILTERS.sort,
   });
 }
@@ -76,13 +72,6 @@ function normalizeFilters(filters: Filters): Filters {
     return { ...filters, building: "all" };
   }
   return filters;
-}
-
-function rangeQuery(range: DateRange) {
-  if (range === "scored") return { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" };
-  if (range === "2017") return { start: "2017-01-01T00:00:00", end: "2017-12-31T23:00:00" };
-  if (range === "2016") return { start: "2016-01-01T00:00:00", end: "2016-12-31T23:00:00" };
-  return {};
 }
 
 function eventTime(event: AnomalyEvent) {
@@ -283,8 +272,8 @@ function SimulationControls({
 
 function timelineDisabledReason(loading: boolean, bounds: SimBounds | null, simNow: number | null) {
   if (loading) return null;
-  if (!bounds || simNow == null) return "No replay data is available for this building and date range.";
-  if (bounds.end <= bounds.start) return "Replay needs more than one timestamp in the selected date range.";
+  if (!bounds || simNow == null) return "No replay data is available for this building in Oct-Dec 2017.";
+  if (bounds.end <= bounds.start) return "Replay needs more than one timestamp in Oct-Dec 2017.";
   return null;
 }
 
@@ -313,8 +302,8 @@ export function AnomalyPage() {
     severity: filters.severity,
     type: filters.type,
     limit: SIMULATION_FETCH_LIMIT,
-    ...rangeQuery(filters.range),
-  }), [filters.site, filters.building, filters.severity, filters.type, filters.range]);
+    ...SIMULATION_RANGE_QUERY,
+  }), [filters.site, filters.building, filters.severity, filters.type]);
 
   const isPrimaryUsageSelected = filters.primaryUsage !== "all";
   const isGated = filters.building === "all";
@@ -552,9 +541,6 @@ export function AnomalyPage() {
           <Field label="Type">
             <Select value={filters.type} onChange={(value) => set("type", value)} disabled={isGated} options={[{ value: "all", label: "All Types" }, ...facets.types.map((type) => ({ value: type, label: type }))]} />
           </Field>
-          <Field label="Date Range">
-            <Select value={filters.range} onChange={(value) => set("range", value)} disabled={isGated} options={[{ value: "scored", label: "Oct-Dec 2017" }, { value: "2017", label: "2017" }, { value: "2016", label: "2016" }, { value: "all", label: "All Dates" }]} />
-          </Field>
         </div>
       </Card>
 
@@ -574,7 +560,7 @@ export function AnomalyPage() {
               title="Timeline"
               icon="pulse"
               iconTone="red"
-              sub="Historical replay reveals points and anomalies up to simulated time."
+              sub="Oct-Dec 2017 replay reveals points and anomalies up to simulated time."
               actions={
                 <div className="legend">
                   {(["Critical", "High", "Medium", "Low"] as AnomalySeverity[]).map((severity) => (
