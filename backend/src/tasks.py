@@ -884,6 +884,7 @@ def _load_anomaly_backfill_telemetry_from_csv(
             "site_id": parent_id,
             "sqm": (meta or {}).get("sqm"),
             "primaryspaceusage": (meta or {}).get("primaryspaceusage"),
+            "sub_primaryspaceusage": (meta or {}).get("sub_primaryspaceusage"),
             "timezone": (meta or {}).get("timezone"),
         }
         for loc_id, parent_id, meta in loc_rows
@@ -894,6 +895,11 @@ def _load_anomaly_backfill_telemetry_from_csv(
     df["primaryspaceusage"] = df["building_id"].map(
         lambda b: loc_meta.get(b, {}).get("primaryspaceusage")
     )
+    df["sub_primaryspaceusage"] = df["building_id"].map(
+        lambda b: loc_meta.get(b, {}).get("sub_primaryspaceusage")
+    )
+    null_sub = df["sub_primaryspaceusage"].isna()
+    df.loc[null_sub, "sub_primaryspaceusage"] = df.loc[null_sub, "primaryspaceusage"]
     df["timezone"] = df["building_id"].map(lambda b: loc_meta.get(b, {}).get("timezone"))
     return df
 
@@ -928,6 +934,7 @@ def run_anomaly_backfill_task(
 
     import pandas as pd
     from src.ml.anomaly.inference import (
+        _apply_quality_mask,
         load_production_anomaly_model,
         run_rule_based_checks,
     )
@@ -1043,6 +1050,9 @@ def run_anomaly_backfill_task(
             f"Rule-based complete: {len(rule_events)} events, "
             f"{len(persisted)} persisted, {skipped} skipped (unknown buildings).",
         )
+
+        # Mask spike and near-zero flatline timestamps before feature engineering
+        telemetry_df = _apply_quality_mask(telemetry_df, rule_events)
 
         # --- LGBm inference over CSV-backed feature matrix ---
         total_hours = int((end - start).total_seconds() // 3600) + 1

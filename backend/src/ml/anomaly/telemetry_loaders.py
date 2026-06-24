@@ -20,6 +20,7 @@ TELEMETRY_COLUMNS = [
     "site_id",
     "sqm",
     "primaryspaceusage",
+    "sub_primaryspaceusage",
     "timezone",
 ]
 
@@ -76,6 +77,7 @@ def query_telemetry_window(
         loc_id: {
             "sqm": (meta or {}).get("sqm"),
             "primaryspaceusage": (meta or {}).get("primaryspaceusage"),
+            "sub_primaryspaceusage": (meta or {}).get("sub_primaryspaceusage"),
             "timezone": (meta or {}).get("timezone"),
         }
         for loc_id, meta in loc_rows
@@ -85,6 +87,9 @@ def query_telemetry_window(
         lambda b: loc_meta.get(b, {}).get("primaryspaceusage")
     )
     df["timezone"] = df["building_id"].map(lambda b: loc_meta.get(b, {}).get("timezone"))
+    df["sub_primaryspaceusage"] = df["building_id"].map(
+        lambda b: loc_meta.get(b, {}).get("sub_primaryspaceusage")
+    )
     df.sort_values(["timestamp", "building_id"], inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
@@ -134,7 +139,6 @@ def _load_telemetry_from_csv(db: Session, request: ModelTrainingRequest) -> pd.D
             value_name="consumption",
         )
         melted["consumption"] = pd.to_numeric(melted["consumption"], errors="coerce")
-        melted = melted.dropna(subset=["consumption"])
         melted["metric_type_id"] = metric
         frames.append(melted)
 
@@ -155,6 +159,7 @@ def _load_telemetry_from_csv(db: Session, request: ModelTrainingRequest) -> pd.D
             "site_id": parent_id,
             "sqm": (meta or {}).get("sqm"),
             "primaryspaceusage": (meta or {}).get("primaryspaceusage"),
+            "sub_primaryspaceusage": (meta or {}).get("sub_primaryspaceusage"),
             "timezone": (meta or {}).get("timezone"),
         }
         for loc_id, parent_id, meta in loc_rows
@@ -165,6 +170,11 @@ def _load_telemetry_from_csv(db: Session, request: ModelTrainingRequest) -> pd.D
     df["primaryspaceusage"] = df["building_id"].map(
         lambda b: loc_meta.get(b, {}).get("primaryspaceusage")
     )
+    df["sub_primaryspaceusage"] = df["building_id"].map(
+        lambda b: loc_meta.get(b, {}).get("sub_primaryspaceusage")
+    )
+    null_sub = df["sub_primaryspaceusage"].isna()
+    df.loc[null_sub, "sub_primaryspaceusage"] = df.loc[null_sub, "primaryspaceusage"]
     df["timezone"] = df["building_id"].map(lambda b: loc_meta.get(b, {}).get("timezone"))
     return df
 
