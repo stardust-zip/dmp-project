@@ -98,6 +98,7 @@ export function DashboardPage() {
 
   // Alert drawer / KPI
   const [openKpi, setOpenKpi] = useState<string | null>(null);
+  const [buildingSort, setBuildingSort] = useState<"critical" | "total">("critical");
 
   const { session } = useAuth();
   const router = useRouter();
@@ -199,32 +200,28 @@ export function DashboardPage() {
     [simEvents],
   );
 
-  // Fixed building count per site from facets
-  const buildingsPerSite = useMemo(() => {
-    const map = new Map<string, number>();
-    facets.buildings.forEach((b) => {
-      const site = b.split("_")[0];
-      map.set(site, (map.get(site) ?? 0) + 1);
-    });
-    return map;
-  }, [facets.buildings]);
-
-  // Site status from simEvents
-  const siteStatusRows = useMemo(() => {
-    const bysite = new Map<string, AnomalyEvent[]>();
+  // Building-level status rows — all assigned buildings, anomaly counts from simEvents
+  const buildingStatusRows = useMemo(() => {
+    const byBuilding = new Map<string, AnomalyEvent[]>();
     simEvents.forEach((e) => {
-      const arr = bysite.get(e.site_id) ?? [];
+      const arr = byBuilding.get(e.building_id) ?? [];
       arr.push(e);
-      bysite.set(e.site_id, arr);
+      byBuilding.set(e.building_id, arr);
     });
-    return [...bysite.entries()].map(([site, events]) => {
-      const hasCritical = events.some((e) => e.severity === "Critical");
-      const hasHigh = events.some((e) => e.severity === "High");
-      const status = hasCritical ? "red" : hasHigh ? "yellow" : "green";
-      const buildings = buildingsPerSite.get(site) ?? new Set(events.map((e) => e.building_id)).size;
-      return { site, status, openCount: events.length, buildings };
-    });
-  }, [simEvents, buildingsPerSite]);
+    return facets.buildings
+      .map((buildingId) => {
+        const events = byBuilding.get(buildingId) ?? [];
+        const criticalCount = events.filter((e) => e.severity === "Critical").length;
+        const hasHigh = events.some((e) => e.severity === "High");
+        const status = criticalCount > 0 ? "red" : hasHigh ? "yellow" : "green";
+        return { buildingId, status, totalCount: events.length, criticalCount };
+      })
+      .sort((a, b) =>
+        buildingSort === "critical"
+          ? b.criticalCount - a.criticalCount || b.totalCount - a.totalCount
+          : b.totalCount - a.totalCount || b.criticalCount - a.criticalCount
+      );
+  }, [simEvents, facets.buildings, buildingSort]);
 
   // Building picker options
   const showBuildingPicker = facets.buildings.length > 1;
@@ -462,38 +459,34 @@ export function DashboardPage() {
           title="Site Status"
           icon="map"
           actions={
-            <div style={{ display: "flex", gap: 10, fontSize: 11, color: "var(--muted)" }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="status-dot s-green" /> Normal</span>
-              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="status-dot s-yellow" /> Warning</span>
-              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><i className="status-dot s-red" /> Critical</span>
+            <div style={{ width: 165 }}>
+              <Select
+                value={buildingSort}
+                onChange={setBuildingSort}
+                options={[
+                  { value: "critical", label: "By Critical Anomalies" },
+                  { value: "total",    label: "By Total Anomalies" },
+                ]}
+              />
             </div>
           }
         >
-          <div className="site-status-list">
+          <div className="site-status-list" style={{ overflowY: "auto", maxHeight: 320 }}>
             {loadingDash && <div className="empty"><Spinner /> Loading...</div>}
-            {!loadingDash && siteStatusRows.length === 0 && (
+            {!loadingDash && buildingStatusRows.length === 0 && (
               <div className="empty">No site data available.</div>
             )}
-            {siteStatusRows.map((row) => {
-              const dotClass = row.status === "red" ? "s-red" : row.status === "yellow" ? "s-yellow" : "s-green";
-              const badgeTone = row.status === "red" ? "critical" : row.status === "yellow" ? "warning" : "resolved";
-              return (
-                <div key={row.site} className="site-status-row">
-                  <i className={`status-dot ${dotClass}`} />
-                  <div className="site-status-info">
-                    <b>{row.site}</b>
-                    <small>{row.buildings} building{row.buildings !== 1 ? "s" : ""}</small>
-                  </div>
-                  <span className={`badge badge-${badgeTone}`}>
-                    <i className="bdot" />
-                    {row.openCount > 0 ? `${row.openCount} open` : "No alerts"}
-                  </span>
-                  <Link href={`/anomaly?site=${row.site}`} className="btn btn-sm btn-ghost site-status-link">
-                    <Icon name="arrowRight" />
-                  </Link>
+            {buildingStatusRows.map((row) => (
+              <div key={row.buildingId} className="site-status-row">
+                <div className="site-status-info">
+                  <b>{displayLocationName(null, row.buildingId)}</b>
+                  <small>{row.criticalCount > 0 ? `${row.criticalCount} critical` : "No critical"}</small>
                 </div>
-              );
-            })}
+                <span className="mono" style={{ fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>
+                  {row.totalCount} open
+                </span>
+              </div>
+            ))}
           </div>
         </Card>
       </div>
