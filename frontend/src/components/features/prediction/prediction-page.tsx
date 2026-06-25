@@ -163,7 +163,7 @@ export function PredictionPage() {
     const controller = new AbortController();
     async function loadOptions() {
       const [locationData, metricData] = await Promise.all([
-        getLocationOptions({ limit: 1000 }, controller.signal),
+        getLocationOptions({}, controller.signal),
         getMetricOptions(controller.signal),
       ]);
       setLocationResults(locationData.locations.slice(0, LOCATION_SEARCH_LIMIT));
@@ -193,7 +193,7 @@ export function PredictionPage() {
       const query = locationQuery.trim();
       setLocationSearchLoading(true);
       try {
-        const data = await getLocationOptions({ q: query || undefined, limit: 1000 }, controller.signal);
+        const data = await getLocationOptions({ q: query || undefined }, controller.signal);
         setLocationResults(data.locations.slice(0, LOCATION_SEARCH_LIMIT));
       } catch {
         if (!controller.signal.aborted) setLocationResults([]);
