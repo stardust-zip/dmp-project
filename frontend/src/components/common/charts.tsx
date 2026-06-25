@@ -324,6 +324,7 @@ export function buildUnifiedAnomalyTimeline(
     zoomStart?: number;
     zoomEnd?: number;
     futurePoints?: AnomalyTimelineResponse["points"];
+    showMarkers?: boolean;
   } = {},
 ): ChartBuilder {
   return (theme) => {
@@ -500,7 +501,7 @@ export function buildUnifiedAnomalyTimeline(
           z: 3,
           markLine: cursorMark,
         },
-        {
+        ...(options.showMarkers !== false ? [{
           name: "Anomaly",
           type: "scatter",
           data: markerData,
@@ -508,7 +509,7 @@ export function buildUnifiedAnomalyTimeline(
           cursor: "pointer",
           tooltip: { show: false },
           emphasis: { scale: 1.5 },
-        },
+        }] : []),
       ],
     };
   };
