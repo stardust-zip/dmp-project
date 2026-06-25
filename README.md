@@ -4,9 +4,17 @@
 
 ### Prerequisites
 
-- **Docker & Docker Compose v2.x**
-- **Python 3.12+** (for DVC support, optional)
-- **Git LFS** (for sample data, installed automatically by Git)
+Verify you have the required tools installed:
+
+```bash
+docker --version          # needs v27+
+docker compose version    # needs v2+
+git lfs version           # needs v3+
+```
+
+- **Docker & Docker Compose v2.x** — the entire stack runs in containers
+- **Python 3.12+** — only needed for DVC; `uv` is used inside containers automatically
+- **Git LFS 3.x** — pulls the sample data stored in `sample-data/`
 
 ### One-Command Setup
 
@@ -16,25 +24,39 @@ cd dmp-project
 ./setup
 ```
 
-That's it. The setup script is **idempotent** — safe to run repeatedly.
-After pulling new code, just run `./setup` again. Your existing data is preserved.
+That's it. The `./setup` script at the project root is **idempotent** — safe to run
+repeatedly. After pulling new code, just run `./setup` again. Your existing data
+is preserved.  If `./setup` is not executable, run `chmod +x setup` once.
 
-> **Behind the scenes:** `./setup` creates your `.env` (with an interactive profile
-> selector), pulls DVC data (or falls back to Git LFS sample data), configures
-> Git hooks, builds Docker images, starts services, runs Alembic migrations,
-> seeds reference data, and prints URLs for all running services.
+**Behind the scenes:** `./setup` creates your `.env` (with an interactive profile
+selector), pulls DVC data (or falls back to Git LFS sample data), configures
+Git hooks, builds Docker images, starts services, runs Alembic migrations,
+seeds reference data, and prints URLs for all running services.
 
 ### Profiles
 
-Docker Compose profiles let you start only the services you need:
+Docker Compose profiles let you start only the services you need.
+Pick one when running `./setup` for the first time, or set it permanently
+in `.env`:
 
-| Command | Starts | Use Case |
+| Method | Example |
+|--------|---------|
+| Interactive prompt | `./setup` (choose 1–5 when asked) |
+| Environment variable | `COMPOSE_PROFILES=full ./setup` |
+| Permanent (`.env`) | `COMPOSE_PROFILES=backend,frontend` |
+
+| Profile | Starts | Use case |
 |---------|--------|----------|
-| `./setup` (default: backend) | db, redis, mlflow, backend, worker, celery-beat | API development |
-| `COMPOSE_PROFILES=backend,frontend ./setup` | + frontend | Full-stack development |
-| `COMPOSE_PROFILES=full ./setup` | All 10 services | Demos, production-like testing |
+| `backend` (default) | db, redis, mlflow, backend, worker, celery-beat | API development |
+| `backend,frontend` | + frontend dashboard | Full-stack development |
+| `full` | All 10 services | Demos, production-like testing |
+| `monitoring` | Prometheus, Grafana, DbGate | Observability only |
+| `analytics` | JupyterLab | Data exploration |
 
-Or set `COMPOSE_PROFILES` in your `.env` file once.
+> **Profile precedence:** The `.env` file value takes priority.  If you
+> override it with `COMPOSE_PROFILES=...` on the command line, that value
+> is used instead.  Running `./setup` again later honours whatever is in
+> `.env`.
 
 ### Data Options
 
@@ -60,6 +82,17 @@ depends on the profile you selected):
 | Grafana (Monitoring) | http://localhost:3003 | monitoring |
 | Prometheus (Metrics) | http://localhost:9090 | monitoring |
 | DbGate (Database GUI) | http://localhost:3002 | monitoring |
+
+### Demo Credentials
+
+The `./setup` script seeds 25 demo users.  Use these to log in:
+
+| Role | Email | Password |
+|------|-------|----------|
+| Global Admin | `admin@dmp.com` | `demo123` |
+| Site Admin | `siteadmin@dmp.com` | `demo123` |
+| Operator | `operator@dmp.com` | `demo123` |
+| AI Engineer | `ai@dmp.com` | `demo123` |
 
 ---
 
@@ -92,14 +125,15 @@ docker compose exec backend python -m src.seeder --phase weather
 
 ## Making Schema Changes
 
-This project uses **Alembic** for database migrations (not `create_all()`).
+This project uses **Alembic** for database migrations (replaces the old
+`Base.metadata.create_all()` approach). The `init_db()` function now only
+verifies database connectivity — schema changes are always managed through
+migration files.
 
 1. **Modify the model** in `backend/src/models.py`.
-2. **Generate a migration:**
+2. **Generate a migration** (requires the stack to be running):
    ```bash
-   cd backend
-   DATABASE_URL=postgresql://dmp_user:dmp_password@localhost:5432/dmp_db \
-     uv run alembic revision --autogenerate -m "describe_your_change"
+   docker compose exec backend alembic revision --autogenerate -m "describe_your_change"
    ```
 3. **Review** the generated file in `backend/alembic/versions/`.
 4. **Apply it:**
@@ -108,15 +142,18 @@ This project uses **Alembic** for database migrations (not `create_all()`).
    ```
 5. **Commit** both the model change and the migration file.
 
-> On existing databases that were created before Alembic was introduced, run
-> `docker compose exec backend alembic stamp head` once to mark the current
-> state without re-applying migrations.
+> **For existing databases** that were created before Alembic was introduced,
+> the backend auto-detects this on startup and runs `alembic stamp head`
+> to mark the current state without re-applying migrations. No manual
+> intervention is needed.
 
 ---
 
 ## DVC (Full Dataset)
 
 The full dataset (~4 GB) is managed via DVC with a Google Drive remote.
+Without it, `./setup` automatically falls back to the Git LFS sample data
+(see [Data Options](#data-options)).
 
 ```bash
 # Authenticate (contact the team for credentials)
@@ -126,6 +163,8 @@ dvc remote modify --local gdrive gdrive_client_secret "YOUR_CLIENT_SECRET"
 # Pull data
 dvc pull
 ```
+
+After `dvc pull`, re-run `./setup` to restart services with the full dataset.
 
 ---
 
@@ -162,4 +201,53 @@ docker compose down
 
 # WARNING: Stop containers and WIPE all databases and volumes
 docker compose down -v
+```
+
+---
+
+## Troubleshooting
+
+**"Backend did not become healthy" during `./setup`**
+
+Check the backend logs:
+```bash
+docker compose logs backend | tail -50
+```
+Common causes: a stale Postgres volume (run `docker compose down -v` and
+retry), or the database port 5432 is already in use.
+
+**Database port 5432 is already in use**
+
+```bash
+sudo lsof -i :5432            # find the process
+docker compose down            # stop existing DMP containers
+```
+
+**Services start but the frontend shows a blank page**
+
+The frontend requires the `frontend` profile.  Run:
+```bash
+COMPOSE_PROFILES=full ./setup
+```
+
+**Compilation error / missing module after pulling new code**
+
+The Docker image may be stale.  Rebuild:
+```bash
+docker compose build --no-cache backend
+docker compose up -d backend
+```
+
+**"dvc pull" asks for Google authentication**
+
+DVC is optional.  The `./setup` script automatically falls back to the
+20 MB Git LFS sample data, which is enough to explore the API,
+metadata, and telemetry endpoints.  Only training and forecasting
+require the full DVC dataset.
+
+**Schema migrations fail after `git pull`**
+
+If you pulled new code that includes migration files, run:
+```bash
+docker compose exec backend alembic upgrade head
 ```
