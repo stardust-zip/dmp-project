@@ -45,22 +45,22 @@ const DATA_SOURCE_OPTIONS: Array<{ value: TrainingDataSource; label: string }> =
   { value: "db", label: "Database" },
 ];
 
-const FORECAST_ALGORITHM_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "xgboost", label: "XGBoost" },
-  { value: "lightgbm", label: "LightGBM" },
-  { value: "linear_regression", label: "Linear Regression" },
-];
-
 const MIN_TRAINING_DAYS = 30;
 
+// The training dataset only runs through 2017-09-30; never allow a later end date.
+const TRAINING_DATA_END_DATE = "2017-09-30";
+
 function defaultStartDate() {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() - 30);
-  return date.toISOString().slice(0, 10);
+  // 2017-07-01 — a ~3-month window ending at the dataset cap.
+  return "2017-07-01";
 }
 
 function defaultEndDate() {
-  return new Date().toISOString().slice(0, 10);
+  return TRAINING_DATA_END_DATE;
+}
+
+function clampEndDate(value: string) {
+  return value && value > TRAINING_DATA_END_DATE ? TRAINING_DATA_END_DATE : value;
 }
 
 function isoFromDateInput(value: string, endOfDay = false) {
@@ -274,7 +274,6 @@ export function ModelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [modelTask, setModelTask] = useState<ModelTask>("forecasting");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
-  const [forecastAlgorithm, setForecastAlgorithm] = useState("xgboost");
   const [forecastHorizon, setForecastHorizon] = useState(24);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [metricQuery, setMetricQuery] = useState("");
@@ -496,20 +495,19 @@ export function ModelsPage() {
   const trainingPayload = useMemo<TrainModelPayload>(
     () => ({
       site_id: null,
-      building_id: trainingMode === "single" ? selectedBuildingId : null,
+      building_id: isForecasting ? null : trainingMode === "single" ? selectedBuildingId : null,
       metrics: isAnomalyDetection ? ["electricity"] : selectedMetrics,
       time_range_start: isoFromDateInput(startDate),
       time_range_end: isoFromDateInput(endDate, true),
       model_task: modelTask,
       data_source: dataSource,
       ...(isForecasting
-        ? { algorithm: forecastAlgorithm, forecast_horizon_hours: forecastHorizon }
+        ? { algorithm: "xgboost", forecast_horizon_hours: forecastHorizon }
         : {}),
     }),
     [
       dataSource,
       endDate,
-      forecastAlgorithm,
       forecastHorizon,
       isAnomalyDetection,
       isForecasting,
@@ -839,7 +837,7 @@ export function ModelsPage() {
                 <Field label="Data source">
                   <Select value={dataSource} onChange={setDataSource} options={DATA_SOURCE_OPTIONS} />
                 </Field>
-                {!isAnomalyDetection && (
+                {!isAnomalyDetection && !isForecasting && (
                   <Field label="Training scope">
                     <div className="training-mode-toggle">
                       <button
@@ -859,7 +857,7 @@ export function ModelsPage() {
                     </div>
                   </Field>
                 )}
-                {!isAnomalyDetection && trainingMode === "single" && (
+                {!isAnomalyDetection && !isForecasting && trainingMode === "single" && (
                   <Field label="Building">
                     <Select
                       value={selectedBuildingId ?? ""}
@@ -894,7 +892,7 @@ export function ModelsPage() {
                       <Icon name="calendar" />
                       <div className="date-range-segment-body">
                         <span>To</span>
-                        <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+                        <input type="date" max={TRAINING_DATA_END_DATE} value={endDate} onChange={(event) => setEndDate(clampEndDate(event.target.value))} />
                       </div>
                     </div>
                   </div>
@@ -906,25 +904,20 @@ export function ModelsPage() {
                   )}
                 </Field>
                 {isForecasting && (
-                  <>
-                    <Field label="Algorithm">
-                      <Select value={forecastAlgorithm} onChange={setForecastAlgorithm} options={FORECAST_ALGORITHM_OPTIONS} />
-                    </Field>
-                    <Field label="Forecast horizon (hours)">
-                      <input
-                        className="input"
-                        type="number"
-                        min={1}
-                        max={168}
-                        value={forecastHorizon}
-                        onChange={(event) =>
-                          setForecastHorizon(
-                            Math.max(1, Math.min(168, Number(event.target.value) || 24)),
-                          )
-                        }
-                      />
-                    </Field>
-                  </>
+                  <Field label="Forecast horizon (hours)">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      max={168}
+                      value={forecastHorizon}
+                      onChange={(event) =>
+                        setForecastHorizon(
+                          Math.max(1, Math.min(168, Number(event.target.value) || 24)),
+                        )
+                      }
+                    />
+                  </Field>
                 )}
               </div>
               {!trainingTaskImplemented ? (

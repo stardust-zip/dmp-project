@@ -47,15 +47,21 @@ from src.ml.forecasting.types import (
     RANDOM_STATE,
     forecast_model_name,
 )
-from src.ml.training import algorithm_for_task
 from src.models import AIPipelineLog
-from src.schemas import MLAlgorithm, ModelTask, ModelTrainingRequest
+from src.schemas import MLAlgorithm, ModelTrainingRequest
 from xgboost import XGBRegressor
 
 logger = logging.getLogger(__name__)
 
 TARGET_COLUMN = "target"
 EARLY_STOPPING_ROUNDS = 100
+
+# MAPE divides by the actual, so near-zero actuals blow it up without bound: a
+# 0.001 kWh actual with a 5 kWh prediction is a 500,000% error. Masking only
+# exact zeros (|y| <= 1e-9) left test MAPE at ~10,887% on real data; masking
+# actuals <= 1 kWh brings it to a stable ~17%. See
+# ``notebooks/forecasting/EDA/diagnose_mape.py`` for the measurement.
+MAPE_MIN_ACTUAL = 1.0
 
 XGB_PARAMS = {
     "n_estimators": 2000,
@@ -111,10 +117,16 @@ def _mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
     Matches the frontend's ``unit: "%"`` rendering; ``test_mape`` stored in
     MLflow is therefore a percentage, not a raw ratio.
+
+    Actuals <= ``MAPE_MIN_ACTUAL`` kWh are masked out before averaging. MAPE is
+    unbounded and divides by the actual, so near-zero actuals (interpolated
+    night-time consumption etc.) each contribute thousands of percent and
+    dominate the mean; a 1 kWh floor keeps the metric stable while staying
+    physically meaningful.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
-    mask = np.abs(y_true) > 1e-9
+    mask = y_true > MAPE_MIN_ACTUAL
     if not mask.any():
         return float("nan")
     return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100.0)
@@ -189,11 +201,8 @@ def train_forecasting_model(
 
     horizon = int(getattr(request, "forecast_horizon_hours", DEFAULT_FORECAST_HORIZON))
     weather_mode = getattr(request, "weather_mode", DEFAULT_WEATHER_MODE)
-    algorithm = (
-        MLAlgorithm(request.algorithm)
-        if getattr(request, "algorithm", None)
-        else algorithm_for_task(ModelTask.Forecasting)
-    )
+    # Forecasting always trains XGBoost (the UI no longer offers a choice).
+    algorithm = MLAlgorithm.XGBoost
 
     # --- Determine whether we're training per-building or globally ---
     target_building_id = request.building_id or None

@@ -125,6 +125,30 @@ def test_mape_returns_percent():
     assert 1.0 < result < 100.0  # a sensible percentage, not 0.02 nor ~400
 
 
+def test_mape_masks_near_zero_actuals():
+    """Actuals <= MAPE_MIN_ACTUAL kWh are excluded so they can't blow up MAPE.
+
+    Regression for the ~10,887% MAPE caused by interpolated near-zero actuals
+    (see ``notebooks/forecasting/EDA/diagnose_mape.py``).
+    """
+    from src.ml.forecasting.training import MAPE_MIN_ACTUAL
+
+    # The first actual is ~0; without the mask this point alone would be a
+    # 1,000,000% error. It must be dropped, leaving only the 10/20/30 points.
+    y_true = np.array([0.001, 10.0, 20.0, 30.0])
+    y_pred = np.array([10.0, 11.0, 19.0, 33.0])
+    result = _mape(y_true, y_pred)
+
+    kept = y_true > MAPE_MIN_ACTUAL
+    expected = np.mean(np.abs((y_true[kept] - y_pred[kept]) / y_true[kept])) * 100.0
+    assert np.isfinite(result)
+    assert np.isclose(result, expected)
+    assert result < 100.0  # not exploded by the 0.001 actual
+
+    # All actuals below the floor -> nothing to average -> NaN (not inf/raise).
+    assert np.isnan(_mape(np.array([0.0, 0.5]), np.array([1.0, 2.0])))
+
+
 # --------------------------------------------------------------------------
 # Telemetry cleaning (preprocessing port).
 # --------------------------------------------------------------------------
