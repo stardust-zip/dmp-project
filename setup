@@ -105,8 +105,17 @@ setup_env() {
         info "✓ COMPOSE_PROFILES=${prof} written to ${ENV_FILE}"
     fi
 
-    # Source .env so COMPOSE_PROFILES is available to docker compose
-    set -a; source "$ENV_FILE"; set +a
+    # Source .env so COMPOSE_PROFILES is available to docker compose.
+    # Only export lines that are safe KEY=VALUE assignments — skip lines
+    # that contain characters bash misinterpretes (JSON arrays, etc.).
+    set -a
+    while IFS= read -r _env_line; do
+        case "$_env_line" in
+            '' | \#* | *'['* | *']'* ) ;;
+            *=*) export "$_env_line" 2>/dev/null || true ;;
+        esac
+    done < "$ENV_FILE"
+    set +a
 }
 
 # ─── Step 2: Data (DVC or sample fallback) ──────────────────────────────────
