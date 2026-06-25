@@ -1,7 +1,8 @@
 # Implementation Plan: Project Portability
 
 **Based on:** [`docs/architecture/portability.md`](./portability.md)
-**Status:** Ready for execution
+**Status:** In progress (Phases 1-2 completed)
+**Last Updated:** 2026-06-25
 **Created:** 2026-06-25
 
 ---
@@ -39,18 +40,18 @@ This plan transforms the current ~10-step manual setup into a **single-command b
 
 ### 1.2 Key Deliverables
 
-| # | Deliverable | File(s) | Phase |
-|---|-------------|---------|-------|
-| 1 | Docker Compose profiles | `docker-compose.yml` (modified) | 1 |
-| 2 | Idempotent setup script | `./setup` (new) | 2 |
-| 3 | Alembic migration framework | `backend/alembic/` (new), `backend/alembic.ini` (new) | 3 |
-| 4 | Initial schema migration | `backend/alembic/versions/001_initial_schema.py` (new) | 3 |
-| 5 | Removed legacy migration code | `backend/src/database.py` (modified) | 3 |
-| 6 | System status endpoint | `backend/src/api/v1/endpoints/system.py` (new) | 4 |
-| 7 | Sample data directory | `sample-data/` (new) | 5 |
-| 8 | Git LFS tracking | `.gitattributes` (modified) | 5 |
-| 9 | Updated Dockerfiles | `backend/Dockerfile` (modified) | 6 |
-| 10 | Updated README | `README.md` (modified) | 6 |
+| # | Deliverable | File(s) | Phase | Status |
+|---|-------------|---------|-------|--------|
+| 1 | Docker Compose profiles | `docker-compose.yml` (modified) | 1 | ✅ |
+| 2 | Idempotent setup script | `./setup` (new) | 2 | ✅ |
+| 3 | Alembic migration framework | `backend/alembic/` (new), `backend/alembic.ini` (new) | 3 | ❌ |
+| 4 | Initial schema migration | `backend/alembic/versions/001_initial_schema.py` (new) | 3 | ❌ |
+| 5 | Removed legacy migration code | `backend/src/database.py` (modified) | 3 | ❌ |
+| 6 | System status endpoint | `backend/src/api/v1/endpoints/system.py` (new) | 4 | ❌ |
+| 7 | Sample data directory | `sample-data/` (new) | 5 | ❌ |
+| 8 | Git LFS tracking | `.gitattributes` (modified) | 5 | ❌ |
+| 9 | Updated Dockerfiles | `backend/Dockerfile` (modified) | 6 | ❌ |
+| 10 | Updated README | `README.md` (modified) | 6 | ❌ |
 
 ---
 
@@ -78,12 +79,13 @@ git checkout -b feature/portability
 
 ---
 
-## 3. Phase 1: Docker Compose Profiles
+## 3. Phase 1: Docker Compose Profiles ✅
 
 **Goal:** Allow developers to start only the services they need via `--profile` flag, reducing resource waste and startup time.
 
 **Effort:** 2-3 hours
 **File:** `docker-compose.yml` (modified), `.env.example` (modified)
+**Status:** ✅ Completed on 2026-06-25
 
 ### 3.1 Profile Assignment
 
@@ -188,20 +190,21 @@ docker compose down
 
 ### 3.3 Verification Checklist
 
-- [ ] `docker compose --profile backend up` starts exactly 6 services
-- [ ] `docker compose --profile full up` starts all 10 services
-- [ ] `docker compose up` (no flag) with `COMPOSE_PROFILES=backend` in `.env` starts backend services
-- [ ] `docker compose --profile monitoring --profile backend up` starts backend + monitoring (all but jupyter and frontend)
-- [ ] Health checks pass for all services in each profile
+- [x] `docker compose --profile backend up` starts exactly 6 services
+- [x] `docker compose --profile full up` starts all 10 services
+- [x] `docker compose up` (no flag) with `COMPOSE_PROFILES=backend` in `.env` starts backend services
+- [x] `docker compose --profile monitoring --profile backend up` starts backend + monitoring (all but jupyter and frontend)
+- [x] Health checks pass for all services in each profile
 
 ---
 
-## 4. Phase 2: The `setup` Entrypoint Script
+## 4. Phase 2: The `setup` Entrypoint Script ✅
 
 **Goal:** Replace multi-step README guide with a single `./setup` command that is safe to re-run indefinitely.
 
 **Effort:** 3-4 hours
 **Files:** `./setup` (new, executable)
+**Status:** ✅ Completed on 2026-06-25
 
 ### 4.1 Script Outline
 
@@ -463,13 +466,14 @@ docker compose down
 
 ### 4.4 Verification Checklist
 
-- [ ] Fresh `rm -f .env && ./setup` creates `.env` with profile prompt
-- [ ] `./setup` runs again and all steps skip (completes < 30s)
-- [ ] After `docker compose down`, `./setup` restarts everything correctly
-- [ ] Script fails gracefully if Docker is not running (clear error message)
-- [ ] Script warns (does not error) if DVC data is unavailable
-- [ ] `./setup` works from any directory (uses `SCRIPT_DIR` to `cd` to project root)
-- [ ] Seed check correctly skips when `location` table has rows
+- [x] Fresh `rm -f .env && ./setup` creates `.env` with profile prompt
+- [x] `./setup` runs again and all steps skip (completes < 30s)
+- [x] After `docker compose down`, `./setup` restarts everything correctly
+- [x] Script fails gracefully if Docker is not running (clear error message)
+- [x] Script warns (does not error) if DVC data is unavailable
+- [x] `./setup` works from any directory (uses `SCRIPT_DIR` to `cd` to project root)
+- [x] Seed check correctly skips when `location` table has rows
+- [x] Script handles missing Phase 4 status endpoint gracefully (Phase 2 does not depend on Phase 4)
 
 ---
 
@@ -1252,12 +1256,12 @@ sh -c "
 
 ## Appendix A: Total File Inventory
 
-| File | Phase | Action | Purpose |
-|------|-------|--------|---------|
-| `docker-compose.yml` | 1, 3, 6 | Modify | Add `profiles:`, add `alembic upgrade head` to backend command, pin `dbgate` version |
-| `.env.example` | 1 | Modify | Add `COMPOSE_PROFILES=backend` |
-| `./setup` | 2 | **New** | Idempotent entrypoint script |
-| `./setup` | 5 | Modify | Add sample data fallback logic |
+| File | Phase | Action | Purpose | Status |
+|------|-------|--------|---------|--------|
+| `docker-compose.yml` | 1, 3, 6 | Modify | Add `profiles:`, add `alembic upgrade head` to backend command, pin `dbgate` version | ✅ Phase 1 |
+| `.env.example` | 1 | Modify | Add `COMPOSE_PROFILES=backend` | ✅ |
+| `./setup` | 2 | **New** | Idempotent entrypoint script | ✅ |
+| `./setup` | 5 | Modify | Add sample data fallback logic | ⏳ Pending |
 | `backend/alembic.ini` | 3 | **New** | Alembic configuration |
 | `backend/alembic/env.py` | 3 | **New** | Alembic environment (auto-detect models) |
 | `backend/alembic/script.py.mako` | 3 | **New** | Migration template |
