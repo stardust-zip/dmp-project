@@ -4,11 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { Card, KpiCard, Select, Spinner } from "@/components/common/primitives";
-import { getAnomalyOverview, getAnomalyEvents, getAnomalyFacets, getAnomalyTimeline } from "@/lib/anomaly-api";
+import { getAnomalyEvents, getAnomalyFacets, getAnomalyTimeline } from "@/lib/anomaly-api";
 import { displayLocationName, timeAgo } from "@/lib/format";
 import { KPIS } from "@/lib/mock-data";
 import { useSimulationStore, type SimBounds } from "@/lib/simulation-store";
-import type { AnomalyEvent, AnomalyFacets, AnomalyOverview, AnomalyTimelineResponse } from "@/types";
+import type { AnomalyEvent, AnomalyFacets, AnomalyTimelineResponse } from "@/types";
 
 const SEVERITY_RANK: Record<string, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
 const HOUR_MS = 60 * 60 * 1000;
@@ -61,7 +61,6 @@ function toneColor(tone: string) {
 
 export function DashboardPage() {
   // API data
-  const [overview, setOverview] = useState<AnomalyOverview | null>(null);
   const [recentEvents, setRecentEvents] = useState<AnomalyEvent[]>([]);
   const [facets, setFacets] = useState<AnomalyFacets>({ sites: [], buildings: [], severities: [], types: [], primary_usage_types: [] });
 
@@ -77,8 +76,6 @@ export function DashboardPage() {
   const [loadingTimeline, setLoadingTimeline] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Alert drawer / KPI
-  const [openKpi, setOpenKpi] = useState<string | null>(null);
   const [buildingSort, setBuildingSort] = useState<"critical" | "total">("critical");
 
   const router = useRouter();
@@ -89,12 +86,10 @@ export function DashboardPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoadingDash(true);
     Promise.all([
-      getAnomalyOverview({ ...SIMULATION_RANGE_QUERY }, controller.signal),
       getAnomalyEvents({ sort: "oldest", ...SIMULATION_RANGE_QUERY }, controller.signal),
       getAnomalyFacets(undefined, controller.signal),
     ])
-      .then(([ov, evs, fcts]) => {
-        setOverview(ov);
+      .then(([evs, fcts]) => {
         setRecentEvents(evs.items);
         setFacets(fcts);
         // Auto-select for operators with exactly 1 building
@@ -203,19 +198,32 @@ export function DashboardPage() {
     [facets.buildings],
   );
 
-  // KPI strip — override anomaly counts from real API
+  // KPI strip — anomaly counts track simNow
   const kpis = useMemo(() => {
-    if (!overview) return KPIS;
+    const total = visibleDashboardEvents.length;
+    const critical = visibleDashboardEvents.filter((e) => e.severity === "Critical").length;
+
+    const simDate = simNow != null ? new Date(simNow) : null;
+    const simDayKey = simDate != null
+      ? `${simDate.getFullYear()}-${simDate.getMonth()}-${simDate.getDate()}`
+      : null;
+    const newToday = simDayKey != null
+      ? visibleDashboardEvents.filter((e) => {
+          const d = new Date(e.start_time);
+          return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` === simDayKey;
+        }).length
+      : 0;
+
     return KPIS.map((kpi) => {
       if (kpi.key === "anom" || kpi.label?.toLowerCase().includes("anomal")) {
-        return { ...kpi, value: String(overview.total_anomalies) };
+        return { ...kpi, value: String(total), delta: newToday };
       }
       if (kpi.key === "crit" || kpi.label?.toLowerCase().includes("critical")) {
-        return { ...kpi, value: String(overview.critical_anomalies) };
+        return { ...kpi, value: String(critical) };
       }
       return kpi;
     });
-  }, [overview]);
+  }, [visibleDashboardEvents, simNow]);
 
   // Severity items update with the global simulation cursor.
   const severityItems = useMemo(() => {
@@ -238,15 +246,8 @@ export function DashboardPage() {
 
 
       <div className="grid kpi-summary">
-        {kpis.map((kpi, index) => (
-          <KpiCard
-            key={kpi.key}
-            kpi={kpi}
-            open={openKpi === kpi.key}
-            onToggle={() => setOpenKpi((current) => (current === kpi.key ? null : kpi.key))}
-            onClose={() => setOpenKpi(null)}
-            windowAlign={index >= kpis.length - 2 ? "end" : "start"}
-          />
+        {kpis.map((kpi) => (
+          <KpiCard key={kpi.key} kpi={kpi} />
         ))}
       </div>
 

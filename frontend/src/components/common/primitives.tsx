@@ -86,130 +86,34 @@ export function Sparkline({
   );
 }
 
-export function KpiCard({
-  kpi,
-  open = false,
-  onToggle,
-  onClose,
-  windowAlign = "start",
-}: {
-  kpi: Kpi;
-  open?: boolean;
-  onToggle?: () => void;
-  onClose?: () => void;
-  windowAlign?: "start" | "end";
-}) {
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const [renderWindow, setRenderWindow] = useState(open);
-  const [closing, setClosing] = useState(false);
-  const sparkColor =
-    kpi.tone === "red"
-      ? "var(--red)"
-      : kpi.tone === "orange"
-        ? "var(--orange)"
-        : kpi.tone === "green"
-          ? "var(--green)"
-          : kpi.tone === "violet"
-            ? "#7c3aed"
-            : "var(--accent-600)";
+export function KpiCard({ kpi }: { kpi: Kpi }) {
   const upBad = kpi.key === "anom" || kpi.key === "crit";
   const positive = kpi.delta > 0;
   const deltaCls = upBad ? (positive ? "up" : "down") : positive ? "down" : "up";
   const neutral = kpi.key === "today" || kpi.key === "yest" || kpi.key === "forecast";
 
-  useEffect(() => {
-    if (open) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setRenderWindow(true);
-      setClosing(false);
-      return;
-    }
-
-    if (!renderWindow) return;
-
-    setClosing(true);
-    const timeout = window.setTimeout(() => {
-      setRenderWindow(false);
-      setClosing(false);
-    }, 150);
-
-    return () => window.clearTimeout(timeout);
-  }, [open, renderWindow]);
-
-  useEffect(() => {
-    if (!open) return;
-
-    const closeIfOutside = (event: PointerEvent) => {
-      if (!wrapRef.current?.contains(event.target as Node)) {
-        onClose?.();
-      }
-    };
-
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose?.();
-      }
-    };
-
-    document.addEventListener("pointerdown", closeIfOutside);
-    document.addEventListener("keydown", closeOnEscape);
-
-    return () => {
-      document.removeEventListener("pointerdown", closeIfOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [onClose, open]);
-
   return (
-    <div className="kpi-wrap" ref={wrapRef}>
-      <button className={`kpi ${open ? "is-open" : ""}`} type="button" aria-expanded={open} aria-haspopup="dialog" onClick={onToggle}>
-        <div className="kpi-top">
-          <span className="kpi-label">{kpi.label}</span>
-          <span className="kpi-ic" style={toneStyle(kpi.tone)}>
-            <Icon name={kpi.icon} />
-          </span>
-        </div>
-        <div className="row" style={{ alignItems: "baseline", gap: 0 }}>
-          <span className="kpi-val">{kpi.value}</span>
-          {kpi.unit && <span className="kpi-unit">{kpi.unit}</span>}
-        </div>
-        <div className="kpi-foot">
-          <span className={`delta ${neutral ? (positive ? "up" : "down") : deltaCls}`}>
-            <Icon name={positive ? "arrowUp" : "arrowDown"} style={{ width: 12, height: 12 }} />
-            {positive ? "+" : ""}
-            {kpi.delta}
-            {kpi.isCount ? "" : kpi.key === "quality" ? " pts" : "%"}
-          </span>
-          <span style={{ color: "var(--muted-2)" }}>.</span>
-          <span>{kpi.deltaLabel}</span>
-        </div>
-      </button>
-      {renderWindow && kpi.spark && (
-        <div className={`kpi-window ${closing ? "is-closing" : ""}`} data-align={windowAlign} role="dialog" aria-label={`${kpi.label} trend`}>
-          <div className="kpi-window-head">
-            <div>
-              <b>{kpi.label}</b>
-              <span>
-                {kpi.value}
-                {kpi.unit ? ` ${kpi.unit}` : ""}
-              </span>
-            </div>
-            <button className="icon-btn" type="button" aria-label="Close trend window" onClick={onClose}>
-              <Icon name="x" />
-            </button>
-          </div>
-          <Sparkline data={kpi.spark} color={sparkColor} h={82} />
-          <div className="kpi-window-foot">
-            <span className={`delta ${neutral ? (positive ? "up" : "down") : deltaCls}`}>
-              <Icon name={positive ? "arrowUp" : "arrowDown"} style={{ width: 12, height: 12 }} />
-              {positive ? "+" : ""}
-              {kpi.delta}
-              {kpi.isCount ? "" : kpi.key === "quality" ? " pts" : "%"}
-            </span>
-            <span>{kpi.deltaLabel}</span>
-          </div>
-        </div>
-      )}
+    <div className="kpi">
+      <div className="kpi-top">
+        <span className="kpi-label">{kpi.label}</span>
+        <span className="kpi-ic" style={toneStyle(kpi.tone)}>
+          <Icon name={kpi.icon} />
+        </span>
+      </div>
+      <div className="row" style={{ alignItems: "baseline", gap: 0 }}>
+        <span className="kpi-val">{kpi.value}</span>
+        {kpi.unit && <span className="kpi-unit">{kpi.unit}</span>}
+      </div>
+      <div className="kpi-foot">
+        <span className={`delta ${neutral ? (positive ? "up" : "down") : deltaCls}`}>
+          <Icon name={positive ? "arrowUp" : "arrowDown"} style={{ width: 12, height: 12 }} />
+          {positive ? "+" : ""}
+          {kpi.delta}
+          {kpi.isCount ? "" : kpi.key === "quality" ? " pts" : "%"}
+        </span>
+        <span style={{ color: "var(--muted-2)" }}>.</span>
+        <span>{kpi.deltaLabel}</span>
+      </div>
     </div>
   );
 }
