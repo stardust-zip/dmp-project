@@ -10,6 +10,7 @@ from src.api.v1.endpoints import (
     models,
     monitoring,
     prediction,
+    system,
     telemetry,
     users,
 )
@@ -31,3 +32,4 @@ api_router.include_router(
 api_router.include_router(export.router, prefix="/export", tags=["export"])
 api_router.include_router(metadata.router, prefix="/metadata", tags=["metadata"])
 api_router.include_router(monitoring.router, prefix="/models", tags=["monitoring"])
+api_router.include_router(system.router, tags=["system"])
