@@ -363,11 +363,7 @@ export function AnomalyPage() {
   const shouldFollowTimeline = isPlaying && timelineZoom != null;
   const visibleTimeline = useMemo(() => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)), [rawTimeline, simNow]);
   const visibleOverview = useMemo(() => overviewFromEvents(visibleTimeline.items), [visibleTimeline.items]);
-  const filteredItems = useMemo(
-    () => filters.primaryUsage === "all" ? visibleTimeline.items : visibleTimeline.items.filter((e) => e.primary_space_usage === filters.primaryUsage),
-    [filters.primaryUsage, visibleTimeline.items],
-  );
-  const sortedEvents = useMemo(() => sortEvents(filteredItems, filters.sort), [filters.sort, filteredItems]);
+  const sortedEvents = useMemo(() => sortEvents(visibleTimeline.items, filters.sort), [filters.sort, visibleTimeline.items]);
   const totalPages = Math.max(1, Math.ceil(sortedEvents.length / PER_PAGE));
   const safePage = Math.min(page, totalPages);
   const events = useMemo(() => eventsResponseFrom(sortedEvents, safePage), [safePage, sortedEvents]);
