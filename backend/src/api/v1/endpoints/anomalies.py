@@ -4,6 +4,7 @@ from typing import Literal
 import pandas as pd
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
+from src.api.v1.deps import get_current_user, user_has_global_read_access
 from src.database import get_db
 from src.ml.anomaly.events import (
     event_records,
@@ -19,6 +20,7 @@ from src.schemas import (
     AnomalyFacetsResponse,
     AnomalyOverviewResponse,
     AnomalyTimelineResponse,
+    UserResponse,
 )
 
 router = APIRouter()
@@ -32,6 +34,12 @@ def _query_time(value: datetime | None) -> pd.Timestamp | None:
     return pd.Timestamp(value, tz="UTC")
 
 
+def _allowed_sites(current_user: UserResponse) -> list[str] | None:
+    if user_has_global_read_access(current_user):
+        return None
+    return list(current_user.assigned_site_ids)
+
+
 def _filtered(
     db: Session,
     site_id: str | None,
@@ -40,6 +48,7 @@ def _filtered(
     anomaly_type: str | None,
     start: datetime | None,
     end: datetime | None,
+    allowed_site_ids: list[str] | None,
 ):
     return filter_events(
         db,
@@ -49,6 +58,7 @@ def _filtered(
         anomaly_type=anomaly_type,
         start=_query_time(start),
         end=_query_time(end),
+        allowed_site_ids=allowed_site_ids,
     )
 
 
@@ -90,6 +100,7 @@ def _timeline_points_and_gaps(
     events: pd.DataFrame,
     start: datetime | None,
     end: datetime | None,
+    allowed_site_ids: list[str] | None,
 ) -> tuple[list[dict], list[dict]]:
     if not building_id:
         return [], []
@@ -102,6 +113,7 @@ def _timeline_points_and_gaps(
         building_id=building_id,
         start=window_start,
         end=window_end,
+        allowed_site_ids=allowed_site_ids,
     )
 
     points: list[dict] = []
@@ -177,9 +189,10 @@ async def get_anomaly_overview(
     start: datetime | None = Query(None),
     end: datetime | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
 ):
     logger.info("Anomaly overview requested — site={} building={} severity={} type={} start={} end={}", site_id, building_id, severity, type, start, end)
-    events = _filtered(db, site_id, building_id, severity, type, start, end)
+    events = _filtered(db, site_id, building_id, severity, type, start, end, _allowed_sites(current_user))
     logger.info("Anomaly overview — {} events matched", len(events))
     severity_counts = {key: int((events["severity"] == key).sum()) for key in SEVERITIES}
     type_counts = events["type"].value_counts().head(12).astype(int).to_dict()
@@ -209,9 +222,10 @@ async def get_anomaly_events(
     offset: int = Query(0, ge=0),
     sort: Literal["severity", "newest", "oldest", "duration"] = Query("severity"),
     db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
 ):
     logger.info("Anomaly events requested — site={} building={} severity={} type={} start={} end={} limit={} offset={} sort={}", site_id, building_id, severity, type, start, end, limit, offset, sort)
-    events = _filtered(db, site_id, building_id, severity, type, start, end)
+    events = _filtered(db, site_id, building_id, severity, type, start, end, _allowed_sites(current_user))
     logger.info("Anomaly events — {} events matched", len(events))
     events = sort_events(events, sort)
     page = events.iloc[offset : offset + limit]
@@ -233,9 +247,11 @@ async def get_anomaly_timeline(
     end: datetime | None = Query(None),
     limit: int = Query(1000, ge=1, le=5000),
     db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
 ):
     logger.info("Anomaly timeline requested — site={} building={} severity={} type={} start={} end={} limit={}", site_id, building_id, severity, type, start, end, limit)
-    events = _filtered(db, site_id, building_id, severity, type, start, end)
+    allowed = _allowed_sites(current_user)
+    events = _filtered(db, site_id, building_id, severity, type, start, end, allowed)
     logger.info("Anomaly timeline — {} events matched, building series fetched: {}", len(events), bool(building_id))
     timeline_events = sort_events(events, "newest").head(limit)
     points, gaps = _timeline_points_and_gaps(
@@ -245,6 +261,7 @@ async def get_anomaly_timeline(
         events=events,
         start=start,
         end=end,
+        allowed_site_ids=allowed,
     )
     return {"items": event_records(timeline_events), "points": points, "gaps": gaps}
 
@@ -253,9 +270,10 @@ async def get_anomaly_timeline(
 async def get_anomaly_facets(
     site_id: str | None = Query(None),
     db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
 ):
     logger.info("Anomaly detection tab opened — facets requested (site={})", site_id)
-    response = load_anomaly_facets(db, site_id=site_id)
+    response = load_anomaly_facets(db, site_id=site_id, allowed_site_ids=_allowed_sites(current_user))
     logger.info(
         "Anomaly facets loaded - sites={} primary_usage_types={} buildings={} site_sample={} primary_usage_sample={} building_sample={}",
         len(response["sites"]),

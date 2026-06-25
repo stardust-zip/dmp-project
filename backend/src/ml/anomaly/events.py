@@ -66,10 +66,24 @@ def _event_type(row) -> str:
     return DIRECTION_TYPE_LABELS.get(direction, "Unusual consumption")
 
 
-def load_anomaly_facets(db: Session, site_id: str | None = None) -> dict:
+def load_anomaly_facets(
+    db: Session,
+    site_id: str | None = None,
+    allowed_site_ids: list[str] | None = None,
+) -> dict:
     from src.models import AnomalyDetectedEvent
 
     base = [AnomalyDetectedEvent.is_anomaly.is_(True)]
+    if allowed_site_ids is not None:
+        if not allowed_site_ids:
+            return {
+                "sites": [],
+                "buildings": [],
+                "severities": SEVERITIES,
+                "types": [],
+                "primary_usage_types": [],
+            }
+        base = base + [AnomalyDetectedEvent.site_id.in_(allowed_site_ids)]
     scoped = base + ([AnomalyDetectedEvent.site_id == site_id] if site_id else [])
 
     site_rows = (
@@ -202,10 +216,15 @@ def filter_events(
     anomaly_type: str | None = None,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
+    allowed_site_ids: list[str] | None = None,
 ) -> pd.DataFrame:
     from src.models import AnomalyDetectedEvent
 
     q = db.query(AnomalyDetectedEvent).filter(AnomalyDetectedEvent.is_anomaly.is_(True))
+    if allowed_site_ids is not None:
+        if not allowed_site_ids:
+            return _rows_to_events_df([])
+        q = q.filter(AnomalyDetectedEvent.site_id.in_(allowed_site_ids))
     if site_id:
         q = q.filter(AnomalyDetectedEvent.site_id == site_id)
     if building_id:
@@ -232,10 +251,15 @@ def filter_series(
     building_id: str | None = None,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
+    allowed_site_ids: list[str] | None = None,
 ) -> pd.DataFrame:
     from src.models import AnomalyDetectedEvent
 
     q = db.query(AnomalyDetectedEvent).filter(AnomalyDetectedEvent.source == "lgbm")
+    if allowed_site_ids is not None:
+        if not allowed_site_ids:
+            return _rows_to_series_df([])
+        q = q.filter(AnomalyDetectedEvent.site_id.in_(allowed_site_ids))
     if site_id:
         q = q.filter(AnomalyDetectedEvent.site_id == site_id)
     if building_id:
