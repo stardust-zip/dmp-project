@@ -1,251 +1,165 @@
-# DMP Smart City AI Platform - Developer Guide
+# DMP Smart City AI Platform — Developer Guide
 
-This guide will walk you through setting up your local environment, syncing our datasets, and spinning up the development servers.
+## Quick Start
 
-## Prerequisites
+### Prerequisites
 
-Before starting, ensure you have the following installed on your machine:
+- **Docker & Docker Compose v2.x**
+- **Python 3.12+** (for DVC support, optional)
+- **Git LFS** (for sample data, installed automatically by Git)
 
-- **Git**
-- **Docker & Docker Compose** (Crucial: Our entire stack is containerized)
-- **Python 3.11+**
-- _Optional but recommended:_ [uv](https://github.com/astral-sh/uv) for lightning-fast dependency management.
-
----
-
-## 1. Initial Setup
-
-First, clone the repository and set up your local configuration.
+### One-Command Setup
 
 ```bash
-git clone https://github.com/stardust-zip/dmp-project
+git clone https://github.com/stardust-zip/dmp-project.git
 cd dmp-project
-
+./setup
 ```
 
-### Git Hooks Configuration
+That's it. The setup script is **idempotent** — safe to run repeatedly.
+After pulling new code, just run `./setup` again. Your existing data is preserved.
 
-We use a shared pre-push hook to automatically catch syntax errors and verify DVC tracking before code is pushed. Run this command to enable it on your local machine:
+> **Behind the scenes:** `./setup` creates your `.env` (with an interactive profile
+> selector), pulls DVC data (or falls back to Git LFS sample data), configures
+> Git hooks, builds Docker images, starts services, runs Alembic migrations,
+> seeds reference data, and prints URLs for all running services.
 
-```bash
-git config core.hooksPath .githooks
+### Profiles
 
-# Make the script executable (If you are using Windows, run this with Git Bash)
-chmod +x .githooks/pre-push
+Docker Compose profiles let you start only the services you need:
 
-```
+| Command | Starts | Use Case |
+|---------|--------|----------|
+| `./setup` (default: backend) | db, redis, mlflow, backend, worker, celery-beat | API development |
+| `COMPOSE_PROFILES=backend,frontend ./setup` | + frontend | Full-stack development |
+| `COMPOSE_PROFILES=full ./setup` | All 10 services | Demos, production-like testing |
 
-### Environment Variables
+Or set `COMPOSE_PROFILES` in your `.env` file once.
 
-```bash
-cp .env.example .env
+### Data Options
 
-```
+| Mode | Setup | Size | Capabilities |
+|------|-------|------|--------------|
+| **Full (DVC)** | `dvc pull` (requires GDrive access) | ~4 GB | Training, forecasting, all endpoints |
+| **Sample (LFS)** | Automatic fallback in `./setup` | ~20 MB | API testing, metadata, telemetry queries |
+| **Zero-data** | No action needed | 0 MB | API starts, data endpoints return errors |
 
 ---
 
-## 2. Python Environment & Dependencies
+## Service Map
 
-We use `pyproject.toml` to manage dependencies. You can set up your local environment using the modern `uv` workflow, or standard `pip`.
+Once the stack is running, you can access the tools at these URLs (availability
+depends on the profile you selected):
 
-### Option A: Using `uv` (Recommended)
-
-If you have `uv` installed:
-
-```bash
-# Creates a .venv and installs everything
-uv sync
-
-# Activate the environment
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-```
-
-### Option B: Using Standard `pip`
-
-If you do not use `uv`, you can use standard Python tools to install the project dependencies:
-
-```bash
-# Create a virtual environment
-python3 -m venv .venv
-
-# Activate it
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install the project and its development dependencies
-pip install -e .
-pip install pytest ruff dvc[gdrive]
-
-```
+| Service | URL | Profile |
+|---------|-----|---------|
+| FastAPI (Swagger UI) | http://localhost:8000/docs | backend |
+| MLflow (Model Tracking) | http://localhost:5000 | always |
+| Frontend Dashboard | http://localhost:3001 | frontend |
+| JupyterLab (AI Workspace) | http://localhost:8888 | analytics |
+| Grafana (Monitoring) | http://localhost:3003 | monitoring |
+| Prometheus (Metrics) | http://localhost:9090 | monitoring |
+| DbGate (Database GUI) | http://localhost:3002 | monitoring |
 
 ---
 
-## 3. Data Synchronization (DVC)
+## Seeding Data
 
-We use Data Version Control (DVC) linked to a Google Drive bucket.
-
-### Authentication Setup
-
-Run these exact commands in your terminal:
+The `./setup` script seeds reference data (locations, devices, users) automatically.
+For telemetry and weather data, use the seeder directly:
 
 ```bash
-dvc remote modify --local gdrive gdrive_client_id "ASK_FOR_CLIENT_ID"
-dvc remote modify --local gdrive gdrive_client_secret "ASK_FOR_CLIENT_SECRET"
-
-```
-
-### Pulling the Data
-
-Once authenticated, pull the datasets associated with the current Git branch:
-
-```bash
-dvc pull
-
-```
-
-_Note: A browser window will open asking you to sign in to Google. Use your authorized work email. If you see a warning about an "unverified app", click **Advanced -> Go to DMP-DVC (unsafe)** to continue._
-
----
-
-## 4. Running the Full Stack
-
-Our architecture consists of a Postgres DB, Redis broker, MLflow tracking server, FastAPI backend, Celery workers, and a Vite/React frontend.
-
-```bash
-# Build and start all services in the background
-docker compose up -d --build
-
-```
-
-### Service Map
-
-Once the stack is running, you can access the tools at these URLs:
-
-- **Frontend Dashboard:** http://localhost:3001
-- **FastAPI (Swagger UI):** http://localhost:8000/docs
-- **JupyterLab (AI Workspace):** http://localhost:8888
-- **MLflow (Model Tracking):** http://localhost:5000
-- **DbGate (Database GUI):** http://localhost:3002
-- **Grafana (Monitoring Dashboard):** http://localhost:3000
-- **Prometheus (Metrics Scraper):** http://localhost:9090
-
-### Checking Logs
-
-If something isn't working, you can view the logs for any specific container:
-
-```bash
-# View backend API logs
-docker compose logs -f backend
-
-# View ML background worker logs
-docker compose logs -f worker
-
-```
-
----
-
-## 5. Database Initialization and Seeding
-
-The backend uses SQLAlchemy's `Base.metadata.create_all()` to initialize the database schema on startup, followed by seeding demo users. This happens when Docker creates or restarts the `backend` container.
-
-For a fresh stack start or after rebuilding the backend image:
-
-```bash
-docker compose up -d --build
-
-```
-
-If you need to rerun the backend startup command, recreate only the backend service:
-
-```bash
-docker compose up -d --build --force-recreate backend
-
-```
-
-### Making a Database Schema Change
-
-When you add, remove, rename, or change a column/table in `backend/src/models.py`, the schema is automatically synchronized on the next restart via `Base.metadata.create_all()`. For destructive changes (dropping columns/tables, renaming columns, adding `NOT NULL`, changing column types, or backfilling data), write a migration script manually and run it separately before restarting the service.
-
-After standing up the architecture for the first time, your local PostgreSQL database will contain the schema but not the Kaggle telemetry data. Seed it before using telemetry-backed API features or training models.
-
-Run the seeder script through the backend container:
-
-```bash
-# Quick Seed: Loads reference data + 1,000 telemetry rows per metric
+# Quick seed: reference data + 1,000 telemetry rows per metric
 docker compose exec backend python -m src.seeder
 
-# Custom Seed: Load everything with a specific row cap per metric
-docker compose exec backend python -m src.seeder --limit 5000
-
-# Full Seed: Loads the entire historical dataset
+# Full seed: entire historical dataset
 docker compose exec backend python -m src.seeder --full
 
-```
-
-### Selective / Phased Seeding
-
-You can seed reference data and telemetry independently, and limit which metrics to load:
-
-```bash
-# Phase 1 — Reference data only (locations, devices, metric types)
+# Selective seeding
 docker compose exec backend python -m src.seeder --phase reference
-
-# Phase 2 — Telemetry: specific metrics, full dataset
-docker compose exec backend python -m src.seeder --phase telemetry \
-    --metrics electricity,water,gas --full
-
-# Tune chunk/batch sizes for memory-constrained environments
-docker compose exec backend python -m src.seeder --full \
-    --chunk-size 5000 --batch-size 5000
-
+docker compose exec backend python -m src.seeder --phase telemetry --metrics electricity,water
+docker compose exec backend python -m src.seeder --phase weather
 ```
 
 | Flag | Default | Purpose |
-|---|---|---|
+|------|---------|---------|
 | `--phase` | `all` | `reference` / `telemetry` / `weather` / `all` |
 | `--metrics` | all 8 | Comma-separated: `electricity,water,gas` |
-| `--chunk-size` | 10,000 | CSV rows per pandas chunk (lower = less RAM) |
-| `--batch-size` | 10,000 | DB rows per bulk insert |
 | `--limit` | 1,000 | Dev-mode row cap per metric |
 | `--full` | off | Overrides `--limit` — loads everything |
 
-### Weather data
+---
 
-To seed weather data
+## Making Schema Changes
+
+This project uses **Alembic** for database migrations (not `create_all()`).
+
+1. **Modify the model** in `backend/src/models.py`.
+2. **Generate a migration:**
+   ```bash
+   cd backend
+   DATABASE_URL=postgresql://dmp_user:dmp_password@localhost:5432/dmp_db \
+     uv run alembic revision --autogenerate -m "describe_your_change"
+   ```
+3. **Review** the generated file in `backend/alembic/versions/`.
+4. **Apply it:**
+   ```bash
+   docker compose exec backend alembic upgrade head
+   ```
+5. **Commit** both the model change and the migration file.
+
+> On existing databases that were created before Alembic was introduced, run
+> `docker compose exec backend alembic stamp head` once to mark the current
+> state without re-applying migrations.
+
+---
+
+## DVC (Full Dataset)
+
+The full dataset (~4 GB) is managed via DVC with a Google Drive remote.
 
 ```bash
-docker compose exec backend python -m src.seeder --phase weather
+# Authenticate (contact the team for credentials)
+dvc remote modify --local gdrive gdrive_client_id "YOUR_CLIENT_ID"
+dvc remote modify --local gdrive gdrive_client_secret "YOUR_CLIENT_SECRET"
 
+# Pull data
+dvc pull
 ```
 
 ---
 
-## 6. Example Workflows
+## Example Workflows
 
-1. Navigate to **JupyterLab** at `localhost:8888`.
-2. The Jupyter container automatically connects to the Postgres database and MLflow. You do not need to mock any database connections.
-3. When tracking models, use `mlflow.autolog()` or standard MLflow commands. Your models and metrics will automatically appear in the MLflow UI at `localhost:5000`.
-4. **Important:** If you engineer new datasets that the team needs, track them with DVC:
+1. Navigate to **JupyterLab** at `localhost:8888` (requires `analytics` profile).
+2. The Jupyter container automatically connects to Postgres and MLflow.
+3. When tracking models, use standard MLflow commands — results appear in the
+   MLflow UI at `localhost:5000`.
+4. If you engineer new datasets, track them with DVC:
+   ```bash
+   dvc add data/new_dataset.csv
+   dvc push
+   git add data/new_dataset.csv.dvc
+   git commit -m "data: added new dataset"
+   ```
+
+---
+
+## Checking Logs
 
 ```bash
-dvc add data/new_dataset.csv
-dvc push
-git add data/new_dataset.csv.dvc
-git commit -m "data: added new dataset"
-
+docker compose logs -f backend
+docker compose logs -f worker
 ```
 
 ---
 
-## 7. Tearing Down
-
-When you are done working, you can stop the containers.
+## Tearing Down
 
 ```bash
-# Stop containers but keep the databases (Postgres/Redis) intact
+# Stop containers but keep databases intact
 docker compose down
 
-# WARNING: Stop containers and WIPE all local databases and volumes
+# WARNING: Stop containers and WIPE all databases and volumes
 docker compose down -v
-
 ```
