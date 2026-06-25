@@ -14,8 +14,8 @@ forecast : weather columns present; shift each by -horizon so the feature
 
 from __future__ import annotations
 
-import sys
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -61,12 +61,16 @@ class FeatureEngineer:
     @staticmethod
     def create_calendar_features(df: pl.DataFrame) -> pl.DataFrame:
         """Extract calendar columns from timestamp."""
-        return df.with_columns([
-            pl.col("timestamp").dt.hour().alias("hour"),
-            pl.col("timestamp").dt.weekday().alias("day_of_week"),
-            pl.col("timestamp").dt.month().alias("month"),
-            (pl.col("timestamp").dt.weekday() >= 5).cast(pl.Int8).alias("is_weekend"),
-        ])
+        return df.with_columns(
+            [
+                pl.col("timestamp").dt.hour().alias("hour"),
+                pl.col("timestamp").dt.weekday().alias("day_of_week"),
+                pl.col("timestamp").dt.month().alias("month"),
+                (pl.col("timestamp").dt.weekday() >= 5)
+                .cast(pl.Int8)
+                .alias("is_weekend"),
+            ]
+        )
 
     @staticmethod
     def create_consumption_features(df: pl.DataFrame) -> pl.DataFrame:
@@ -78,26 +82,32 @@ class FeatureEngineer:
         drop_nulls() downstream rather than being silently filled with 0.
         """
         df = df.sort(["building_id", "timestamp"])
-        return df.with_columns([
-            # Lag features — all strictly past
-            pl.col("consumption").shift(1).over("building_id").alias("lag_1h"),
-            pl.col("consumption").shift(24).over("building_id").alias("lag_24h"),
-            pl.col("consumption").shift(168).over("building_id").alias("lag_168h"),
-            # Rolling mean — min_samples=1 is fine (mean of 1 = that value)
-            pl.col("consumption")
-            .rolling_mean(window_size=24, min_samples=1)
-            .over("building_id").alias("rolling_mean_24h"),
-            # Rolling std — needs min_samples=2; first row will be null → dropped
-            pl.col("consumption")
-            .rolling_std(window_size=24, min_samples=2)
-            .over("building_id").alias("rolling_std_24h"),
-            pl.col("consumption")
-            .rolling_mean(window_size=168, min_samples=1)
-            .over("building_id").alias("rolling_mean_168h"),
-            pl.col("consumption")
-            .rolling_std(window_size=168, min_samples=2)
-            .over("building_id").alias("rolling_std_168h"),
-        ])
+        return df.with_columns(
+            [
+                # Lag features — all strictly past
+                pl.col("consumption").shift(1).over("building_id").alias("lag_1h"),
+                pl.col("consumption").shift(24).over("building_id").alias("lag_24h"),
+                pl.col("consumption").shift(168).over("building_id").alias("lag_168h"),
+                # Rolling mean — min_samples=1 is fine (mean of 1 = that value)
+                pl.col("consumption")
+                .rolling_mean(window_size=24, min_samples=1)
+                .over("building_id")
+                .alias("rolling_mean_24h"),
+                # Rolling std — needs min_samples=2; first row will be null → dropped
+                pl.col("consumption")
+                .rolling_std(window_size=24, min_samples=2)
+                .over("building_id")
+                .alias("rolling_std_24h"),
+                pl.col("consumption")
+                .rolling_mean(window_size=168, min_samples=1)
+                .over("building_id")
+                .alias("rolling_mean_168h"),
+                pl.col("consumption")
+                .rolling_std(window_size=168, min_samples=2)
+                .over("building_id")
+                .alias("rolling_std_168h"),
+            ]
+        )
 
     def create_weather_features(self, df: pl.DataFrame) -> pl.DataFrame:
         """Handle weather columns according to weather_mode.
@@ -160,20 +170,19 @@ class FeatureEngineer:
         """
         # Build the full list of columns to check
         feature_cols = [
-            c for c in df.columns
-            if c not in ("timestamp", "building_id", "target")
+            c for c in df.columns if c not in ("timestamp", "building_id", "target")
         ]
         required = ["target"] + feature_cols
 
         rows_before = df.shape[0]
-        df = df.filter(
-            pl.all_horizontal([pl.col(c).is_not_null() for c in required])
-        )
+        df = df.filter(pl.all_horizontal([pl.col(c).is_not_null() for c in required]))
         rows_dropped = rows_before - df.shape[0]
         if rows_dropped > 0:
-            print(f"    drop_nulls: removed {rows_dropped:,} rows "
-                  f"({rows_dropped / rows_before:.2%}) — "
-                  "lags/rolling_std boundary + target tail + long-gap consumption")
+            print(
+                f"    drop_nulls: removed {rows_dropped:,} rows "
+                f"({rows_dropped / rows_before:.2%}) — "
+                "lags/rolling_std boundary + target tail + long-gap consumption"
+            )
         return df
 
     # ------------------------------------------------------------------
@@ -184,8 +193,10 @@ class FeatureEngineer:
         t0 = time.perf_counter()
         rows_in = df.shape[0]
 
-        print(f"  Config: horizon={self.forecast_horizon_hours}h, "
-              f"weather={self.weather_mode}")
+        print(
+            f"  Config: horizon={self.forecast_horizon_hours}h, "
+            f"weather={self.weather_mode}"
+        )
         print(f"  Input: {rows_in:,} rows × {df.shape[1]} cols")
 
         print("  Creating calendar features ...")
@@ -205,8 +216,10 @@ class FeatureEngineer:
 
         rows_out = df.shape[0]
         rows_dropped = rows_in - rows_out
-        print(f"    → {rows_out:,} rows remain "
-              f"(dropped {rows_dropped:,} / {rows_dropped/rows_in:.1%})")
+        print(
+            f"    → {rows_out:,} rows remain "
+            f"(dropped {rows_dropped:,} / {rows_dropped / rows_in:.1%})"
+        )
 
         # ── Verify zero nulls before saving ────────────────────────
         null_counts = df.select(
@@ -255,22 +268,32 @@ class FeatureEngineer:
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
         tag = f"h{self.forecast_horizon_hours}_{self.weather_mode}"
 
-        summary = pl.DataFrame({
-            "metric": [
-                "input_rows", "output_rows", "dropped_rows", "drop_rate",
-                "n_buildings", "n_features", "horizon_hours", "weather_mode",
-                "null_count",
-            ],
-            "value": [
-                str(rows_in), str(rows_out), str(rows_dropped),
-                f"{rows_dropped / rows_in:.4%}",
-                str(df["building_id"].n_unique()),
-                str(df.shape[1]),
-                str(self.forecast_horizon_hours),
-                self.weather_mode,
-                "0",
-            ],
-        })
+        summary = pl.DataFrame(
+            {
+                "metric": [
+                    "input_rows",
+                    "output_rows",
+                    "dropped_rows",
+                    "drop_rate",
+                    "n_buildings",
+                    "n_features",
+                    "horizon_hours",
+                    "weather_mode",
+                    "null_count",
+                ],
+                "value": [
+                    str(rows_in),
+                    str(rows_out),
+                    str(rows_dropped),
+                    f"{rows_dropped / rows_in:.4%}",
+                    str(df["building_id"].n_unique()),
+                    str(df.shape[1]),
+                    str(self.forecast_horizon_hours),
+                    self.weather_mode,
+                    "0",
+                ],
+            }
+        )
         summary.write_csv(REPORT_DIR / f"fe_{tag}_summary.csv")
 
         null_summary = df.select(
@@ -283,9 +306,7 @@ class FeatureEngineer:
         null_summary.write_csv(REPORT_DIR / f"fe_{tag}_null_summary.csv")
 
         building_counts = (
-            df.group_by("building_id")
-            .agg(pl.len().alias("n_rows"))
-            .sort("n_rows")
+            df.group_by("building_id").agg(pl.len().alias("n_rows")).sort("n_rows")
         )
         building_counts.write_csv(REPORT_DIR / f"fe_{tag}_building_counts.csv")
 
@@ -297,8 +318,7 @@ if __name__ == "__main__":
     gold_v2_path = GOLD_DIR / "validated_v2_h24_none.parquet"
     if not gold_v2_path.exists():
         sys.exit(
-            f"Gold v2 file not found: {gold_v2_path}\n"
-            "Run the full pipeline first."
+            f"Gold v2 file not found: {gold_v2_path}\nRun the full pipeline first."
         )
 
     print(f"Loading Gold v2 from {gold_v2_path} ...")
