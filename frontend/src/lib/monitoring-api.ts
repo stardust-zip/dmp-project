@@ -89,9 +89,23 @@ export interface MonitoringSummary {
   pending_actuals: number;
 }
 
+export interface VersionComparisonEntry {
+  version: string;
+  mae: number | null;
+  rmse: number | null;
+  mape: number | null;
+  r2_score: number | null;
+  mean_error: number | null;
+  sample_count: number | null;
+  baseline_mae: number | null;
+  baseline_rmse: number | null;
+  performance_ratio: number | null;
+  computed_at: string | null;
+}
+
 export interface VersionComparisonResponse {
   model_name: string;
-  versions: Array<Record<string, unknown>>;
+  versions: VersionComparisonEntry[];
   comparison_period_start: string;
   comparison_period_end: string;
   metrics: string[];

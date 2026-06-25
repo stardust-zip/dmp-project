@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   compareVersions,
   getDriftTimeline,
@@ -19,7 +19,7 @@ import type {
   PerformanceTimelineResponse,
   VersionComparisonResponse,
 } from "@/lib/monitoring-api";
-import { getRegisteredModels } from "@/lib/models-api";
+import { getModelVersions, getRegisteredModels } from "@/lib/models-api";
 import type { RegisteredModel } from "@/lib/models-api";
 import { Card } from "@/components/common/primitives";
 import { Icon } from "@/components/common/icons";
@@ -45,6 +45,12 @@ export default function MonitoringPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // All registered versions for the selected model (used by comparison tab)
+  const [allVersions, setAllVersions] = useState<string[]>([]);
+
+  // Comparison tab has its own loading state (not auto-loaded)
+  const [compareLoading, setCompareLoading] = useState(false);
 
   const [summary, setSummary] = useState<MonitoringSummary | null>(null);
   const [performance, setPerformance] = useState<PerformanceTimelineResponse | null>(null);
@@ -73,8 +79,24 @@ export default function MonitoringPage() {
     return () => ctrl.abort();
   }, []);
 
-  // Internal data loader (cancels previous load)
+  // Load all versions for the selected model (for comparison dropdown)
+  useEffect(() => {
+    if (!selectedModel) return;
+    let cancelled = false;
+    const ctrl = new AbortController();
+    getModelVersions(selectedModel, ctrl.signal)
+      .then((data) => {
+        if (!cancelled) setAllVersions(data.versions.map((v) => v.version));
+      })
+      .catch(() => {
+        if (!cancelled) setAllVersions([]);
+      });
+    return () => { cancelled = true; ctrl.abort(); };
+  }, [selectedModel]);
+
+  // Internal data loader (cancels previous load) — does NOT handle comparison tab
   const doLoad = useCallback(async (modelName: string, tab: TabKey) => {
+    if (tab === "comparison") return; // comparison is manual-only
     loadControllerRef.current?.abort();
     const ctrl = new AbortController();
     loadControllerRef.current = ctrl;
@@ -99,16 +121,35 @@ export default function MonitoringPage() {
         const a = await getMonitoringAlerts(modelName, undefined, ctrl.signal);
         if (!ctrl.signal.aborted) setAlerts(a);
       }
-      if (tab === "comparison" && compareVersionA && compareVersionB && !ctrl.signal.aborted) {
-        const c = await compareVersions(modelName, compareVersionA, compareVersionB, undefined, ctrl.signal);
-        if (!ctrl.signal.aborted) setComparison(c);
-      }
     } catch (err) {
       if (!ctrl.signal.aborted) setError(err instanceof Error ? err.message : "Failed to load monitoring data");
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
-  }, [compareVersionA, compareVersionB]);
+  }, []);
+
+  // Dedicated handler for Compare button (manual trigger only)
+  const handleCompare = useCallback(async () => {
+    if (!selectedModel || !compareVersionA || !compareVersionB) return;
+    if (compareVersionA === compareVersionB) {
+      setError("Select two different versions to compare.");
+      return;
+    }
+    setCompareLoading(true);
+    setError(null);
+    setComparison(null);
+    try {
+      const c = await compareVersions(selectedModel, compareVersionA, compareVersionB);
+      setComparison(c);
+      if (c.versions.length < 2) {
+        setError("One or both versions have no performance data. Run Evaluate first to generate metrics, then try comparing again.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Comparison failed");
+    } finally {
+      setCompareLoading(false);
+    }
+  }, [selectedModel, compareVersionA, compareVersionB]);
 
   // Reload when model or tab changes
   useEffect(() => {
@@ -116,14 +157,18 @@ export default function MonitoringPage() {
     return () => { loadControllerRef.current?.abort(); };
   }, [selectedModel, activeTab, doLoad]);
 
-  const selectedModelData = useMemo(() => models.find((m) => m.name === selectedModel), [models, selectedModel]);
-  const availableVersions = useMemo(() => {
-    if (!selectedModelData) return [];
-    const v: string[] = [];
-    if (selectedModelData.production_version) v.push(selectedModelData.production_version.version);
-    for (const ver of selectedModelData.latest_versions) if (!v.includes(ver.version)) v.push(ver.version);
-    return v;
-  }, [selectedModelData]);
+  // Clear stale comparison result whenever versions or model change
+  useEffect(() => {
+    setComparison(null);
+  }, [compareVersionA, compareVersionB, selectedModel]);
+
+  // Reset version selections when switching away from the comparison tab
+  useEffect(() => {
+    if (activeTab !== "comparison") {
+      setCompareVersionA("");
+      setCompareVersionB("");
+    }
+  }, [activeTab]);
 
   const handleAction = async (action: "evaluate" | "drift") => {
     if (!selectedModel) return;
@@ -265,13 +310,14 @@ export default function MonitoringPage() {
           {!actionResult && activeTab === "drift" && drift && (drift.overall_drift.length > 0 || Object.keys(drift.feature_drift).length > 0) && <DriftTab data={drift} />}
           {!actionResult && activeTab === "comparison" && (
             <ComparisonTab
-              versions={availableVersions}
+              versions={allVersions}
               versionA={compareVersionA}
               versionB={compareVersionB}
               onChangeA={setCompareVersionA}
               onChangeB={setCompareVersionB}
               data={comparison}
-              onCompare={() => { if (selectedModel && compareVersionA && compareVersionB) doLoad(selectedModel, "comparison"); }}
+              onCompare={handleCompare}
+              loading={compareLoading}
             />
           )}
           {!actionResult && activeTab === "alerts" && alerts && <AlertsTab data={alerts} />}
