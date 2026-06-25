@@ -82,6 +82,8 @@ services:
     working_dir: /app
     volumes:
       - ./backend/src:/app/src
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/alembic:/app/alembic
       - ./pyproject.toml:/app/pyproject.toml
       - ./data:/app/data
       - mlflow_artifacts:/mlflow/artifacts
@@ -101,7 +103,15 @@ services:
     networks:
       - dmp_network
     command: >
-      sh -c "python -m src.seeders.users &&
+      sh -c "
+      if python -c 'from sqlalchemy import inspect; from src.database import engine; print(\"users\" in inspect(engine).get_table_names())' 2>/dev/null | grep -q True; then
+        if ! python -c 'from sqlalchemy import inspect; from src.database import engine; print(\"alembic_version\" in inspect(engine).get_table_names())' 2>/dev/null | grep -q True; then
+          echo 'Existing database detected without alembic_version. Stamping head...';
+          alembic stamp head;
+        fi;
+      fi;
+      alembic upgrade head &&
+      python -m src.seeders.users &&
       uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
     healthcheck:
       test:

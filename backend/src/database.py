@@ -1,10 +1,9 @@
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from src.core.config import settings
-from src.models import Base
 
 DATABASE_URL = os.getenv("DATABASE_URL", settings.DATABASE_URL)
 
@@ -16,65 +15,15 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ALEMBIC_INI_PATH = _PROJECT_ROOT / "alembic.ini"
 
+
 def init_db():
-    """Initializes the database tables (creates them if they don't exist)."""
-    Base.metadata.create_all(bind=engine)
-    _ensure_user_profile_columns()
-    _ensure_pipeline_log_schema()
-
-
-def _ensure_user_profile_columns():
-    inspector = inspect(engine)
-    if "users" not in inspector.get_table_names():
-        return
-
-    existing_columns = {column["name"] for column in inspector.get_columns("users")}
-    statements: list[str] = []
-
-    if "contact_number" not in existing_columns:
-        statements.append("ALTER TABLE users ADD COLUMN contact_number VARCHAR")
-    if "status" not in existing_columns:
-        statements.append(
-            "ALTER TABLE users ADD COLUMN status VARCHAR NOT NULL DEFAULT 'Off_Duty'"
-        )
-    if "assigned_site_ids" not in existing_columns:
-        if engine.dialect.name == "postgresql":
-            statements.append(
-                "ALTER TABLE users ADD COLUMN assigned_site_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
-            )
-        else:
-            statements.append(
-                "ALTER TABLE users ADD COLUMN assigned_site_ids JSON NOT NULL DEFAULT '[]'"
-            )
-    if "is_global_admin" not in existing_columns:
-        statements.append(
-            "ALTER TABLE users ADD COLUMN is_global_admin BOOLEAN NOT NULL DEFAULT false"
-        )
-
-    if not statements:
-        return
-
-    with engine.begin() as connection:
-        for statement in statements:
-            connection.execute(text(statement))
-
-
-def _ensure_pipeline_log_schema():
-    inspector = inspect(engine)
-    if "ai_pipeline_log" not in inspector.get_table_names():
-        return
-
-    with engine.begin() as connection:
-        if engine.dialect.name == "postgresql":
-            connection.execute(text(
-                "ALTER TYPE job_status ADD VALUE IF NOT EXISTS 'Cancelled'"
-            ))
-
-        existing_columns = {col["name"] for col in inspector.get_columns("ai_pipeline_log")}
-        if "celery_task_id" not in existing_columns:
-            connection.execute(text(
-                "ALTER TABLE ai_pipeline_log ADD COLUMN celery_task_id VARCHAR"
-            ))
+    """Verifies database connectivity only. Migrations are managed by Alembic."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception as e:
+        raise RuntimeError(f"Database connection failed: {e}")
 
 
 def get_db():
