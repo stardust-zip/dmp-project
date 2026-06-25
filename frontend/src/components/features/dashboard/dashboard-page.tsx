@@ -290,7 +290,9 @@ export function DashboardPage() {
           }
         >
           {selectedBuilding === "all" ? (
-            <div className="empty" style={{ height: 296 }}>Select a building to view its energy consumption trend.</div>
+            loadingDash
+              ? <div className="empty" style={{ height: 296 }}><Spinner /> Loading...</div>
+              : <div className="empty" style={{ height: 296 }}>Select a building to view its energy consumption trend.</div>
           ) : loadingTimeline ? (
             <div className="empty" style={{ height: 296 }}><Spinner /> Loading timeline...</div>
           ) : (
