@@ -183,7 +183,8 @@ export function DashboardPage() {
         const criticalCount = events.filter((e) => e.severity === "Critical").length;
         const hasHigh = events.some((e) => e.severity === "High");
         const status = criticalCount > 0 ? "red" : hasHigh ? "yellow" : "green";
-        return { buildingId, status, totalCount: events.length, criticalCount };
+        const ref = events[0];
+        return { buildingId, status, totalCount: events.length, criticalCount, siteId: ref?.site_id ?? null, primaryUsage: ref?.primary_space_usage ?? null };
       })
       .sort((a, b) =>
         buildingSort === "critical"
@@ -332,16 +333,25 @@ export function DashboardPage() {
             {topCriticalBuildings.length === 0 && !loadingDash && (
               <div className="empty" style={{ padding: "12px 0" }}>No critical alerts</div>
             )}
-            {topCriticalBuildings.map(({ buildingId, count, latestEvent }) => (
-              <div key={buildingId} className="anom-needs-row">
-                <span className="badge badge-critical"><i className="bdot" />critical</span>
-                <span className="anom-needs-info">
-                  <b>{displayLocationName(null, buildingId)}</b>
-                  <small>{count} critical anomal{count === 1 ? "y" : "ies"}</small>
-                </span>
-                <span className="mono anom-needs-time">{timeAgo(new Date(latestEvent.start_time).getTime())}</span>
-              </div>
-            ))}
+            {topCriticalBuildings.map(({ buildingId, count, latestEvent }) => {
+              const params = new URLSearchParams({ site: latestEvent.site_id, building: buildingId });
+              if (latestEvent.primary_space_usage) params.set("primaryUsage", latestEvent.primary_space_usage);
+              return (
+                <div
+                  key={buildingId}
+                  className="anom-needs-row"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => router.push(`/anomaly?${params.toString()}`)}
+                >
+                  <span className="badge badge-critical"><i className="bdot" />critical</span>
+                  <span className="anom-needs-info">
+                    <b>{displayLocationName(null, buildingId)}</b>
+                    <small>{count} critical anomal{count === 1 ? "y" : "ies"}</small>
+                  </span>
+                  <span className="mono anom-needs-time">{timeAgo(new Date(latestEvent.start_time).getTime())}</span>
+                </div>
+              );
+            })}
           </div>
         </Card>
       </div>
@@ -378,8 +388,11 @@ export function DashboardPage() {
                 {[...visibleDashboardEvents].sort((a, b) =>
                   (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9) ||
                   new Date(b.start_time).getTime() - new Date(a.start_time).getTime()
-                ).slice(0, 8).map((event) => (
-                  <tr key={event.id} onClick={() => router.push(`/anomaly?building=${event.building_id}&site=${event.site_id}`)}>
+                ).slice(0, 8).map((event) => {
+                  const params = new URLSearchParams({ site: event.site_id, building: event.building_id, event: event.id });
+                  if (event.primary_space_usage) params.set("primaryUsage", event.primary_space_usage);
+                  return (
+                  <tr key={event.id} onClick={() => router.push(`/anomaly?${params.toString()}`)}>
                     <td className="mono" style={{ color: "var(--muted)" }}>{timeAgo(new Date(event.start_time).getTime())}</td>
                     <td>{event.site_id}</td>
                     <td className="t-strong">{displayLocationName(null, event.building_id)}</td>
@@ -390,7 +403,8 @@ export function DashboardPage() {
                       </span>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -417,17 +431,28 @@ export function DashboardPage() {
             {!loadingDash && buildingStatusRows.length === 0 && (
               <div className="empty">No site data available.</div>
             )}
-            {buildingStatusRows.map((row) => (
-              <div key={row.buildingId} className="site-status-row">
-                <div className="site-status-info">
-                  <b>{displayLocationName(null, row.buildingId)}</b>
-                  <small>{row.criticalCount > 0 ? `${row.criticalCount} critical` : "No critical"}</small>
+            {buildingStatusRows.map((row) => {
+              const params = new URLSearchParams();
+              if (row.siteId) params.set("site", row.siteId);
+              params.set("building", row.buildingId);
+              if (row.primaryUsage) params.set("primaryUsage", row.primaryUsage);
+              return (
+                <div
+                  key={row.buildingId}
+                  className="site-status-row"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => router.push(`/anomaly?${params.toString()}`)}
+                >
+                  <div className="site-status-info">
+                    <b>{displayLocationName(null, row.buildingId)}</b>
+                    <small>{row.criticalCount > 0 ? `${row.criticalCount} critical` : "No critical"}</small>
+                  </div>
+                  <span className="mono" style={{ fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>
+                    {row.totalCount} open
+                  </span>
                 </div>
-                <span className="mono" style={{ fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>
-                  {row.totalCount} open
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
       </div>

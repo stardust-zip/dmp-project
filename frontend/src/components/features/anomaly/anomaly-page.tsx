@@ -242,6 +242,7 @@ export function AnomalyPage() {
   const [selected, setSelected] = useState<AnomalyEvent | null>(null);
   const [loading, setLoading] = useState(false);
   const [timelineLoaded, setTimelineLoaded] = useState(false);
+  const autoEventId = useMemo(() => searchParams.get("event") ?? null, [searchParams]);
   const [error, setError] = useState<string | null>(null);
   const { statuses, acknowledge, resolve, reopen } = useAlerts();
   const { session } = useAuth();
@@ -418,6 +419,13 @@ export function AnomalyPage() {
 
     return () => controller.abort();
   }, [replayQuery]);
+
+  // Auto-open drawer when arriving from dashboard with an event param.
+  useEffect(() => {
+    if (!autoEventId || !timelineLoaded) return;
+    const event = rawTimeline.items.find((e) => e.id === autoEventId);
+    if (event) setSelected(event);
+  }, [autoEventId, timelineLoaded, rawTimeline.items]);
 
   const set = (key: keyof Filters, value: string) => {
     setFilters((current) => normalizeFilters({ ...current, [key]: value }));
