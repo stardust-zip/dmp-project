@@ -103,7 +103,13 @@ services:
       sh -c "python -m src.seeders.users &&
       uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -134,6 +140,33 @@ services:
     networks:
       - dmp_network
     command: celery -A src.tasks worker --loglevel=info
+    restart: unless-stopped
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: dmp_celery_beat
+    working_dir: /app
+    volumes:
+      - ./backend/src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./data:/app/data
+      - mlflow_artifacts:/mlflow/artifacts
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - dmp_network
+    command: celery -A src.tasks beat --loglevel=info
     restart: unless-stopped
 
   frontend:
@@ -258,4 +291,3 @@ volumes:
   grafana_data:
   dbgate_data:
   frontend_node_modules:
-
