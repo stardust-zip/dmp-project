@@ -5,7 +5,6 @@ import { useSearchParams } from "next/navigation";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@/components/common/primitives";
-import { SimulationControls, type SimBounds, type SpeedOption, SPEED_OPTIONS, MINUTE_MS } from "@/components/common/simulation-controls";
 import { AlertFeed } from "@/components/features/anomaly/anomaly-alert-feed";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -13,6 +12,7 @@ import { useAlerts } from "@/hooks/use-alerts";
 import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
 import { readStoredSession } from "@/lib/auth-api";
 import { clock, displayLocationName, fmt, fmtKwh } from "@/lib/format";
+import { setIsPlaying, useSimulationStore, type SimBounds } from "@/lib/simulation-store";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
 type SortKey = "severity" | "newest" | "oldest";
@@ -30,7 +30,6 @@ const PER_PAGE = 10;
 const SIMULATION_FETCH_LIMIT = 5000;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-const TICK_MS = 250;
 const TIMELINE_ZOOM_MS = 7 * DAY_MS;
 const SIMULATION_RANGE_QUERY = { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" } as const;
 const SEVERITY_RANK: Record<AnomalySeverity, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
@@ -109,18 +108,6 @@ function localTimestamp(ts: number) {
   const d = new Date(ts);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
-function timelineBounds(timeline: AnomalyTimelineResponse): SimBounds | null {
-  const timestamps = [
-    ...timeline.points.map((point) => timeOf(point.timestamp)),
-    ...timeline.items.map((event) => timeOf(event.start_time)),
-    ...timeline.items.flatMap((event) => (event.end_time ? [timeOf(event.end_time)] : [])),
-    ...timeline.gaps.flatMap((gap) => [timeOf(gap.start_time), timeOf(gap.end_time)]),
-  ].filter(Number.isFinite);
-
-  if (timestamps.length === 0) return null;
-  return { start: Math.min(...timestamps), end: Math.max(...timestamps) };
 }
 
 function clampGap(gap: AnomalyTimelineGap, simNow: number): AnomalyTimelineGap | null {
@@ -251,10 +238,7 @@ export function AnomalyPage() {
   const [siteFacetsBySite, setSiteFacetsBySite] = useState<Record<string, AnomalyFacets>>({});
   const [siteEventsBySite, setSiteEventsBySite] = useState<Record<string, AnomalyEvent[]>>({});
   const [rawTimeline, setRawTimeline] = useState<AnomalyTimelineResponse>(EMPTY_TIMELINE);
-  const [simBounds, setSimBounds] = useState<SimBounds | null>(null);
-  const [simNow, setSimNow] = useState<number | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState<SpeedOption>("6");
+  const { simNow, bounds: simBounds, isPlaying } = useSimulationStore();
   const [selected, setSelected] = useState<AnomalyEvent | null>(null);
   const [loading, setLoading] = useState(false);
   const [timelineLoaded, setTimelineLoaded] = useState(false);
@@ -339,11 +323,8 @@ export function AnomalyPage() {
     setFilters(withLocks);
     setPage(1);
     setSelected(null);
-    setIsPlaying(false);
     setTimelineLoaded(false);
     setRawTimeline(EMPTY_TIMELINE);
-    setSimBounds(null);
-    setSimNow(null);
     window.requestAnimationFrame(() => {
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     });
@@ -413,20 +394,17 @@ export function AnomalyPage() {
   // Fetch event data only once a specific building is chosen
   useEffect(() => {
     if (replayQuery.building === "all") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRawTimeline(EMPTY_TIMELINE);
       return;
     }
     const controller = new AbortController();
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setTimelineLoaded(false);
     setError(null);
     getAnomalyTimeline(replayQuery, controller.signal)
       .then((nextTimeline) => {
-        const nextBounds = timelineBounds(nextTimeline);
         setRawTimeline(nextTimeline);
-        setSimBounds(nextBounds);
-        setSimNow(nextBounds?.start ?? null);
-        setIsPlaying(false);
       })
       .catch((err: Error) => {
         if (err.name !== "AbortError") setError(err.message);
@@ -440,20 +418,6 @@ export function AnomalyPage() {
 
     return () => controller.abort();
   }, [replayQuery]);
-
-  useEffect(() => {
-    if (!isPlaying || !simBounds || simBounds.end <= simBounds.start) return;
-    const interval = window.setInterval(() => {
-      setSimNow((current) => {
-        if (current == null) return current;
-        const next = Math.min(current + Number(speed) * HOUR_MS * (TICK_MS / 1000), simBounds.end);
-        if (next >= simBounds.end) setIsPlaying(false);
-        return next;
-      });
-    }, TICK_MS);
-
-    return () => window.clearInterval(interval);
-  }, [isPlaying, simBounds, speed]);
 
   const set = (key: keyof Filters, value: string) => {
     setFilters((current) => normalizeFilters({ ...current, [key]: value }));
@@ -554,33 +518,6 @@ export function AnomalyPage() {
                 </div>
               }
             >
-              <SimulationControls
-                bounds={simBounds}
-                simNow={simNow}
-                isPlaying={isPlaying}
-                speed={speed}
-                disabled={loading}
-                onPlayToggle={() => {
-                  if (!simBounds || simNow == null) return;
-                  if (simNow >= simBounds.end) setSimNow(simBounds.start);
-                  setIsPlaying((current) => !current);
-                }}
-                onReset={() => {
-                  if (!simBounds) return;
-                  setSimNow(simBounds.start);
-                  setIsPlaying(false);
-                  setPage(1);
-                  setSelected(null);
-                }}
-                onScrub={(value) => {
-                  if (!simBounds) return;
-                  setSimNow(Math.max(simBounds.start, Math.min(simBounds.end, value)));
-                  setIsPlaying(false);
-                  setPage(1);
-                  setSelected(null);
-                }}
-                onSpeedChange={setSpeed}
-              />
               {replayDisabledReason && (
                 <div className="empty compact anomaly-replay-note">
                   <Icon name="info" />

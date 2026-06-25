@@ -471,6 +471,76 @@ body {
     flex: 1 1 auto;
 }
 
+.topbar-sim {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+.topbar-sim-clock {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    max-width: min(260px, 38vw);
+    padding: 0 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: background .12s, border-color .12s, box-shadow .12s;
+}
+
+.topbar-sim-clock:hover,
+.topbar-sim-clock.open {
+    background: var(--surface);
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.topbar-sim-clock .tag-cap {
+    color: var(--accent-600);
+}
+
+.topbar-sim-clock b {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.topbar-sim-clock svg {
+    width: 14px;
+    height: 14px;
+    color: var(--muted);
+    flex: 0 0 auto;
+}
+
+.topbar-sim-popover {
+    position: absolute;
+    top: 42px;
+    right: 0;
+    width: min(380px, calc(100vw - 24px));
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    z-index: 70;
+}
+
+.topbar-sim-popover .simulator-panel {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: 0;
+}
+
 .search {
     display: flex;
     align-items: center;

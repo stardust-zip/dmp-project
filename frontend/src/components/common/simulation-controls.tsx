@@ -3,17 +3,9 @@
 import { Select } from "@/components/common/primitives";
 import { Icon } from "@/components/common/icons";
 import { clock } from "@/lib/format";
+import { MINUTE_MS, SPEED_OPTIONS, type SimBounds, type SpeedOption } from "@/lib/simulation-store";
 
-export type SpeedOption = "1" | "6" | "24";
-export type SimBounds = { start: number; end: number };
-
-export const MINUTE_MS = 60 * 1000;
-
-export const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
-  { value: "1", label: "1h/s" },
-  { value: "6", label: "6h/s" },
-  { value: "24", label: "24h/s" },
-];
+export { MINUTE_MS, SPEED_OPTIONS, type SimBounds, type SpeedOption };
 
 export function SimulationControls({
   bounds,

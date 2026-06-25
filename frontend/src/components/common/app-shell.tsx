@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { Modal } from "@/components/common/primitives";
+import { SimTopbarWidget } from "@/components/common/sim-topbar-widget";
 import { SettingsContent } from "@/components/features/settings/settings-page";
 import { MAIN_NAV, hasAnyRole } from "@/lib/rbac";
 import { useSettingsStore } from "@/lib/settings-store";
@@ -99,6 +100,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <b>{meta}</b>
           </div>
           <div className="topbar-spacer" />
+          <SimTopbarWidget />
 
           <div className="account-menu-wrap" onClick={(event) => event.stopPropagation()}>
             <div

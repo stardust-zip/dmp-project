@@ -4,19 +4,17 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
-import { SimulationControls, type SimBounds, type SpeedOption, MINUTE_MS } from "@/components/common/simulation-controls";
 import { Icon } from "@/components/common/icons";
 import { Card, KpiCard, Select, Spinner } from "@/components/common/primitives";
-import { useAuth } from "@/components/auth/auth-provider";
 import { getAnomalyOverview, getAnomalyEvents, getAnomalyFacets, getAnomalyTimeline } from "@/lib/anomaly-api";
 import { displayLocationName, timeAgo } from "@/lib/format";
 import { KPIS } from "@/lib/mock-data";
+import { useSimulationStore, type SimBounds } from "@/lib/simulation-store";
 import type { AnomalyEvent, AnomalyFacets, AnomalyOverview, AnomalyTimelineResponse } from "@/types";
 
 const SEVERITY_RANK: Record<string, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-const TICK_MS = 250;
 const TIMELINE_ZOOM_MS = 7 * DAY_MS;
 const SIMULATION_FETCH_LIMIT = 5000;
 const SIMULATION_RANGE_QUERY = { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" } as const;
@@ -30,18 +28,6 @@ function localTimestamp(ts: number) {
   const d = new Date(ts);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
-function timelineBounds(timeline: AnomalyTimelineResponse): SimBounds | null {
-  const timestamps = [
-    ...timeline.points.map((point) => timeOf(point.timestamp)),
-    ...timeline.items.map((event) => timeOf(event.start_time)),
-    ...timeline.items.flatMap((event) => (event.end_time ? [timeOf(event.end_time)] : [])),
-    ...timeline.gaps.flatMap((gap) => [timeOf(gap.start_time), timeOf(gap.end_time)]),
-  ].filter(Number.isFinite);
-
-  if (timestamps.length === 0) return null;
-  return { start: Math.min(...timestamps), end: Math.max(...timestamps) };
 }
 
 function clampGap(gap: AnomalyTimelineResponse["gaps"][number], simNow: number): AnomalyTimelineResponse["gaps"][number] | null {
@@ -86,10 +72,7 @@ export function DashboardPage() {
 
   // Simulator
   const [rawTimeline, setRawTimeline] = useState<AnomalyTimelineResponse>(EMPTY_TIMELINE);
-  const [simBounds, setSimBounds] = useState<SimBounds | null>(null);
-  const [simNow, setSimNow] = useState<number | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState<SpeedOption>("6");
+  const { simNow, bounds: simBounds, isPlaying } = useSimulationStore();
 
   // Loading / error
   const [loadingDash, setLoadingDash] = useState(true);
@@ -100,12 +83,12 @@ export function DashboardPage() {
   const [openKpi, setOpenKpi] = useState<string | null>(null);
   const [buildingSort, setBuildingSort] = useState<"critical" | "total">("critical");
 
-  const { session } = useAuth();
   const router = useRouter();
 
   // On-mount fetch (3 parallel)
   useEffect(() => {
     const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoadingDash(true);
     Promise.all([
       getAnomalyOverview({ ...SIMULATION_RANGE_QUERY }, controller.signal),
@@ -133,24 +116,18 @@ export function DashboardPage() {
   // Timeline fetch when building selected
   useEffect(() => {
     if (selectedBuilding === "all") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRawTimeline(EMPTY_TIMELINE);
-      setSimBounds(null);
-      setSimNow(null);
-      setIsPlaying(false);
       return;
     }
     const controller = new AbortController();
     setLoadingTimeline(true);
-    setIsPlaying(false);
     getAnomalyTimeline(
       { building: selectedBuilding, limit: SIMULATION_FETCH_LIMIT, ...SIMULATION_RANGE_QUERY },
       controller.signal,
     )
       .then((tl) => {
-        const bounds = timelineBounds(tl);
         setRawTimeline(tl);
-        setSimBounds(bounds);
-        setSimNow(bounds?.start ?? null);
       })
       .catch((err: Error) => {
         if (err.name !== "AbortError") setError(err.message);
@@ -161,20 +138,6 @@ export function DashboardPage() {
     return () => controller.abort();
   }, [selectedBuilding]);
 
-  // Playback tick
-  useEffect(() => {
-    if (!isPlaying || !simBounds || simBounds.end <= simBounds.start) return;
-    const interval = window.setInterval(() => {
-      setSimNow((current) => {
-        if (current == null) return current;
-        const next = Math.min(current + Number(speed) * HOUR_MS * (TICK_MS / 1000), simBounds.end);
-        if (next >= simBounds.end) setIsPlaying(false);
-        return next;
-      });
-    }, TICK_MS);
-    return () => window.clearInterval(interval);
-  }, [isPlaying, simBounds, speed]);
-
   // Derived values
   const visibleTimeline = useMemo(
     () => (simNow == null ? EMPTY_TIMELINE : timelineUntil(rawTimeline, simNow)),
@@ -183,27 +146,21 @@ export function DashboardPage() {
   const timelineZoom = useMemo(() => followZoomWindow(simBounds, simNow), [simBounds, simNow]);
   const shouldFollowTimeline = isPlaying && timelineZoom != null;
 
-  // Fleet status
-  const criticalCount = overview?.critical_anomalies ?? 0;
-  const totalAnomalies = overview?.total_anomalies ?? 0;
-  const fleetTone = criticalCount > 0 ? "red" : totalAnomalies > 0 ? "amber" : "green";
-
-  // Events visible at the current simulator time (all buildings; empty until sim is started)
-  const simEvents = useMemo(
-    () => simNow == null ? [] : recentEvents.filter((e) => timeOf(e.start_time) <= simNow),
+  const visibleDashboardEvents = useMemo(
+    () => (simNow == null ? [] : recentEvents.filter((event) => timeOf(event.start_time) <= simNow)),
     [recentEvents, simNow],
   );
 
-  // Top 3 critical from simEvents
+  // Top 3 critical from events visible at the global simulation cursor.
   const topCritical = useMemo(
-    () => simEvents.filter((e) => e.severity === "Critical").slice(0, 3),
-    [simEvents],
+    () => visibleDashboardEvents.filter((e) => e.severity === "Critical").slice(0, 3),
+    [visibleDashboardEvents],
   );
 
-  // Building-level status rows — all assigned buildings, anomaly counts from simEvents
+  // Building-level status rows update with the global simulation cursor.
   const buildingStatusRows = useMemo(() => {
     const byBuilding = new Map<string, AnomalyEvent[]>();
-    simEvents.forEach((e) => {
+    visibleDashboardEvents.forEach((e) => {
       const arr = byBuilding.get(e.building_id) ?? [];
       arr.push(e);
       byBuilding.set(e.building_id, arr);
@@ -221,7 +178,7 @@ export function DashboardPage() {
           ? b.criticalCount - a.criticalCount || b.totalCount - a.totalCount
           : b.totalCount - a.totalCount || b.criticalCount - a.criticalCount
       );
-  }, [simEvents, facets.buildings, buildingSort]);
+  }, [visibleDashboardEvents, facets.buildings, buildingSort]);
 
   // Building picker options
   const showBuildingPicker = facets.buildings.length > 1;
@@ -247,17 +204,19 @@ export function DashboardPage() {
     });
   }, [overview]);
 
-  // Severity items derived from simulator-visible events
+  // Severity items update with the global simulation cursor.
   const severityItems = useMemo(() => {
     const counts = { Critical: 0, High: 0, Medium: 0, Low: 0 };
-    simEvents.forEach((e) => { if (e.severity in counts) counts[e.severity as keyof typeof counts]++; });
+    visibleDashboardEvents.forEach((event) => {
+      if (event.severity in counts) counts[event.severity as keyof typeof counts] += 1;
+    });
     return [
-      { key: "critical", label: "Critical", value: counts.Critical, tone: "red" },
-      { key: "high",     label: "High",     value: counts.High,     tone: "orange" },
-      { key: "medium",   label: "Medium",   value: counts.Medium,   tone: "accent" },
-      { key: "low",      label: "Low",      value: counts.Low,      tone: "accent" },
+      { key: "critical", label: "Critical", value: counts.Critical ?? 0, tone: "red" },
+      { key: "high",     label: "High",     value: counts.High ?? 0,     tone: "orange" },
+      { key: "medium",   label: "Medium",   value: counts.Medium ?? 0,   tone: "accent" },
+      { key: "low",      label: "Low",      value: counts.Low ?? 0,      tone: "accent" },
     ] as const;
-  }, [simEvents]);
+  }, [visibleDashboardEvents]);
 
   return (
     <div className="page">
@@ -317,31 +276,6 @@ export function DashboardPage() {
             </div>
           }
         >
-
-          <SimulationControls
-            bounds={simBounds}
-            simNow={simNow}
-            isPlaying={isPlaying}
-            speed={speed}
-            disabled={loadingTimeline}
-            onPlayToggle={() => {
-              if (!simBounds || simNow == null) return;
-              if (simNow >= simBounds.end) setSimNow(simBounds.start);
-              setIsPlaying((c) => !c);
-            }}
-            onReset={() => {
-              if (!simBounds) return;
-              setSimNow(simBounds.start);
-              setIsPlaying(false);
-            }}
-            onScrub={(v) => {
-              if (!simBounds) return;
-              setSimNow(Math.max(simBounds.start, Math.min(simBounds.end, v)));
-              setIsPlaying(false);
-            }}
-            onSpeedChange={setSpeed}
-          />
-
           {selectedBuilding === "all" ? (
             <div style={{ height: 296 }} />
           ) : loadingTimeline ? (
@@ -429,12 +363,12 @@ export function DashboardPage() {
                     <td colSpan={5}><div className="empty"><Spinner /> Loading...</div></td>
                   </tr>
                 )}
-                {!loadingDash && simEvents.length === 0 && (
+                {!loadingDash && visibleDashboardEvents.length === 0 && (
                   <tr>
                     <td colSpan={5}><div className="empty">No alerts at this point in time.</div></td>
                   </tr>
                 )}
-                {[...simEvents].sort((a, b) =>
+                {[...visibleDashboardEvents].sort((a, b) =>
                   (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9) ||
                   new Date(b.start_time).getTime() - new Date(a.start_time).getTime()
                 ).slice(0, 8).map((event) => (
