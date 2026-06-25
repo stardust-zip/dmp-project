@@ -53,8 +53,6 @@ const MANAGED_THEME_VARS = Array.from(
 );
 
 export const THEME_LABELS: Record<Theme, string> = { light: "Light", dark: "Dark" };
-export const ACCENT_LABELS: Record<Accent, string> = { blue: "Blue", sky: "Sky", cyan: "Cyan", teal: "Teal", emerald: "Emerald", lime: "Lime", amber: "Amber", orange: "Orange", rose: "Rose", fuchsia: "Fuchsia", violet: "Violet", indigo: "Indigo", slate: "Slate" };
-export const ACCENT_COLORS: Record<Accent, string> = { blue: "#2563eb", sky: "#0284c7", cyan: "#0891b2", teal: "#0d9488", emerald: "#059669", lime: "#65a30d", amber: "#d97706", orange: "#ea580c", rose: "#e11d48", fuchsia: "#c026d3", violet: "#7c3aed", indigo: "#4f46e5", slate: "#475569" };
 
 const STORAGE_KEY = "dmp.settings";
 
@@ -71,13 +69,20 @@ function read(): Settings {
       const parsed = JSON.parse(raw) as Partial<Settings>;
       return {
         theme: parsed.theme === "dark" ? "dark" : "light",
-        accent: ACCENT_LABELS[parsed.accent as Accent] ? (parsed.accent as Accent) : DEFAULTS.accent,
+        accent: DEFAULTS.accent,
       };
     }
   } catch {
     // corrupt
   }
   return { ...DEFAULTS };
+}
+
+function normalize(settings: Settings): Settings {
+  return {
+    theme: settings.theme === "dark" ? "dark" : "light",
+    accent: DEFAULTS.accent,
+  };
 }
 
 function persist(settings: Settings) {
@@ -123,9 +128,10 @@ function getSnapshot(): Settings {
 }
 
 function write(next: Settings) {
-  cached = next;
-  persist(next);
-  applyToRoot(next);
+  const normalized = normalize(next);
+  cached = normalized;
+  persist(normalized);
+  applyToRoot(normalized);
   subscribers.forEach((fn) => fn());
 }
 
@@ -137,11 +143,10 @@ export function useSettingsStore() {
   }, []);
 
   const setTheme = useCallback((theme: Theme) => updateSettings({ theme }), [updateSettings]);
-  const setAccent = useCallback((accent: Accent) => updateSettings({ accent }), [updateSettings]);
 
   return useMemo(
-    () => ({ settings, updateSettings, setTheme, setAccent }),
-    [settings, updateSettings, setTheme, setAccent],
+    () => ({ settings, updateSettings, setTheme }),
+    [settings, updateSettings, setTheme],
   );
 }
 

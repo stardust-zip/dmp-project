@@ -3,8 +3,8 @@
 import { useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
-import { Card, Field, Segmented } from "@/components/common/primitives";
-import { useSettingsStore, type Accent, type Theme, ACCENT_COLORS, ACCENT_LABELS, THEME_LABELS } from "@/lib/settings-store";
+import { Card, Field } from "@/components/common/primitives";
+import { useSettingsStore, type Theme } from "@/lib/settings-store";
 import { hasAnyRole, USER_MANAGEMENT_ROLES } from "@/lib/rbac";
 import type { IconName } from "@/types";
 
@@ -17,10 +17,67 @@ type SettingsSection = {
   icon: IconName;
 };
 
+const THEME_OPTIONS: Array<{ value: Theme; label: string }> = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+function ThemePreviewOption({
+  value,
+  label,
+  selected,
+  onSelect,
+}: {
+  value: Theme;
+  label: string;
+  selected: boolean;
+  onSelect: (value: Theme) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`theme-preview-option theme-preview-${value}${selected ? " selected" : ""}`}
+      aria-pressed={selected}
+      onClick={() => onSelect(value)}
+    >
+      <span className="theme-preview-frame" aria-hidden="true">
+        <span className="theme-preview-topbar">
+          <span />
+          <span />
+        </span>
+        <span className="theme-preview-body">
+          <span className="theme-preview-sidebar">
+            <span />
+            <span />
+            <span />
+          </span>
+          <span className="theme-preview-main">
+            <span className="theme-preview-chart">
+              <span />
+              <span />
+            </span>
+            <span className="theme-preview-lines">
+              <span />
+              <span />
+              <span />
+            </span>
+          </span>
+        </span>
+      </span>
+      <span className="theme-preview-footer">
+        <span>{label}</span>
+        <span className="theme-preview-check" aria-hidden="true">
+          <Icon name="check" />
+        </span>
+      </span>
+    </button>
+  );
+}
+
 export function SettingsContent() {
   const { session } = useAuth();
   const user = session?.user;
-  const { settings, setTheme, setAccent } = useSettingsStore();
+  const { settings, setTheme } = useSettingsStore();
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("appearance");
 
   const isAdmin = useMemo(() => hasAnyRole(user, USER_MANAGEMENT_ROLES), [user]);
@@ -30,7 +87,7 @@ export function SettingsContent() {
       {
         id: "appearance",
         label: "Appearance",
-        description: "Theme and accent colour.",
+        description: "Theme preference.",
         icon: "eye",
       },
       {
@@ -59,43 +116,22 @@ export function SettingsContent() {
     [isAdmin],
   );
 
-  const themeOptions = useMemo(
-    () =>
-      (Object.keys(THEME_LABELS) as Theme[]).map((value) => ({
-        value,
-        label: THEME_LABELS[value],
-      })),
-    [],
-  );
-
   const active = sections.find((section) => section.id === activeSection) ?? sections[0];
 
   const panel =
     active.id === "appearance" ? (
-      <Card title="Appearance" sub="Make the workspace feel right for you." icon="eye" iconTone="accent">
+      <Card title="Appearance" sub="Choose the workspace theme." icon="eye" iconTone="accent">
         <Field label="Theme">
-          <Segmented<Theme> value={settings.theme} options={themeOptions} onChange={setTheme} />
-        </Field>
-
-        <Field label="Accent colour">
-          <div className="accent-palette">
-            {(Object.keys(ACCENT_COLORS) as Accent[]).map((key) => {
-              const color = ACCENT_COLORS[key];
-              const selected = settings.accent === key;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  className={`accent-swatch${selected ? " selected" : ""}`}
-                  style={{ "--swatch-color": color } as React.CSSProperties}
-                  onClick={() => setAccent(key)}
-                  aria-pressed={selected}
-                >
-                  <span className="swatch-dot" style={{ background: color }} />
-                  <span className="swatch-label">{ACCENT_LABELS[key]}</span>
-                </button>
-              );
-            })}
+          <div className="theme-preview-grid">
+            {THEME_OPTIONS.map((option) => (
+              <ThemePreviewOption
+                key={option.value}
+                value={option.value}
+                label={option.label}
+                selected={settings.theme === option.value}
+                onSelect={setTheme}
+              />
+            ))}
           </div>
         </Field>
       </Card>
