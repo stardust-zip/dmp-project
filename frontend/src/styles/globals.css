@@ -1757,6 +1757,12 @@ table.tbl tbody tr:last-child td {
     border: 1px solid var(--border);
     border-radius: 9px;
     background: var(--surface-2);
+    transition: background .12s, border-color .12s;
+}
+
+.site-status-row:hover {
+    background: var(--surface-3);
+    border-color: var(--accent-300);
 }
 
 .site-status-info {
