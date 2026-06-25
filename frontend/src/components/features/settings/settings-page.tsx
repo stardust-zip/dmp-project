@@ -3,8 +3,8 @@
 import { useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
-import { Card, Field, Segmented } from "@/components/common/primitives";
-import { useSettingsStore, type Theme, THEME_LABELS } from "@/lib/settings-store";
+import { Card, Field } from "@/components/common/primitives";
+import { useSettingsStore, type Theme } from "@/lib/settings-store";
 import { hasAnyRole, USER_MANAGEMENT_ROLES } from "@/lib/rbac";
 import type { IconName } from "@/types";
 
@@ -16,6 +16,63 @@ type SettingsSection = {
   description: string;
   icon: IconName;
 };
+
+const THEME_OPTIONS: Array<{ value: Theme; label: string }> = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+function ThemePreviewOption({
+  value,
+  label,
+  selected,
+  onSelect,
+}: {
+  value: Theme;
+  label: string;
+  selected: boolean;
+  onSelect: (value: Theme) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`theme-preview-option theme-preview-${value}${selected ? " selected" : ""}`}
+      aria-pressed={selected}
+      onClick={() => onSelect(value)}
+    >
+      <span className="theme-preview-frame" aria-hidden="true">
+        <span className="theme-preview-topbar">
+          <span />
+          <span />
+        </span>
+        <span className="theme-preview-body">
+          <span className="theme-preview-sidebar">
+            <span />
+            <span />
+            <span />
+          </span>
+          <span className="theme-preview-main">
+            <span className="theme-preview-chart">
+              <span />
+              <span />
+            </span>
+            <span className="theme-preview-lines">
+              <span />
+              <span />
+              <span />
+            </span>
+          </span>
+        </span>
+      </span>
+      <span className="theme-preview-footer">
+        <span>{label}</span>
+        <span className="theme-preview-check" aria-hidden="true">
+          <Icon name="check" />
+        </span>
+      </span>
+    </button>
+  );
+}
 
 export function SettingsContent() {
   const { session } = useAuth();
@@ -59,22 +116,23 @@ export function SettingsContent() {
     [isAdmin],
   );
 
-  const themeOptions = useMemo(
-    () =>
-      (Object.keys(THEME_LABELS) as Theme[]).map((value) => ({
-        value,
-        label: THEME_LABELS[value],
-      })),
-    [],
-  );
-
   const active = sections.find((section) => section.id === activeSection) ?? sections[0];
 
   const panel =
     active.id === "appearance" ? (
       <Card title="Appearance" sub="Choose the workspace theme." icon="eye" iconTone="accent">
         <Field label="Theme">
-          <Segmented<Theme> value={settings.theme} options={themeOptions} onChange={setTheme} />
+          <div className="theme-preview-grid">
+            {THEME_OPTIONS.map((option) => (
+              <ThemePreviewOption
+                key={option.value}
+                value={option.value}
+                label={option.label}
+                selected={settings.theme === option.value}
+                onSelect={setTheme}
+              />
+            ))}
+          </div>
         </Field>
       </Card>
     ) : active.id === "account" ? (
