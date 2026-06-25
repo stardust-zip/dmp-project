@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { SimulationControls, type SimBounds, type SpeedOption, MINUTE_MS } from "@/components/common/simulation-controls";
 import { Icon } from "@/components/common/icons";
@@ -12,6 +13,7 @@ import { displayLocationName, timeAgo } from "@/lib/format";
 import { KPIS } from "@/lib/mock-data";
 import type { AnomalyEvent, AnomalyFacets, AnomalyOverview, AnomalyTimelineResponse } from "@/types";
 
+const SEVERITY_RANK: Record<string, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const TICK_MS = 250;
@@ -98,6 +100,7 @@ export function DashboardPage() {
   const [openKpi, setOpenKpi] = useState<string | null>(null);
 
   const { session } = useAuth();
+  const router = useRouter();
 
   // On-mount fetch (3 parallel)
   useEffect(() => {
@@ -105,7 +108,7 @@ export function DashboardPage() {
     setLoadingDash(true);
     Promise.all([
       getAnomalyOverview({ ...SIMULATION_RANGE_QUERY }, controller.signal),
-      getAnomalyEvents({ sort: "newest", limit: 200, ...SIMULATION_RANGE_QUERY }, controller.signal),
+      getAnomalyEvents({ sort: "oldest", ...SIMULATION_RANGE_QUERY }, controller.signal),
       getAnomalyFacets(undefined, controller.signal),
     ])
       .then(([ov, evs, fcts]) => {
@@ -184,16 +187,32 @@ export function DashboardPage() {
   const totalAnomalies = overview?.total_anomalies ?? 0;
   const fleetTone = criticalCount > 0 ? "red" : totalAnomalies > 0 ? "amber" : "green";
 
-  // Top 3 critical from recentEvents
-  const topCritical = useMemo(
-    () => recentEvents.filter((e) => e.severity === "Critical").slice(0, 3),
-    [recentEvents],
+  // Events visible at the current simulator time (all buildings; empty until sim is started)
+  const simEvents = useMemo(
+    () => simNow == null ? [] : recentEvents.filter((e) => timeOf(e.start_time) <= simNow),
+    [recentEvents, simNow],
   );
 
-  // Site status from recentEvents
+  // Top 3 critical from simEvents
+  const topCritical = useMemo(
+    () => simEvents.filter((e) => e.severity === "Critical").slice(0, 3),
+    [simEvents],
+  );
+
+  // Fixed building count per site from facets
+  const buildingsPerSite = useMemo(() => {
+    const map = new Map<string, number>();
+    facets.buildings.forEach((b) => {
+      const site = b.split("_")[0];
+      map.set(site, (map.get(site) ?? 0) + 1);
+    });
+    return map;
+  }, [facets.buildings]);
+
+  // Site status from simEvents
   const siteStatusRows = useMemo(() => {
     const bysite = new Map<string, AnomalyEvent[]>();
-    recentEvents.forEach((e) => {
+    simEvents.forEach((e) => {
       const arr = bysite.get(e.site_id) ?? [];
       arr.push(e);
       bysite.set(e.site_id, arr);
@@ -202,10 +221,10 @@ export function DashboardPage() {
       const hasCritical = events.some((e) => e.severity === "Critical");
       const hasHigh = events.some((e) => e.severity === "High");
       const status = hasCritical ? "red" : hasHigh ? "yellow" : "green";
-      const buildings = new Set(events.map((e) => e.building_id)).size;
+      const buildings = buildingsPerSite.get(site) ?? new Set(events.map((e) => e.building_id)).size;
       return { site, status, openCount: events.length, buildings };
     });
-  }, [recentEvents]);
+  }, [simEvents, buildingsPerSite]);
 
   // Building picker options
   const showBuildingPicker = facets.buildings.length > 1;
@@ -231,13 +250,17 @@ export function DashboardPage() {
     });
   }, [overview]);
 
-  // Severity items from real overview
-  const severityItems = [
-    { key: "critical", label: "Critical", value: overview?.severity_counts?.Critical ?? 0, tone: "red" },
-    { key: "high", label: "High", value: overview?.severity_counts?.High ?? 0, tone: "orange" },
-    { key: "medium", label: "Medium", value: overview?.severity_counts?.Medium ?? 0, tone: "accent" },
-    { key: "low", label: "Low", value: overview?.severity_counts?.Low ?? 0, tone: "accent" },
-  ] as const;
+  // Severity items derived from simulator-visible events
+  const severityItems = useMemo(() => {
+    const counts = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+    simEvents.forEach((e) => { if (e.severity in counts) counts[e.severity as keyof typeof counts]++; });
+    return [
+      { key: "critical", label: "Critical", value: counts.Critical, tone: "red" },
+      { key: "high",     label: "High",     value: counts.High,     tone: "orange" },
+      { key: "medium",   label: "Medium",   value: counts.Medium,   tone: "accent" },
+      { key: "low",      label: "Low",      value: counts.Low,      tone: "accent" },
+    ] as const;
+  }, [simEvents]);
 
   return (
     <div className="page">
@@ -390,15 +413,10 @@ export function DashboardPage() {
           title="Recent Alerts"
           icon="bell"
           iconTone="orange"
-          actions={
-            <Link className="btn btn-sm" href="/anomaly">
-              View all <Icon name="arrowRight" />
-            </Link>
-          }
           noBody
         >
           <div className="table-scroll">
-            <table className="tbl">
+            <table className="tbl tbl-clickable">
               <thead>
                 <tr>
                   <th>Time</th>
@@ -414,13 +432,16 @@ export function DashboardPage() {
                     <td colSpan={5}><div className="empty"><Spinner /> Loading...</div></td>
                   </tr>
                 )}
-                {!loadingDash && recentEvents.length === 0 && (
+                {!loadingDash && simEvents.length === 0 && (
                   <tr>
-                    <td colSpan={5}><div className="empty">No recent alerts.</div></td>
+                    <td colSpan={5}><div className="empty">No alerts at this point in time.</div></td>
                   </tr>
                 )}
-                {recentEvents.slice(0, 8).map((event) => (
-                  <tr key={event.id}>
+                {[...simEvents].sort((a, b) =>
+                  (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9) ||
+                  new Date(b.start_time).getTime() - new Date(a.start_time).getTime()
+                ).slice(0, 8).map((event) => (
+                  <tr key={event.id} onClick={() => router.push(`/anomaly?building=${event.building_id}&site=${event.site_id}`)}>
                     <td className="mono" style={{ color: "var(--muted)" }}>{timeAgo(new Date(event.start_time).getTime())}</td>
                     <td>{event.site_id}</td>
                     <td className="t-strong">{displayLocationName(null, event.building_id)}</td>

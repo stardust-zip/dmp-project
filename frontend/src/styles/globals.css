@@ -1154,6 +1154,7 @@ table.tbl tbody tr:last-child td {
     cursor: pointer;
 }
 
+
 .sort-ind {
     color: var(--accent-600);
 }

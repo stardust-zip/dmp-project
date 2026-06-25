@@ -218,7 +218,7 @@ async def get_anomaly_events(
     type: str | None = Query(None),
     start: datetime | None = Query(None),
     end: datetime | None = Query(None),
-    limit: int = Query(50, ge=1, le=500),
+    limit: int | None = Query(None, ge=1),
     offset: int = Query(0, ge=0),
     sort: Literal["severity", "newest", "oldest", "duration"] = Query("severity"),
     db: Session = Depends(get_db),
@@ -228,10 +228,10 @@ async def get_anomaly_events(
     events = _filtered(db, site_id, building_id, severity, type, start, end, _allowed_sites(current_user))
     logger.info("Anomaly events — {} events matched", len(events))
     events = sort_events(events, sort)
-    page = events.iloc[offset : offset + limit]
+    page = events.iloc[offset:] if limit is None else events.iloc[offset : offset + limit]
     return {
         "total": int(len(events)),
-        "limit": limit,
+        "limit": len(page) if limit is None else limit,
         "offset": offset,
         "items": event_records(page),
     }
