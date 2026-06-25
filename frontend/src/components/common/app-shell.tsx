@@ -100,12 +100,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <div className="topbar-spacer" />
 
-          <button className="icon-btn" title="Alerts" style={{ position: "relative" }}>
-            <Icon name="bell" />
-            <span style={{ position: "absolute", top: 6, right: 6, width: 7, height: 7, borderRadius: "50%", background: "var(--red)", boxShadow: "0 0 0 2px var(--topbar-bg)" }} />
-          </button>
-          <div className="divider" />
-
           <div className="account-menu-wrap" onClick={(event) => event.stopPropagation()}>
             <div
               className="profile"
