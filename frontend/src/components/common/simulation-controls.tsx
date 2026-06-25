@@ -14,7 +14,6 @@ export function SimulationControls({
   speed,
   disabled,
   onPlayToggle,
-  onReset,
   onScrub,
   onSpeedChange,
 }: {
@@ -24,7 +23,6 @@ export function SimulationControls({
   speed: SpeedOption;
   disabled: boolean;
   onPlayToggle: () => void;
-  onReset: () => void;
   onScrub: (value: number) => void;
   onSpeedChange: (value: SpeedOption) => void;
 }) {
@@ -40,10 +38,6 @@ export function SimulationControls({
         <button className="btn btn-sm btn-primary" type="button" disabled={!canPlay} onClick={onPlayToggle}>
           <Icon name={isPlaying ? "pause" : "play"} />
           {isPlaying ? "Pause" : "Play"}
-        </button>
-        <button className="btn btn-sm" type="button" disabled={!canPlay} onClick={onReset}>
-          <Icon name="refresh" />
-          Reset
         </button>
         <div className="simulator-speed">
           <Select value={speed} onChange={onSpeedChange} disabled={!canPlay} options={SPEED_OPTIONS} />

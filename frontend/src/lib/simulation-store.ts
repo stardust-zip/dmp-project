@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 
-export type SpeedOption = "1" | "6" | "24";
+export type SpeedOption = "1" | "6";
 export type SimBounds = { start: number; end: number };
 
 export const MINUTE_MS = 60 * 1000;
@@ -14,7 +14,6 @@ export const DEFAULT_SIM_BOUNDS: SimBounds = {
 export const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
   { value: "1", label: "1h/s" },
   { value: "6", label: "6h/s" },
-  { value: "24", label: "24h/s" },
 ];
 
 type SimulationState = {
@@ -30,7 +29,7 @@ type Unsubscribe = () => void;
 const DEFAULT_STATE: SimulationState = {
   simNow: DEFAULT_SIM_BOUNDS.start,
   isPlaying: false,
-  speed: "6",
+  speed: "1",
   bounds: DEFAULT_SIM_BOUNDS,
 };
 

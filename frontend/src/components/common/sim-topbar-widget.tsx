@@ -55,7 +55,6 @@ export function SimTopbarWidget() {
             speed={speed}
             disabled={!canPlay}
             onPlayToggle={playToggle}
-            onReset={reset}
             onScrub={scrub}
             onSpeedChange={setSpeed}
           />

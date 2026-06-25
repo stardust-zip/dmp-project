@@ -77,6 +77,7 @@ export function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [buildingSort, setBuildingSort] = useState<"critical" | "total">("critical");
+  const [breakdownRange, setBreakdownRange] = useState<"24h" | "7d" | "30d">("7d");
 
   const router = useRouter();
 
@@ -144,10 +145,17 @@ export function DashboardPage() {
     [recentEvents, simNow],
   );
 
-  // Top 3 buildings by critical anomaly count at simNow.
+  const breakdownEvents = useMemo(() => {
+    if (simNow == null) return [];
+    const windowMs = breakdownRange === "24h" ? DAY_MS : breakdownRange === "7d" ? 7 * DAY_MS : 30 * DAY_MS;
+    const cutoff = simNow - windowMs;
+    return visibleDashboardEvents.filter((e) => timeOf(e.start_time) >= cutoff);
+  }, [visibleDashboardEvents, simNow, breakdownRange]);
+
+  // Top 3 buildings by critical anomaly count within the breakdown window.
   const topCriticalBuildings = useMemo(() => {
     const byBuilding = new Map<string, { count: number; latestEvent: AnomalyEvent }>();
-    visibleDashboardEvents
+    breakdownEvents
       .filter((e) => e.severity === "Critical")
       .forEach((e) => {
         const existing = byBuilding.get(e.building_id);
@@ -162,7 +170,7 @@ export function DashboardPage() {
       .sort((a, b) => b[1].count - a[1].count)
       .slice(0, 3)
       .map(([buildingId, { count, latestEvent }]) => ({ buildingId, count, latestEvent }));
-  }, [visibleDashboardEvents]);
+  }, [breakdownEvents]);
 
   // Building-level status rows update with the global simulation cursor.
   const buildingStatusRows = useMemo(() => {
@@ -228,7 +236,7 @@ export function DashboardPage() {
   // Severity items update with the global simulation cursor.
   const severityItems = useMemo(() => {
     const counts = { Critical: 0, High: 0, Medium: 0, Low: 0 };
-    visibleDashboardEvents.forEach((event) => {
+    breakdownEvents.forEach((event) => {
       if (event.severity in counts) counts[event.severity as keyof typeof counts] += 1;
     });
     return [
@@ -237,7 +245,7 @@ export function DashboardPage() {
       { key: "medium",   label: "Medium",   value: counts.Medium ?? 0,   tone: "accent" },
       { key: "low",      label: "Low",      value: counts.Low ?? 0,      tone: "accent" },
     ] as const;
-  }, [visibleDashboardEvents]);
+  }, [breakdownEvents]);
 
   return (
     <div className="page">
@@ -321,6 +329,20 @@ export function DashboardPage() {
           title="Anomaly Breakdown"
           icon="pulse"
           iconTone="orange"
+          actions={
+            <div style={{ display: "flex", gap: 4 }}>
+              {(["24h", "7d", "30d"] as const).map((r) => (
+                <button
+                  key={r}
+                  className={`btn btn-sm${breakdownRange === r ? " btn-primary" : ""}`}
+                  type="button"
+                  onClick={() => setBreakdownRange(r)}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          }
         >
           <div className="anom-sev-strip">
             {severityItems.map((s) => (
