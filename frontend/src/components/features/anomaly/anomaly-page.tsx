@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@/components/common/primitives";
+import { SimulationControls, type SimBounds, type SpeedOption, SPEED_OPTIONS, MINUTE_MS } from "@/components/common/simulation-controls";
 import { AlertFeed } from "@/components/features/anomaly/anomaly-alert-feed";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -15,8 +16,6 @@ import { clock, displayLocationName, fmt, fmtKwh } from "@/lib/format";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
 type SortKey = "severity" | "newest" | "oldest";
-type SpeedOption = "1" | "6" | "24";
-type SimBounds = { start: number; end: number };
 
 type Filters = {
   site: string;
@@ -31,14 +30,8 @@ const PER_PAGE = 10;
 const SIMULATION_FETCH_LIMIT = 5000;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-const MINUTE_MS = 60 * 1000;
 const TICK_MS = 250;
 const TIMELINE_ZOOM_MS = 7 * DAY_MS;
-const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
-  { value: "1", label: "1h/s" },
-  { value: "6", label: "6h/s" },
-  { value: "24", label: "24h/s" },
-];
 const SIMULATION_RANGE_QUERY = { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" } as const;
 const SEVERITY_RANK: Record<AnomalySeverity, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
 const DEFAULT_FILTERS: Filters = { site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", sort: "severity" };
@@ -220,67 +213,6 @@ function SelectionGate({ siteSelected, primaryUsageSelected }: { siteSelected: b
         <h2 className="anomaly-gate-title">{title}</h2>
         <p className="anomaly-gate-desc">{description}</p>
       </div>
-    </div>
-  );
-}
-
-function SimulationControls({
-  bounds,
-  simNow,
-  isPlaying,
-  speed,
-  disabled,
-  onPlayToggle,
-  onReset,
-  onScrub,
-  onSpeedChange,
-}: {
-  bounds: SimBounds | null;
-  simNow: number | null;
-  isPlaying: boolean;
-  speed: SpeedOption;
-  disabled: boolean;
-  onPlayToggle: () => void;
-  onReset: () => void;
-  onScrub: (value: number) => void;
-  onSpeedChange: (value: SpeedOption) => void;
-}) {
-  const canPlay = !!bounds && simNow != null && bounds.end > bounds.start && !disabled;
-  const progress = bounds && simNow != null && bounds.end > bounds.start
-    ? ((simNow - bounds.start) / (bounds.end - bounds.start)) * 100
-    : 0;
-
-  return (
-    <div className="simulator-panel">
-      <div className="simulator-controls">
-        <button className="btn btn-sm btn-primary" type="button" disabled={!canPlay} onClick={onPlayToggle}>
-          <Icon name={isPlaying ? "pause" : "play"} />
-          {isPlaying ? "Pause" : "Play"}
-        </button>
-        <button className="btn btn-sm" type="button" disabled={!canPlay} onClick={onReset}>
-          <Icon name="refresh" />
-          Reset
-        </button>
-        <div className="simulator-speed">
-          <Select value={speed} onChange={onSpeedChange} disabled={!canPlay} options={SPEED_OPTIONS} />
-        </div>
-      </div>
-      <div className="simulator-readout">
-        <span className="tag-cap">Simulated time</span>
-        <b className="mono">{simNow == null ? "-" : clock(simNow)}</b>
-        <span className="mono muted">{Math.max(0, Math.min(100, progress)).toFixed(0)}%</span>
-      </div>
-      <input
-        className="simulator-slider"
-        type="range"
-        disabled={!canPlay}
-        min={bounds?.start ?? 0}
-        max={bounds?.end ?? 0}
-        step={MINUTE_MS}
-        value={simNow ?? bounds?.start ?? 0}
-        onChange={(event) => onScrub(Number(event.target.value))}
-        aria-label="Simulated time"
-      />
     </div>
   );
 }

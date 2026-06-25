@@ -585,11 +585,11 @@ export function AssetsPage() {
     <main className="page assets-page">
       <div className="page-head assets-head">
         <div>
-          <h1 className="page-title">Dashboard</h1>
+          <h1 className="page-title">Asset Management</h1>
           <p className="page-sub">
             {canManageAssets
-              ? "Asset dashboard for site hierarchy, building inventory, metadata, and model coverage."
-              : "Asset dashboard for your accessible site hierarchy, building inventory, and metadata."}
+              ? "Site hierarchy, building inventory, metadata, and model coverage."
+              : "Your accessible site hierarchy, building inventory, and metadata."}
           </p>
         </div>
         {canManageAssets && (
