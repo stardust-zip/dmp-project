@@ -4,6 +4,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from src.ml.anomaly.types import DIRECTION_TYPE_LABELS, SEVERITIES, SEVERITY_ORDER, STAGE1_TYPE_LABELS
@@ -83,7 +84,10 @@ def load_anomaly_facets(
                 "types": [],
                 "primary_usage_types": [],
             }
-        base = base + [AnomalyDetectedEvent.site_id.in_(allowed_site_ids)]
+        base = base + [or_(
+            AnomalyDetectedEvent.site_id.in_(allowed_site_ids),
+            AnomalyDetectedEvent.building_id.in_(allowed_site_ids),
+        )]
     scoped = base + ([AnomalyDetectedEvent.site_id == site_id] if site_id else [])
 
     site_rows = (
@@ -224,7 +228,10 @@ def filter_events(
     if allowed_site_ids is not None:
         if not allowed_site_ids:
             return _rows_to_events_df([])
-        q = q.filter(AnomalyDetectedEvent.site_id.in_(allowed_site_ids))
+        q = q.filter(or_(
+            AnomalyDetectedEvent.site_id.in_(allowed_site_ids),
+            AnomalyDetectedEvent.building_id.in_(allowed_site_ids),
+        ))
     if site_id:
         q = q.filter(AnomalyDetectedEvent.site_id == site_id)
     if building_id:
@@ -259,7 +266,10 @@ def filter_series(
     if allowed_site_ids is not None:
         if not allowed_site_ids:
             return _rows_to_series_df([])
-        q = q.filter(AnomalyDetectedEvent.site_id.in_(allowed_site_ids))
+        q = q.filter(or_(
+            AnomalyDetectedEvent.site_id.in_(allowed_site_ids),
+            AnomalyDetectedEvent.building_id.in_(allowed_site_ids),
+        ))
     if site_id:
         q = q.filter(AnomalyDetectedEvent.site_id == site_id)
     if building_id:

@@ -7,8 +7,10 @@ import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, Card, Field, Select, Spinner, toneStyle } from "@/components/common/primitives";
 import { AlertFeed } from "@/components/features/anomaly/anomaly-alert-feed";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
+import { useAuth } from "@/components/auth/auth-provider";
 import { useAlerts } from "@/hooks/use-alerts";
 import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
+import { readStoredSession } from "@/lib/auth-api";
 import { clock, displayLocationName, fmt, fmtKwh } from "@/lib/format";
 import type { AnomalyEvent, AnomalyEventsResponse, AnomalyFacets, AnomalyOverview, AnomalySeverity, AnomalyTimelineGap, AnomalyTimelineResponse, Tone } from "@/types";
 
@@ -40,6 +42,17 @@ const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [
 const SIMULATION_RANGE_QUERY = { start: "2017-10-01T00:00:00", end: "2017-12-31T23:00:00" } as const;
 const SEVERITY_RANK: Record<AnomalySeverity, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
 const DEFAULT_FILTERS: Filters = { site: "all", building: "all", primaryUsage: "all", severity: "all", type: "all", sort: "severity" };
+
+// Building IDs follow the format {site_id}_{primaryUsage}_{buildingName}.
+// This extracts the site and primary usage portions when present.
+function parseScopeId(id: string): { siteId: string; primaryUsage: string | null } {
+  const first = id.indexOf("_");
+  if (first < 0) return { siteId: id, primaryUsage: null };
+  const second = id.indexOf("_", first + 1);
+  if (second < 0) return { siteId: id, primaryUsage: null };
+  const raw = id.slice(first + 1, second);
+  return { siteId: id.slice(0, first), primaryUsage: raw.charAt(0).toUpperCase() + raw.slice(1) };
+}
 const SORT_KEYS = new Set<SortKey>(["severity", "newest", "oldest"]);
 
 const EMPTY_TIMELINE: AnomalyTimelineResponse = { items: [], points: [], gaps: [] };
@@ -291,7 +304,16 @@ function followZoomWindow(bounds: SimBounds | null, simNow: number | null): SimB
 export function AnomalyPage() {
   const searchParams = useSearchParams();
   const searchParamString = searchParams.toString();
-  const [filters, setFilters] = useState<Filters>(() => (typeof window === "undefined" ? DEFAULT_FILTERS : filtersFromSearch(window.location.search)));
+  const [filters, setFilters] = useState<Filters>(() => {
+    if (typeof window === "undefined") return DEFAULT_FILTERS;
+    const base = filtersFromSearch(window.location.search);
+    const stored = readStoredSession();
+    if (stored?.user.role === "Operator" && stored.user.assignedSiteIds.length > 0) {
+      const siteIds = new Set(stored.user.assignedSiteIds.map((id) => parseScopeId(id).siteId));
+      if (siteIds.size === 1) return normalizeFilters({ ...base, site: [...siteIds][0] });
+    }
+    return base;
+  });
   const [page, setPage] = useState(1);
   const [facets, setFacets] = useState<AnomalyFacets>({ sites: [], buildings: [], severities: ["Critical", "High", "Medium", "Low"], types: [], primary_usage_types: [] });
   const [siteFacetsBySite, setSiteFacetsBySite] = useState<Record<string, AnomalyFacets>>({});
@@ -306,6 +328,24 @@ export function AnomalyPage() {
   const [timelineLoaded, setTimelineLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { statuses, acknowledge, resolve, reopen } = useAlerts();
+  const { session } = useAuth();
+  const lockedSite = useMemo(() => {
+    const user = session?.user;
+    if (user?.role !== "Operator" || user.assignedSiteIds.length === 0) return null;
+    const siteIds = new Set(user.assignedSiteIds.map((id) => parseScopeId(id).siteId));
+    return siteIds.size === 1 ? [...siteIds][0] : null;
+  }, [session]);
+  const lockedPrimaryUsage = useMemo(() => {
+    if (!lockedSite || !session?.user) return null;
+    const { assignedSiteIds } = session.user;
+    if (assignedSiteIds.length === 1) {
+      const { primaryUsage } = parseScopeId(assignedSiteIds[0]);
+      if (primaryUsage) return primaryUsage;
+    }
+    const siteF = siteFacetsBySite[lockedSite];
+    if (!siteF || siteF.buildings.length !== 1) return null;
+    return siteF.primary_usage_types[0] ?? null;
+  }, [lockedSite, session, siteFacetsBySite]);
 
   const replayQuery = useMemo<AnomalyQuery>(() => ({
     site: filters.site,
@@ -362,11 +402,13 @@ export function AnomalyPage() {
     const fromEvents = [...new Set(source.map((event) => event.building_id))].sort();
     return withSelected(fromEvents.length > 0 ? fromEvents : activeFacets.buildings);
   }, [activeFacets.buildings, filters.building, filters.primaryUsage, siteEvents]);
+  const lockedBuilding = filteredBuildings.length === 1 ? filteredBuildings[0] : null;
 
   useEffect(() => {
     const nextFilters = filtersFromSearch(searchParamString ? `?${searchParamString}` : "");
+    const withLocks = lockedSite ? normalizeFilters({ ...nextFilters, site: lockedSite }) : nextFilters;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setFilters(nextFilters);
+    setFilters(withLocks);
     setPage(1);
     setSelected(null);
     setIsPlaying(false);
@@ -377,7 +419,25 @@ export function AnomalyPage() {
     window.requestAnimationFrame(() => {
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     });
-  }, [searchParamString]);
+  }, [searchParamString, lockedSite]);
+
+  useEffect(() => {
+    if (!lockedPrimaryUsage) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFilters((current) => {
+      if (current.primaryUsage !== "all") return current;
+      return normalizeFilters({ ...current, primaryUsage: lockedPrimaryUsage });
+    });
+  }, [lockedPrimaryUsage]);
+
+  useEffect(() => {
+    if (!lockedBuilding) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFilters((current) => {
+      if (current.building === lockedBuilding) return current;
+      return { ...current, building: lockedBuilding };
+    });
+  }, [lockedBuilding]);
 
   // Load all facets on mount
   useEffect(() => {
@@ -497,8 +557,9 @@ export function AnomalyPage() {
                 set("primaryUsage", "all");
                 set("building", "all");
               }}
+              disabled={!!lockedSite}
               options={[{ value: "all", label: "All Sites" }, ...siteOptions.map((site) => ({ value: site, label: site }))]}
-              searchable
+              searchable={!lockedSite}
               searchPlaceholder="Search sites..."
             />
           </Field>
@@ -509,9 +570,9 @@ export function AnomalyPage() {
                 set("primaryUsage", value);
                 set("building", "all");
               }}
-              disabled={filters.site === "all" || primaryUsageOptions.length === 0}
+              disabled={filters.site === "all" || primaryUsageOptions.length === 0 || !!lockedPrimaryUsage}
               options={primaryUsageOptions}
-              searchable
+              searchable={!lockedPrimaryUsage}
               searchPlaceholder="Search usage..."
             />
           </Field>
@@ -519,9 +580,9 @@ export function AnomalyPage() {
             <Select
               value={filters.building}
               onChange={(value) => set("building", value)}
-              disabled={filters.site === "all" || !isPrimaryUsageSelected || filteredBuildings.length === 0}
+              disabled={filters.site === "all" || !isPrimaryUsageSelected || filteredBuildings.length === 0 || !!lockedBuilding}
               options={buildingOptions}
-              searchable
+              searchable={!lockedBuilding}
               searchPlaceholder="Search buildings..."
             />
           </Field>
