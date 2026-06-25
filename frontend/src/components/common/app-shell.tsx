@@ -2,11 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
-import { Modal, Spinner } from "@/components/common/primitives";
-import { SimTopbarWidget } from "@/components/common/sim-topbar-widget";
+import { Modal } from "@/components/common/primitives";
 import { SettingsContent } from "@/components/features/settings/settings-page";
 import { MAIN_NAV, hasAnyRole } from "@/lib/rbac";
 import { useSettingsStore } from "@/lib/settings-store";
@@ -15,7 +14,8 @@ function routeLabel(pathname: string) {
   if (pathname.startsWith("/anomaly")) return "Anomaly Detection";
   if (pathname.startsWith("/forecast")) return "Forecasting";
   if (pathname.startsWith("/models")) return "AI Engineering";
-  if (pathname.startsWith("/assets")) return "Asset Management";
+  if (pathname.startsWith("/monitoring")) return "Model Monitoring";
+  if (pathname.startsWith("/assets")) return "Dashboard";
   if (pathname.startsWith("/users")) return "User Management";
   if (pathname.startsWith("/settings")) return "Settings";
   return "Dashboard";
@@ -27,8 +27,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [navigating, setNavigating] = useState(false);
-  const prevPathname = useRef(pathname);
   const meta = useMemo(() => routeLabel(pathname), [pathname]);
   const user = session?.user;
   const navItems = useMemo(() => MAIN_NAV.filter((item) => hasAnyRole(user, item.roles)), [user]);
@@ -51,26 +49,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
   }, [profileOpen]);
-
-  useEffect(() => {
-    if (pathname !== prevPathname.current) {
-      setNavigating(false);
-      prevPathname.current = pathname;
-    }
-  }, [pathname]);
-
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      const anchor = (e.target as Element).closest("a");
-      if (!anchor) return;
-      const href = anchor.getAttribute("href");
-      if (href && href.startsWith("/") && href !== pathname) {
-        setNavigating(true);
-      }
-    };
-    document.addEventListener("click", handleClick, true);
-    return () => document.removeEventListener("click", handleClick, true);
-  }, [pathname]);
 
   if (pathname === "/login") {
     return children;
@@ -120,10 +98,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span>Energy Suite</span>
             <Icon name="chevRight" />
             <b>{meta}</b>
-            {navigating && <Spinner size={13} />}
           </div>
           <div className="topbar-spacer" />
-          <SimTopbarWidget />
 
           <div className="account-menu-wrap" onClick={(event) => event.stopPropagation()}>
             <div

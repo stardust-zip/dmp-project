@@ -15,7 +15,7 @@ import {
 
 type PredictionTab = "scenario" | "report";
 
-const DEFAULT_BUILDING = "Panther_parking_Lorriane";
+const DEFAULT_BUILDING = "Panther_parking_Lorriane"
 const DEFAULT_METRIC = "electricity";
 const LOCATION_SEARCH_LIMIT = 40;
 
