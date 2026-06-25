@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
-import { Icon } from "@/components/common/icons";
 import { Card, KpiCard, Select, Spinner } from "@/components/common/primitives";
 import { getAnomalyOverview, getAnomalyEvents, getAnomalyFacets, getAnomalyTimeline } from "@/lib/anomaly-api";
 import { displayLocationName, timeAgo } from "@/lib/format";
@@ -319,11 +317,6 @@ export function DashboardPage() {
           title="Anomaly Breakdown"
           icon="pulse"
           iconTone="orange"
-          actions={
-            <Link href="/anomaly" className="btn btn-sm">
-              View all <Icon name="arrowRight" />
-            </Link>
-          }
         >
           <div className="anom-sev-strip">
             {severityItems.map((s) => (
