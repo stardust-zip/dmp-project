@@ -1165,7 +1165,7 @@ table.tbl tbody tr:last-child td {
 
 /* KPI */
 .kpi-summary {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     margin-bottom: var(--gap);
     align-items: stretch;
     overflow: visible;
@@ -1176,7 +1176,7 @@ table.tbl tbody tr:last-child td {
 }
 
 .dashboard-lower-grid {
-    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr);
 }
 
 .health-grid {
@@ -1508,6 +1508,217 @@ table.tbl tbody tr:last-child td {
     display: block;
     height: 100%;
     border-radius: 4px;
+}
+
+/* fleet status banner */
+.fleet-status {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 11px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+    margin-bottom: var(--gap);
+    position: relative;
+    overflow: hidden;
+    flex-wrap: wrap;
+}
+
+.fleet-status-red {
+    background: color-mix(in oklab, var(--red-soft) 55%, var(--surface));
+    border-color: var(--red-border);
+}
+
+.fleet-status-amber {
+    background: color-mix(in oklab, var(--amber-soft) 55%, var(--surface));
+    border-color: var(--orange-border);
+}
+
+.fleet-status-green {
+    background: color-mix(in oklab, var(--green-soft) 55%, var(--surface));
+    border-color: var(--green-border);
+}
+
+.fleet-status-lead {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--ink);
+    white-space: nowrap;
+    padding-left: 6px;
+}
+
+.fleet-status-stats {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12.5px;
+    color: var(--ink-2);
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+}
+
+.fleet-status-stats strong {
+    font-weight: 700;
+    color: var(--ink);
+}
+
+.fleet-sep {
+    width: 1px;
+    height: 14px;
+    background: var(--border-2);
+    flex: 0 0 auto;
+    display: block;
+}
+
+.fleet-status-action {
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+/* anomaly breakdown card */
+.anom-sev-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    overflow: hidden;
+}
+
+.anom-sev-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 14px 8px;
+    background: var(--surface);
+    text-align: center;
+}
+
+.anom-sev-val {
+    font-size: 22px;
+    font-weight: 720;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+
+.anom-sev-label {
+    font-size: 10.5px;
+    font-weight: 650;
+    letter-spacing: .02em;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.anom-needs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.anom-needs-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    font-family: var(--font-sans);
+    transition: background .12s, border-color .12s;
+}
+
+.anom-needs-row:hover {
+    background: var(--red-soft);
+    border-color: var(--red-border);
+}
+
+.anom-needs-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.anom-needs-info b {
+    font-size: 12.5px;
+    font-weight: 620;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.anom-needs-info small {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.anom-needs-time {
+    font-size: 11.5px;
+    color: var(--muted);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+/* site status card */
+.site-status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.site-status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface-2);
+}
+
+.site-status-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.site-status-info b {
+    font-size: 13px;
+    font-weight: 620;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.site-status-info small {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.site-status-link {
+    padding: 0 7px;
+    height: 26px;
+    color: var(--muted);
+    border-color: transparent;
+}
+
+.site-status-link:hover {
+    color: var(--ink);
+    background: var(--surface-3);
 }
 
 /* filter field */

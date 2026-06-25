@@ -212,7 +212,6 @@ export const KPIS: Kpi[] = [
   { key: "forecast", label: "Forecast - Tomorrow", value: "13,200", unit: "kWh", icon: "trend", tone: "violet", delta: 5.3, deltaLabel: "projected", spark: spark(3, true) },
   { key: "anom", label: "Active Anomalies", value: "15", unit: "", icon: "pulse", tone: "orange", delta: 3, deltaLabel: "new today", isCount: true, spark: spark(4, true) },
   { key: "crit", label: "Critical Alerts", value: "3", unit: "", icon: "alert", tone: "red", delta: 1, deltaLabel: "needs action", isCount: true, spark: spark(5, true) },
-  { key: "quality", label: "Data Quality Score", value: "98.2", unit: "%", icon: "shield", tone: "green", delta: 0.4, deltaLabel: "vs last week", spark: spark(6, false) },
 ];
 
 export const ANOMALY_SERIES = buildSeries({
