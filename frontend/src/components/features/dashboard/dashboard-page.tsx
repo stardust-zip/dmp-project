@@ -151,11 +151,25 @@ export function DashboardPage() {
     [recentEvents, simNow],
   );
 
-  // Top 3 critical from events visible at the global simulation cursor.
-  const topCritical = useMemo(
-    () => visibleDashboardEvents.filter((e) => e.severity === "Critical").slice(0, 3),
-    [visibleDashboardEvents],
-  );
+  // Top 3 buildings by critical anomaly count at simNow.
+  const topCriticalBuildings = useMemo(() => {
+    const byBuilding = new Map<string, { count: number; latestEvent: AnomalyEvent }>();
+    visibleDashboardEvents
+      .filter((e) => e.severity === "Critical")
+      .forEach((e) => {
+        const existing = byBuilding.get(e.building_id);
+        if (!existing) {
+          byBuilding.set(e.building_id, { count: 1, latestEvent: e });
+        } else {
+          const isNewer = new Date(e.start_time).getTime() > new Date(existing.latestEvent.start_time).getTime();
+          byBuilding.set(e.building_id, { count: existing.count + 1, latestEvent: isNewer ? e : existing.latestEvent });
+        }
+      });
+    return [...byBuilding.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 3)
+      .map(([buildingId, { count, latestEvent }]) => ({ buildingId, count, latestEvent }));
+  }, [visibleDashboardEvents]);
 
   // Building-level status rows update with the global simulation cursor.
   const buildingStatusRows = useMemo(() => {
@@ -322,17 +336,17 @@ export function DashboardPage() {
 
           <div className="sec-label" style={{ marginTop: 16 }}>Needs attention</div>
           <div className="anom-needs-list">
-            {topCritical.length === 0 && !loadingDash && (
+            {topCriticalBuildings.length === 0 && !loadingDash && (
               <div className="empty" style={{ padding: "12px 0" }}>No critical alerts</div>
             )}
-            {topCritical.map((event) => (
-              <div key={event.id} className="anom-needs-row">
+            {topCriticalBuildings.map(({ buildingId, count, latestEvent }) => (
+              <div key={buildingId} className="anom-needs-row">
                 <span className="badge badge-critical"><i className="bdot" />critical</span>
                 <span className="anom-needs-info">
-                  <b>{displayLocationName(null, event.building_id)}</b>
-                  <small>{event.type}</small>
+                  <b>{displayLocationName(null, buildingId)}</b>
+                  <small>{count} critical anomal{count === 1 ? "y" : "ies"}</small>
                 </span>
-                <span className="mono anom-needs-time">{timeAgo(new Date(event.start_time).getTime())}</span>
+                <span className="mono anom-needs-time">{timeAgo(new Date(latestEvent.start_time).getTime())}</span>
               </div>
             ))}
           </div>
