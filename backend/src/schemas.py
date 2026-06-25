@@ -618,3 +618,116 @@ class AnomalyTimelineResponse(BaseSchema):
     items: list[AnomalyEventResponse]
     points: list[AnomalyTimelinePointResponse] = Field(default_factory=list)
     gaps: list[AnomalyTimelineGapResponse] = Field(default_factory=list)
+
+
+# -----------------------------------------
+# Monitoring & Drift Detection Schemas
+# -----------------------------------------
+
+
+class PredictionLogCreate(BaseSchema):
+    timestamp: datetime
+    building_id: str
+    metric_type_id: str
+    predicted_value: float
+    mlflow_run_id: str
+    model_name: str
+    model_version: str
+    model_task: str
+    feature_values: dict[str, Any] | None = None
+    prediction_context: dict[str, Any] | None = None
+
+
+class PredictionLogResponse(BaseSchema):
+    id: str
+    timestamp: datetime
+    building_id: str
+    metric_type_id: str
+    predicted_value: float
+    actual_value: float | None = None
+    error: float | None = None
+    mlflow_run_id: str
+    model_name: str
+    model_version: str
+    model_task: str
+    feature_values: dict[str, Any] | None = None
+    prediction_context: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class ModelPerformanceResponse(BaseSchema):
+    id: str
+    model_name: str
+    model_version: str
+    mlflow_run_id: str
+    model_task: str
+    building_id: str | None = None
+    metric_type_id: str | None = None
+    period_start: datetime
+    period_end: datetime
+    sample_count: int
+    mae: float | None = None
+    rmse: float | None = None
+    mape: float | None = None
+    r2_score: float | None = None
+    mean_error: float | None = None
+    p10_error: float | None = None
+    p90_error: float | None = None
+    baseline_mae: float | None = None
+    baseline_rmse: float | None = None
+    performance_ratio: float | None = None
+    computed_at: datetime
+
+
+class ModelPerformanceTimelineResponse(BaseSchema):
+    model_name: str
+    model_version: str
+    metrics: list[ModelPerformanceResponse]
+
+
+class DriftReportResponse(BaseSchema):
+    id: str
+    model_name: str
+    model_version: str
+    mlflow_run_id: str
+    model_task: str
+    drift_type: str
+    feature_name: str | None = None
+    period_start: datetime
+    period_end: datetime
+    drift_score: float
+    drift_threshold: float
+    is_drifted: bool
+    severity: str
+    reference_stats: dict[str, Any]
+    current_stats: dict[str, Any]
+    details: dict[str, Any] | None = None
+    computed_at: datetime
+
+
+class ModelDriftTimelineResponse(BaseSchema):
+    model_name: str
+    model_version: str
+    overall_drift: list[DriftReportResponse]
+    feature_drift: dict[str, list[DriftReportResponse]] = Field(default_factory=dict)
+
+
+class ModelMonitoringSummary(BaseSchema):
+    model_name: str
+    model_version: str
+    health_score: float  # 0-100
+    status: str  # "healthy", "degraded", "critical"
+    last_performance: ModelPerformanceResponse | None = None
+    active_drifts: list[DriftReportResponse] = Field(default_factory=list)
+    total_predictions: int = 0
+    pending_actuals: int = 0
+
+
+class ModelVersionComparisonResponse(BaseSchema):
+    model_name: str
+    versions: list[dict[str, Any]]
+    comparison_period_start: datetime
+    comparison_period_end: datetime
+    metrics: list[str] = Field(
+        default_factory=lambda: ["mae", "rmse", "mape", "r2_score"]
+    )
