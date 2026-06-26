@@ -104,16 +104,18 @@ export function KpiCard({ kpi }: { kpi: Kpi }) {
         <span className="kpi-val">{kpi.value}</span>
         {kpi.unit && <span className="kpi-unit">{kpi.unit}</span>}
       </div>
-      <div className="kpi-foot">
-        <span className={`delta ${neutral ? (positive ? "up" : "down") : deltaCls}`}>
-          <Icon name={positive ? "arrowUp" : "arrowDown"} style={{ width: 12, height: 12 }} />
-          {positive ? "+" : ""}
-          {kpi.delta}
-          {kpi.isCount ? "" : kpi.key === "quality" ? " pts" : "%"}
-        </span>
-        <span style={{ color: "var(--muted-2)" }}>.</span>
-        <span>{kpi.deltaLabel}</span>
-      </div>
+      {kpi.value !== "-" && (
+        <div className="kpi-foot">
+          <span className={`delta ${neutral ? (positive ? "up" : "down") : deltaCls}`}>
+            <Icon name={positive ? "arrowUp" : "arrowDown"} style={{ width: 12, height: 12 }} />
+            {positive ? "+" : ""}
+            {kpi.delta}
+            {kpi.isCount ? "" : kpi.key === "quality" ? " pts" : "%"}
+          </span>
+          <span style={{ color: "var(--muted-2)" }}>.</span>
+          <span>{kpi.deltaLabel}</span>
+        </div>
+      )}
     </div>
   );
 }
