@@ -8,7 +8,6 @@ import { UserEditModal } from "@/components/features/users/user-edit-modal";
 import { displayLocationName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
 import {
   createBuilding,
-  createSite,
   getLocationOptions,
   getRegisteredModels,
   type LocationOption,
@@ -16,7 +15,7 @@ import {
 } from "@/lib/models-api";
 import { getUsers, type ManagedUser, type ManagedUserStatus } from "@/lib/users-api";
 
-type AssetModal = "site" | "building" | null;
+type AssetModal = "building" | null;
 
 const LOCATIONS_PER_PAGE = 8;
 const BUILDINGS_PER_PAGE = 8;
@@ -154,10 +153,6 @@ export function AssetsPage() {
   const [activeModal, setActiveModal] = useState<AssetModal>(null);
   const [editingOperator, setEditingOperator] = useState<ManagedUser | null>(null);
   const [assetFormError, setAssetFormError] = useState<string | null>(null);
-
-  const [siteId, setSiteId] = useState("");
-  const [siteName, setSiteName] = useState("");
-  const [siteMetadata, setSiteMetadata] = useState("");
 
   const [buildingId, setBuildingId] = useState("");
   const [buildingName, setBuildingName] = useState("");
@@ -346,15 +341,9 @@ export function AssetsPage() {
   }
 
   function closeAssetModal() {
-    if (submitting === "site" || submitting === "building") return;
+    if (submitting === "building") return;
     setActiveModal(null);
     setAssetFormError(null);
-  }
-
-  function resetSiteForm() {
-    setSiteId("");
-    setSiteName("");
-    setSiteMetadata("");
   }
 
   function resetBuildingForm() {
@@ -387,17 +376,6 @@ export function AssetsPage() {
     setSelectedLocationId(null);
     setBuildingQuery("");
     setBuildingPage(1);
-  }
-
-  async function handleCreateSite(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await run("site", async () => {
-      const id = validateRequired(siteId, "Site ID");
-      const name = validateRequired(siteName, "Name");
-      await createSite({ id, name, metadata: parseMetadata(siteMetadata) });
-      resetSiteForm();
-      return `Site ${id} created.`;
-    });
   }
 
   async function handleCreateBuilding(event: FormEvent<HTMLFormElement>) {
@@ -459,10 +437,6 @@ export function AssetsPage() {
     <main className="page assets-page">
       {canManageAssets && (
         <div className="page-head-actions asset-primary-actions">
-          <button className="btn btn-primary" type="button" onClick={() => openAssetModal("site")}>
-            <Icon name="map" />
-            <span>Create Site</span>
-          </button>
           <button className="btn btn-primary" type="button" onClick={() => openAssetModal("building")}>
             <Icon name="building" />
             <span>Create Building</span>
@@ -744,33 +718,11 @@ export function AssetsPage() {
       </div>
       {canManageAssets && activeModal && (
         <Modal
-          title={activeModal === "site" ? "Create Site" : "Create Building"}
-          description={activeModal === "site" ? "Add a top-level location." : "Attach a building to a site."}
+          title="Create Building"
+          description="Attach a building to a site."
           className="asset-modal"
           onClose={closeAssetModal}
         >
-          {activeModal === "site" && (
-            <form className="asset-form" onSubmit={handleCreateSite}>
-              <Field label="Site ID">
-                <input className="input" value={siteId} onChange={(event) => setSiteId(event.target.value)} placeholder="Panther" required />
-              </Field>
-              <Field label="Name">
-                <input className="input" value={siteName} onChange={(event) => setSiteName(event.target.value)} placeholder="Panther" required />
-              </Field>
-              <Field label="Metadata JSON">
-                <textarea className="textarea" value={siteMetadata} onChange={(event) => setSiteMetadata(event.target.value)} placeholder='{"timezone":"UTC"}' />
-              </Field>
-              {assetFormError && <FormMessage tone="error">{assetFormError}</FormMessage>}
-              <button
-                className="btn btn-primary"
-                type="submit"
-                disabled={submitting === "site"}
-              >
-                <Icon name={submitting === "site" ? "refresh" : "plus"} className={submitting === "site" ? "spin" : undefined} />
-                <span>{submitting === "site" ? "Creating..." : "Create Site"}</span>
-              </button>
-            </form>
-          )}
           {activeModal === "building" && (
             <form className="asset-form" onSubmit={handleCreateBuilding}>
               <Field label="Building ID">
