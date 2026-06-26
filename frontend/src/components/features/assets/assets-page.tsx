@@ -439,7 +439,7 @@ export function AssetsPage() {
         <div className="page-head-actions asset-primary-actions">
           <button className="btn btn-primary" type="button" onClick={() => openAssetModal("building")}>
             <Icon name="building" />
-            <span>Create Building</span>
+            <span>Add Building</span>
           </button>
         </div>
       )}
@@ -658,7 +658,7 @@ export function AssetsPage() {
                     referrerPolicy="no-referrer-when-downgrade"
                   />
                 ) : (
-                  <div className="asset-empty" style={{ height: "100%" }}>
+                  <div className="asset-empty" style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     No coordinates found in this location metadata.
                   </div>
                 )}
@@ -718,8 +718,7 @@ export function AssetsPage() {
       </div>
       {canManageAssets && activeModal && (
         <Modal
-          title="Create Building"
-          description="Attach a building to a site."
+          title="Add Building"
           className="asset-modal"
           onClose={closeAssetModal}
         >
@@ -749,7 +748,7 @@ export function AssetsPage() {
                 disabled={submitting === "building"}
               >
                 <Icon name={submitting === "building" ? "refresh" : "plus"} className={submitting === "building" ? "spin" : undefined} />
-                <span>{submitting === "building" ? "Creating..." : "Create Building"}</span>
+                <span>{submitting === "building" ? "Adding..." : "Add Building"}</span>
               </button>
             </form>
           )}
