@@ -9,6 +9,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import {
   getForecastAvailability,
   generateForecastVsActual,
+  getForecastModelCoverage,
   getLocationOptions,
   getMetricOptions,
   type ForecastAvailabilityResponse,
@@ -58,6 +59,7 @@ export function ForecastPage() {
   const [sites, setSites] = useState<LocationOption[]>([]);
   const [buildings, setBuildings] = useState<LocationOption[]>([]);
   const [metrics, setMetrics] = useState<MetricOption[]>([]);
+  const [droppedBuildingIds, setDroppedBuildingIds] = useState<string[]>([]);
   const [optionsLoading, setOptionsLoading] = useState(true);
 
   const [siteId, setSiteId] = useState("");
@@ -95,6 +97,15 @@ export function ForecastPage() {
       .finally(() => {
         if (!controller.signal.aborted) setOptionsLoading(false);
       });
+    // Fetch the production model's building coverage so dropped buildings can be
+    // hidden from the dropdown. Non-fatal: no model yet -> show all buildings.
+    getForecastModelCoverage(controller.signal)
+      .then((coverage) => {
+        if (!controller.signal.aborted) setDroppedBuildingIds(coverage.dropped_building_ids);
+      })
+      .catch(() => {
+        /* No production forecasting model yet; keep droppedBuildingIds empty. */
+      });
     return () => controller.abort();
   }, []);
 
@@ -122,6 +133,22 @@ export function ForecastPage() {
       });
     return () => controller.abort();
   }, [siteId]);
+
+  // Buildings the production model can actually forecast = site's children minus
+  // those dropped (>30% missing) during the latest training run.
+  const visibleBuildings = useMemo(
+    () => buildings.filter((building) => !droppedBuildingIds.includes(building.id)),
+    [buildings, droppedBuildingIds],
+  );
+  const hiddenCount = buildings.length - visibleBuildings.length;
+
+  // Keep the selected building inside the visible set once coverage arrives.
+  useEffect(() => {
+    if (!visibleBuildings.length) return;
+    if (!visibleBuildings.some((building) => building.id === buildingId)) {
+      setBuildingId(visibleBuildings[0].id);
+    }
+  }, [visibleBuildings, buildingId]);
 
   useEffect(() => {
     if (!buildingId || !metricType) {
@@ -230,8 +257,13 @@ export function ForecastPage() {
               value={buildingId}
               onChange={setBuildingId}
               disabled={optionsLoading || !siteId}
-              options={buildings.map((building) => ({ value: building.id, label: building.name || building.id }))}
+              options={visibleBuildings.map((building) => ({ value: building.id, label: building.name || building.id }))}
             />
+            {hiddenCount > 0 && (
+              <span style={{ display: "block", color: "var(--muted)", fontSize: 12, marginTop: 8 }}>
+                {hiddenCount} building(s) hidden — excluded from the production model's training data (&gt;30% missing).
+              </span>
+            )}
           </Field>
           <Field label="Metric">
             <Select

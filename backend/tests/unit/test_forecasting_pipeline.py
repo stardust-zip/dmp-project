@@ -214,6 +214,7 @@ def test_clean_drops_high_missing_building():
     assert "B1" not in set(cleaned["building_id"])
     assert "B0" in set(cleaned["building_id"])
     assert stats["buildings_dropped"] == 1
+    assert stats["dropped_building_ids"] == ["B1"]
 
 
 def test_clean_is_idempotent():

@@ -102,8 +102,11 @@ def clean_telemetry_for_forecasting(
     out = out.sort_values([building_col, timestamp_col]).reset_index(drop=True)
 
     buildings_dropped = 0
+    dropped_building_ids: list[str] = []
     if drop_high_missing:
-        out, buildings_dropped = _drop_high_missing_buildings(out, value_col, building_col)
+        out, buildings_dropped, dropped_building_ids = _drop_high_missing_buildings(
+            out, value_col, building_col
+        )
 
     outliers_flagged = _flag_outliers_iqr(out, timestamp_col, value_col, building_col)
 
@@ -111,14 +114,20 @@ def clean_telemetry_for_forecasting(
 
     stats = {
         "buildings_dropped": buildings_dropped,
+        "dropped_building_ids": dropped_building_ids,
         "outliers_flagged": outliers_flagged,
         "gaps_filled": gaps_filled,
     }
     return (out, stats) if return_stats else out
 
 
-def _empty_stats() -> dict[str, int]:
-    return {"buildings_dropped": 0, "outliers_flagged": 0, "gaps_filled": 0}
+def _empty_stats() -> dict:
+    return {
+        "buildings_dropped": 0,
+        "dropped_building_ids": [],
+        "outliers_flagged": 0,
+        "gaps_filled": 0,
+    }
 
 
 def _nullify_negative_consumption(df: pd.DataFrame, value_col: str) -> None:
@@ -169,21 +178,25 @@ def _align_hourly_grid(
 
 def _drop_high_missing_buildings(
     df: pd.DataFrame, value_col: str, building_col: str
-) -> tuple[pd.DataFrame, int]:
+) -> tuple[pd.DataFrame, int, list[str]]:
     """Drop buildings whose consumption null-rate exceeds the threshold.
 
     Mirror of ``forecasting_module/preprocessing.py:handle_missing_consumption``
     step 0. Only meaningful for global/all-buildings training.
+
+    Returns ``(filtered_df, n_dropped, dropped_building_ids)``. The dropped IDs
+    travel with the model version (coverage artifact) so the forecast UI can hide
+    buildings the model never saw during training.
     """
     if df.empty:
-        return df, 0
+        return df, 0, []
     missing_rate = df.groupby(building_col)[value_col].apply(
         lambda s: s.isna().mean()
     )
+    drop = missing_rate[missing_rate > MISSING_RATE_THRESHOLD].index.astype(str).tolist()
     keep = missing_rate[missing_rate <= MISSING_RATE_THRESHOLD].index
-    n_dropped = int(len(missing_rate) - len(keep))
     out = df[df[building_col].isin(keep)].copy()
-    return out, n_dropped
+    return out, len(drop), drop
 
 
 def _flag_outliers_iqr(

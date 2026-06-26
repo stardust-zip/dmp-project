@@ -329,6 +329,19 @@ def train_forecasting_model(
         model_name=model_name,
     )
     append_log(f"Model registered as {model_name}.")
+
+    # --- Record building coverage so the forecast UI can hide dropped buildings. ---
+    trained_building_ids = sorted(df["building_id"].astype(str).unique().tolist())
+    dropped_building_ids = sorted(clean_stats.get("dropped_building_ids", []))
+    registry.log_coverage_artifact(
+        trained_building_ids=trained_building_ids,
+        dropped_building_ids=dropped_building_ids,
+    )
+    append_log(
+        f"Coverage: {len(trained_building_ids)} building(s) trained, "
+        f"{len(dropped_building_ids)} dropped (>30% missing)."
+    )
+
     # Auto-promote the freshly trained version to production so inference can
     # load it immediately (no manual MLflow UI step required).
     if version:
