@@ -3553,6 +3553,11 @@ table.tbl tbody tr:last-child td {
     font-size: 13px;
 }
 
+.asset-detail-facts small {
+    color: var(--muted);
+    font-size: 11px;
+}
+
 .asset-detail-actions {
     display: flex;
     flex-wrap: wrap;

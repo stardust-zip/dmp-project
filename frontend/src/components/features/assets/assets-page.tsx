@@ -65,10 +65,6 @@ function locationPoint(location?: LocationOption | null): GeoPoint | null {
   return { lat, lon };
 }
 
-function formatCoordinate(value: number) {
-  return value.toFixed(5);
-}
-
 function statusLabel(status: ManagedUserStatus | string) {
   return humanizeIdentifier(status);
 }
@@ -120,11 +116,8 @@ function modelMatches(model: RegisteredModel, terms: string[]) {
 }
 
 function modelTask(model: RegisteredModel) {
-  const taggedTask = model.production_version?.model_task
-    ?? model.production_version?.tags?.model_task
-    ?? model.tags?.model_task
-    ?? model.tags?.task
-    ?? model.tags?.type;
+  const tags = model.tags ?? {};
+  const taggedTask = model.production_version?.model_task || tags.model_task || tags.task || tags.type;
   if (taggedTask === "prediction" || taggedTask === "forecasting" || taggedTask === "anomaly_detection") return taggedTask;
 
   const text = `${model.name} ${model.description ?? ""}`.toLowerCase();
@@ -136,11 +129,12 @@ function modelTask(model: RegisteredModel) {
 
 function modelHasSpecificLocationScope(model: RegisteredModel) {
   const tags = { ...(model.tags ?? {}), ...(model.production_version?.tags ?? {}) };
-  return Boolean(tags.site_id || tags.building_id || tags.location_id);
+  const hasValue = (v: string | undefined) => Boolean(v) && v!.toLowerCase() !== "none";
+  return hasValue(tags.site_id) || hasValue(tags.building_id) || hasValue(tags.location_id);
 }
 
 function modelAppliesGlobally(model: RegisteredModel) {
-  return Boolean(model.production_version) && modelTask(model) === "anomaly_detection" && !modelHasSpecificLocationScope(model);
+  return Boolean(model.production_version) && !modelHasSpecificLocationScope(model);
 }
 
 export function AssetsPage() {
@@ -246,7 +240,6 @@ export function AssetsPage() {
     [filteredActiveSiteBuildings, safeBuildingPage],
   );
   const selectedLocation = selectedLocationId ? locationById.get(selectedLocationId) ?? null : null;
-  const selectedChildren = selectedLocation ? locations.filter((item) => item.parent_id === selectedLocation.id) : [];
   const selectedPoint = selectedLocation ? locationPoint(selectedLocation) : null;
   const locationRangeStart = filteredSites.length ? (safeLocationPage - 1) * LOCATIONS_PER_PAGE + 1 : 0;
   const locationRangeEnd = Math.min(safeLocationPage * LOCATIONS_PER_PAGE, filteredSites.length);
@@ -457,6 +450,10 @@ export function AssetsPage() {
       });
   }, [locations, users]);
   const selectedOperators = canManageAssets ? assignedOperatorsForLocation(selectedLocation) : [];
+  const selectedModels = canViewModelCoverage && selectedLocation ? modelsForLocation(selectedLocation) : [];
+  const selectedAnomalyModel = selectedModels.find((m) => modelTask(m) === "anomaly_detection") ?? null;
+  const selectedForecastModel = selectedModels.find((m) => modelTask(m) === "forecasting") ?? null;
+
 
   return (
     <main className="page assets-page">
@@ -697,8 +694,18 @@ export function AssetsPage() {
                 <div className="asset-detail-facts">
                   <div><span>Site</span><b>{isSiteLocation(selectedLocation) ? selectedLocation.id : selectedLocation.parent_id ?? "No site"}</b></div>
                   <div><span>Primary Usage Space</span><b>{titleCase(selectedLocation.location_type)}</b></div>
-                  <div><span>Coords</span><b>{selectedPoint ? `${formatCoordinate(selectedPoint.lat)}, ${formatCoordinate(selectedPoint.lon)}` : "No coordinates"}</b></div>
-                  <div><span>Children</span><b>{selectedChildren.length}</b></div>
+                  {canViewModelCoverage && (
+                    <>
+                      <div>
+                        <span>Anomaly Detection</span>
+                        <b>{selectedAnomalyModel ? `${selectedAnomalyModel.name}_v${selectedAnomalyModel.production_version?.version ?? ""}` : "No model"}</b>
+                      </div>
+                      <div>
+                        <span>Forecasting</span>
+                        <b>{selectedForecastModel ? `${selectedForecastModel.name}_v${selectedForecastModel.production_version?.version ?? ""}` : "No model"}</b>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {canManageAssets && (
