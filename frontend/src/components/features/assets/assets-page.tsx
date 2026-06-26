@@ -20,7 +20,8 @@ import { getUsers, type ManagedUser, type ManagedUserStatus } from "@/lib/users-
 
 type AssetModal = "site" | "building" | null;
 
-const LOCATIONS_PER_PAGE = 24;
+const LOCATIONS_PER_PAGE = 8;
+const BUILDINGS_PER_PAGE = 8;
 
 type GeoPoint = {
   lat: number;
@@ -207,12 +208,14 @@ export function AssetsPage() {
   const [buildingMetadata, setBuildingMetadata] = useState("");
 
   const [locationQuery, setLocationQuery] = useState("");
+  const [buildingQuery, setBuildingQuery] = useState("");
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
-  const [expandedSiteId, setExpandedSiteId] = useState<string | null>(null);
+  const [activeSiteId, setActiveSiteId] = useState<string | null>(null);
   const [searchedLocations, setSearchedLocations] = useState<LocationOption[] | null>(null);
   const [locationSearchLoading, setLocationSearchLoading] = useState(false);
 
   const [locationPage, setLocationPage] = useState(1);
+  const [buildingPage, setBuildingPage] = useState(1);
 
   const siteOptions = useMemo(() => locations.filter(isSiteLocation), [locations]);
   const locationById = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
@@ -263,13 +266,28 @@ export function AssetsPage() {
     () => filteredSites.slice((safeLocationPage - 1) * LOCATIONS_PER_PAGE, safeLocationPage * LOCATIONS_PER_PAGE),
     [filteredSites, safeLocationPage],
   );
-  const visibleLocations = useMemo(() => pagedSites.flatMap((site) => (
-    expandedSiteId === site.id ? [site, ...(buildingsBySiteId.get(site.id) ?? [])] : [site]
-  )), [buildingsBySiteId, expandedSiteId, pagedSites]);
+  const activeSite = activeSiteId ? locationById.get(activeSiteId) ?? null : null;
+  const activeSiteBuildings = useMemo(
+    () => (activeSiteId ? buildingsBySiteId.get(activeSiteId) ?? [] : []),
+    [activeSiteId, buildingsBySiteId],
+  );
+  const filteredActiveSiteBuildings = useMemo(() => {
+    const query = buildingQuery.trim().toLowerCase();
+    if (!query) return activeSiteBuildings;
+    return activeSiteBuildings.filter((location) => locationSearchText(location, activeSite ?? undefined).includes(query));
+  }, [activeSite, activeSiteBuildings, buildingQuery]);
+  const totalBuildingPages = Math.max(1, Math.ceil(filteredActiveSiteBuildings.length / BUILDINGS_PER_PAGE));
+  const safeBuildingPage = Math.min(buildingPage, totalBuildingPages);
+  const pagedBuildings = useMemo(
+    () => filteredActiveSiteBuildings.slice((safeBuildingPage - 1) * BUILDINGS_PER_PAGE, safeBuildingPage * BUILDINGS_PER_PAGE),
+    [filteredActiveSiteBuildings, safeBuildingPage],
+  );
   const selectedLocation = selectedLocationId ? locationById.get(selectedLocationId) ?? null : null;
   const selectedPoint = selectedLocation ? locationPoint(selectedLocation) : null;
   const locationRangeStart = filteredSites.length ? (safeLocationPage - 1) * LOCATIONS_PER_PAGE + 1 : 0;
   const locationRangeEnd = Math.min(safeLocationPage * LOCATIONS_PER_PAGE, filteredSites.length);
+  const buildingRangeStart = filteredActiveSiteBuildings.length ? (safeBuildingPage - 1) * BUILDINGS_PER_PAGE + 1 : 0;
+  const buildingRangeEnd = Math.min(safeBuildingPage * BUILDINGS_PER_PAGE, filteredActiveSiteBuildings.length);
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -396,7 +414,20 @@ export function AssetsPage() {
 
   function selectLocation(location: LocationOption) {
     setSelectedLocationId(location.id);
-    setExpandedSiteId(isSiteLocation(location) ? location.id : location.parent_id ?? null);
+    if (isSiteLocation(location)) {
+      setActiveSiteId(location.id);
+      setBuildingQuery("");
+      setBuildingPage(1);
+      return;
+    }
+
+    setActiveSiteId(location.parent_id ?? null);
+  }
+
+  function showSiteList() {
+    setActiveSiteId(null);
+    setBuildingQuery("");
+    setBuildingPage(1);
   }
 
   async function handleCreateSite(event: FormEvent<HTMLFormElement>) {
@@ -513,99 +544,182 @@ export function AssetsPage() {
 
       <div className="assets-workspace">
         <Card
-          title="Locations"
-          sub={loading ? "Loading site index" : locationSearchLoading ? "Searching location index" : `${filteredSites.length} sites`}
+          title={activeSite ? "Buildings" : "Locations"}
+          sub={activeSite ? activeSite.id : loading ? "Loading site index" : locationSearchLoading ? "Searching location index" : `${filteredSites.length} sites`}
           icon="grid"
         >
-          <div className="asset-toolbar">
-            <div className="asset-toolbar-controls">
-              <div className="asset-search">
-                <Icon name="search" />
-                <input
-                  value={locationQuery}
-                  onChange={(event) => {
-                    setLocationQuery(event.target.value);
-                    setLocationPage(1);
-                  }}
-                  placeholder="Search location or type"
-                />
+          {activeSite ? (
+            <div className="asset-browser-view is-building-view">
+              <div className="asset-toolbar asset-browser-toolbar">
+                <div className="asset-toolbar-controls">
+                  <button className="asset-browser-back" type="button" onClick={showSiteList}>
+                    <Icon name="chevLeft" />
+                    <span>Sites</span>
+                  </button>
+                  <div className="asset-search">
+                    <Icon name="search" />
+                    <input
+                      value={buildingQuery}
+                      onChange={(event) => {
+                        setBuildingQuery(event.target.value);
+                        setBuildingPage(1);
+                      }}
+                      placeholder="Search buildings"
+                    />
+                  </div>
+                </div>
+                <span className="asset-search-help">
+                  {buildingQuery.trim()
+                    ? `${filteredActiveSiteBuildings.length} building results`
+                    : `${activeSiteBuildings.length} buildings`}
+                </span>
               </div>
-            </div>
-            <span className="asset-search-help">
-              {locationSearchLoading
-                ? "Searching..."
-                : locationQuery.trim()
-                  ? `${filteredSites.length} site results`
-                  : `${filteredSites.length} sites`}
-            </span>
-          </div>
 
-          <div className="asset-browser-list">
-            {visibleLocations.map((location) => {
-              const childCount = isSiteLocation(location) ? buildingsBySiteId.get(location.id)?.length ?? 0 : 0;
-              const isExpandedSite = expandedSiteId === location.id;
-
-              return (
-                <button
-                  key={location.id}
-                  type="button"
-                  aria-expanded={isSiteLocation(location) ? isExpandedSite : undefined}
-                  className={[
-                    "asset-browser-row",
-                    !isSiteLocation(location) && "is-child",
-                    selectedLocationId === location.id && "is-selected",
-                  ].filter(Boolean).join(" ")}
-                  onClick={() => selectLocation(location)}
-                >
-                  <span className="asset-browser-icon">
-                    <Icon name={isSiteLocation(location) ? "map" : "building"} />
-                  </span>
-                  <span className="asset-browser-info">
-                    <b title={location.name || location.id}>{displayLocationName(location.name, location.id)}</b>
-                    <small title={location.id}>{location.id}</small>
-                  </span>
-                  <span className="asset-browser-meta">
-                    {isSiteLocation(location) && childCount > 0 && (
-                      <>
-                        <span className="asset-browser-count">{childCount}</span>
-                        <Icon name={isExpandedSite ? "chevDown" : "chevRight"} />
-                      </>
-                    )}
-                    {mappedLocationById.has(location.id) && (
-                      <span className="asset-coord-dot" title="Has coordinates" />
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-            {filteredSites.length === 0 && (
-              <div className="asset-empty">No locations match the search.</div>
-            )}
-          </div>
-
-          {filteredSites.length > 0 && (
-            <div className="pager">
-              <span>
-                Showing {locationRangeStart}-{locationRangeEnd} of {filteredSites.length} sites
-              </span>
-              <div className="pager-btns">
-                <button className="pg" type="button" disabled={safeLocationPage === 1} onClick={() => setLocationPage((current) => Math.max(1, current - 1))}>
-                  <Icon name="chevLeft" style={{ width: 13, height: 13 }} />
-                </button>
-                {Array.from({ length: totalLocationPages }, (_, index) => index + 1)
-                  .filter((page) => page === 1 || page === totalLocationPages || Math.abs(page - safeLocationPage) <= 1)
-                  .map((page, index, pages) => (
-                    <span key={page}>
-                      {index > 0 && page - pages[index - 1] > 1 && <span className="muted" style={{ padding: "0 4px" }}>...</span>}
-                      <button className={`pg ${safeLocationPage === page ? "on" : ""}`} type="button" onClick={() => setLocationPage(page)}>
-                        {page}
-                      </button>
+              <div className="asset-browser-list">
+                {pagedBuildings.map((location) => (
+                  <button
+                    key={location.id}
+                    type="button"
+                    className={[
+                      "asset-browser-row",
+                      selectedLocationId === location.id && "is-selected",
+                    ].filter(Boolean).join(" ")}
+                    onClick={() => selectLocation(location)}
+                  >
+                    <span className="asset-browser-icon">
+                      <Icon name="building" />
                     </span>
-                  ))}
-                <button className="pg" type="button" disabled={safeLocationPage === totalLocationPages} onClick={() => setLocationPage((current) => Math.min(totalLocationPages, current + 1))}>
-                  <Icon name="chevRight" style={{ width: 13, height: 13 }} />
-                </button>
+                    <span className="asset-browser-info">
+                      <b title={location.name || location.id}>{displayLocationName(location.name, location.id)}</b>
+                      <small title={location.id}>{location.id}</small>
+                    </span>
+                    <span className="asset-browser-meta">
+                      {mappedLocationById.has(location.id) && (
+                        <span className="asset-coord-dot" title="Has coordinates" />
+                      )}
+                    </span>
+                  </button>
+                ))}
+                {activeSiteBuildings.length === 0 && (
+                  <div className="asset-empty">No buildings registered for this site.</div>
+                )}
+                {activeSiteBuildings.length > 0 && filteredActiveSiteBuildings.length === 0 && (
+                  <div className="asset-empty">No buildings match the search.</div>
+                )}
               </div>
+
+              {filteredActiveSiteBuildings.length > 0 && (
+                <div className="pager">
+                  <span>
+                    Showing {buildingRangeStart}-{buildingRangeEnd} of {filteredActiveSiteBuildings.length} buildings
+                  </span>
+                  <div className="pager-btns">
+                    <button className="pg" type="button" disabled={safeBuildingPage === 1} onClick={() => setBuildingPage((current) => Math.max(1, current - 1))}>
+                      <Icon name="chevLeft" style={{ width: 13, height: 13 }} />
+                    </button>
+                    {Array.from({ length: totalBuildingPages }, (_, index) => index + 1)
+                      .filter((page) => page === 1 || page === totalBuildingPages || Math.abs(page - safeBuildingPage) <= 1)
+                      .map((page, index, pages) => (
+                        <span key={page}>
+                          {index > 0 && page - pages[index - 1] > 1 && <span className="muted" style={{ padding: "0 4px" }}>...</span>}
+                          <button className={`pg ${safeBuildingPage === page ? "on" : ""}`} type="button" onClick={() => setBuildingPage(page)}>
+                            {page}
+                          </button>
+                        </span>
+                      ))}
+                    <button className="pg" type="button" disabled={safeBuildingPage === totalBuildingPages} onClick={() => setBuildingPage((current) => Math.min(totalBuildingPages, current + 1))}>
+                      <Icon name="chevRight" style={{ width: 13, height: 13 }} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="asset-browser-view is-site-view">
+              <div className="asset-toolbar">
+                <div className="asset-toolbar-controls">
+                  <div className="asset-search">
+                    <Icon name="search" />
+                    <input
+                      value={locationQuery}
+                      onChange={(event) => {
+                        setLocationQuery(event.target.value);
+                        setLocationPage(1);
+                      }}
+                      placeholder="Search location or type"
+                    />
+                  </div>
+                </div>
+                <span className="asset-search-help">
+                  {locationSearchLoading
+                    ? "Searching..."
+                    : locationQuery.trim()
+                      ? `${filteredSites.length} site results`
+                      : `${filteredSites.length} sites`}
+                </span>
+              </div>
+
+              <div className="asset-browser-list">
+                {pagedSites.map((location) => {
+                  const childCount = buildingsBySiteId.get(location.id)?.length ?? 0;
+
+                  return (
+                    <button
+                      key={location.id}
+                      type="button"
+                      className={[
+                        "asset-browser-row",
+                        selectedLocationId === location.id && "is-selected",
+                      ].filter(Boolean).join(" ")}
+                      onClick={() => selectLocation(location)}
+                    >
+                      <span className="asset-browser-icon">
+                        <Icon name="map" />
+                      </span>
+                      <span className="asset-browser-info">
+                        <b title={location.name || location.id}>{displayLocationName(location.name, location.id)}</b>
+                        <small title={location.id}>{location.id}</small>
+                      </span>
+                      <span className="asset-browser-meta">
+                        <span className="asset-browser-count">{childCount}</span>
+                        <Icon name="chevRight" />
+                        {mappedLocationById.has(location.id) && (
+                          <span className="asset-coord-dot" title="Has coordinates" />
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+                {filteredSites.length === 0 && (
+                  <div className="asset-empty">No locations match the search.</div>
+                )}
+              </div>
+
+              {filteredSites.length > 0 && (
+                <div className="pager">
+                  <span>
+                    Showing {locationRangeStart}-{locationRangeEnd} of {filteredSites.length} sites
+                  </span>
+                  <div className="pager-btns">
+                    <button className="pg" type="button" disabled={safeLocationPage === 1} onClick={() => setLocationPage((current) => Math.max(1, current - 1))}>
+                      <Icon name="chevLeft" style={{ width: 13, height: 13 }} />
+                    </button>
+                    {Array.from({ length: totalLocationPages }, (_, index) => index + 1)
+                      .filter((page) => page === 1 || page === totalLocationPages || Math.abs(page - safeLocationPage) <= 1)
+                      .map((page, index, pages) => (
+                        <span key={page}>
+                          {index > 0 && page - pages[index - 1] > 1 && <span className="muted" style={{ padding: "0 4px" }}>...</span>}
+                          <button className={`pg ${safeLocationPage === page ? "on" : ""}`} type="button" onClick={() => setLocationPage(page)}>
+                            {page}
+                          </button>
+                        </span>
+                      ))}
+                    <button className="pg" type="button" disabled={safeLocationPage === totalLocationPages} onClick={() => setLocationPage((current) => Math.min(totalLocationPages, current + 1))}>
+                      <Icon name="chevRight" style={{ width: 13, height: 13 }} />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </Card>

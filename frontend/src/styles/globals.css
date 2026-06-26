@@ -3315,6 +3315,60 @@ table.tbl tbody tr:last-child td {
     padding-right: 2px;
 }
 
+.asset-browser-view {
+    animation: asset-browser-view-in .16s ease-out both;
+}
+
+.asset-browser-toolbar .asset-toolbar-controls {
+    grid-template-columns: auto minmax(0, 1fr);
+}
+
+@keyframes asset-browser-view-in {
+    from {
+        opacity: .62;
+        transform: translateY(6px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .asset-browser-view {
+        animation: none;
+    }
+}
+
+.asset-browser-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: border .12s, background .12s, color .12s;
+}
+
+.asset-browser-back:hover {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    color: var(--ink);
+}
+
+.asset-browser-back svg {
+    width: 13px;
+    height: 13px;
+}
+
 .asset-browser-row {
     display: grid;
     grid-template-columns: 28px minmax(0, 1fr) auto;
@@ -3343,11 +3397,6 @@ table.tbl tbody tr:last-child td {
     background: var(--accent-soft);
     color: var(--ink);
     box-shadow: var(--shadow-md);
-}
-
-.asset-browser-row.is-child {
-    margin-left: 22px;
-    background: color-mix(in oklab, var(--surface-2) 82%, var(--accent-soft));
 }
 
 .asset-browser-icon {
@@ -3793,8 +3842,8 @@ table.tbl tbody tr:last-child td {
         justify-content: center;
     }
 
-    .asset-browser-row.is-child {
-        margin-left: 12px;
+    .asset-browser-toolbar .asset-toolbar-controls {
+        grid-template-columns: 1fr;
     }
 
     .asset-detail-facts {
