@@ -250,12 +250,8 @@ export function DashboardPage() {
     [facets.buildings],
   );
 
-  // KPI strip — critical count and consumption stats track simNow
+  // KPI strip — consumption stats track simNow
   const kpis = useMemo(() => {
-    const [todayStartMs] = simNow != null ? dayBoundsUTC(simNow, 0) : [null];
-    const critical = visibleDashboardEvents.filter(
-      (e) => e.severity === "Critical" && todayStartMs != null && timeOf(e.start_time) >= todayStartMs,
-    ).length;
 
     const { current, currentExpected, today, yesterday, dayBefore, forecast } = consumptionKpis;
 
@@ -278,12 +274,9 @@ export function DashboardPage() {
         const base = today ?? yesterday;
         return { ...kpi, value: fmtKwh(forecast), delta: base != null ? pctDelta(forecast, base) : 0, deltaLabel: "vs now" };
       }
-      if (kpi.key === "crit" || kpi.label?.toLowerCase().includes("critical")) {
-        return { ...kpi, value: String(critical) };
-      }
       return kpi;
     });
-  }, [visibleDashboardEvents, simNow, consumptionKpis]);
+  }, [consumptionKpis]);
 
   // Severity items update with the global simulation cursor.
   const severityItems = useMemo(() => {
