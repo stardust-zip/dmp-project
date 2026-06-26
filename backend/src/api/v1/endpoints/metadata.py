@@ -45,7 +45,7 @@ async def list_locations(
         description="Filter buildings by parent site ID.",
     ),
     include_archived: bool = Query(False),
-    limit: int = Query(50, ge=1, le=1000),
+    limit: int | None = Query(None, ge=1),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> dict[str, list[LocationResponse]]:
