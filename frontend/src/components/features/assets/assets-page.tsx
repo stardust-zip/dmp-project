@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, FormMessage, Modal } from "@/components/common/primitives";
@@ -64,34 +63,6 @@ function locationPoint(location?: LocationOption | null): GeoPoint | null {
   if (lat == null || lon == null) return null;
   if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
   return { lat, lon };
-}
-
-function metadataString(metadata: Record<string, unknown> | null | undefined, ...keys: string[]) {
-  for (const key of keys) {
-    const value = metadata?.[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  }
-  return null;
-}
-
-function anomalyHref(location: LocationOption) {
-  const params = new URLSearchParams({
-    severity: "all",
-    type: "all",
-    range: "scored",
-  });
-  const primaryUsage = metadataString(location.metadata, "primaryspaceusage", "primary_space_usage", "primaryUsage", "primary_usage");
-  if (primaryUsage) params.set("primaryUsage", primaryUsage);
-
-  if (isSiteLocation(location)) {
-    params.set("site", location.id);
-  } else {
-    if (location.parent_id) params.set("site", location.parent_id);
-    params.set("building", location.id);
-  }
-
-  return `/anomaly?${params.toString()}`;
 }
 
 function formatCoordinate(value: number) {
@@ -173,7 +144,6 @@ function modelAppliesGlobally(model: RegisteredModel) {
 }
 
 export function AssetsPage() {
-  const router = useRouter();
   const { session } = useAuth();
   const currentUser = session?.user;
   const canManageAssets = currentUser?.role === "Admin";
@@ -528,8 +498,7 @@ export function AssetsPage() {
 
       <div className="assets-workspace">
         <Card
-          title={activeSite ? "Buildings" : "Locations"}
-          sub={activeSite ? activeSite.id : loading ? "Loading site index" : locationSearchLoading ? "Searching location index" : `${filteredSites.length} sites`}
+          title="Locations"
           icon="grid"
         >
           {activeSite ? (
@@ -699,6 +668,12 @@ export function AssetsPage() {
         <Card
           title={selectedLocation ? displayLocationName(selectedLocation.name, selectedLocation.id) : "Asset Details"}
           icon="building"
+          actions={selectedLocation && !isSiteLocation(selectedLocation) && selectedPoint ? (
+            <a className="btn btn-secondary btn-small" href={osmLocationUrl(selectedPoint)} target="_blank" rel="noreferrer">
+              <Icon name="external" />
+              <span>Open in OSM</span>
+            </a>
+          ) : undefined}
         >
           {selectedLocation ? (
             <>
@@ -720,23 +695,10 @@ export function AssetsPage() {
 
               <div className="asset-detail-body">
                 <div className="asset-detail-facts">
-                  <div><span>Type</span><b>{titleCase(selectedLocation.location_type)}</b></div>
                   <div><span>Site</span><b>{isSiteLocation(selectedLocation) ? selectedLocation.id : selectedLocation.parent_id ?? "No site"}</b></div>
+                  <div><span>Primary Usage Space</span><b>{titleCase(selectedLocation.location_type)}</b></div>
                   <div><span>Coords</span><b>{selectedPoint ? `${formatCoordinate(selectedPoint.lat)}, ${formatCoordinate(selectedPoint.lon)}` : "No coordinates"}</b></div>
                   <div><span>Children</span><b>{selectedChildren.length}</b></div>
-                </div>
-
-                <div className="asset-detail-actions">
-                  <button className="btn btn-primary btn-small" type="button" onClick={() => router.push(anomalyHref(selectedLocation))}>
-                    <Icon name="pulse" />
-                    <span>Anomaly</span>
-                  </button>
-                  {selectedPoint && (
-                    <a className="btn btn-secondary btn-small" href={osmLocationUrl(selectedPoint)} target="_blank" rel="noreferrer">
-                      <Icon name="external" />
-                      <span>Open OSM</span>
-                    </a>
-                  )}
                 </div>
 
                 {canManageAssets && (
@@ -751,7 +713,6 @@ export function AssetsPage() {
                             <small>{user.email}</small>
                           </span>
                           <button className="btn btn-small" type="button" onClick={() => setEditingOperator(user)}>
-                            <Icon name="settings" />
                             <span>Edit</span>
                           </button>
                         </div>
