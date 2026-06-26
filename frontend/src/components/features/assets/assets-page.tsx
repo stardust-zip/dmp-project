@@ -5,9 +5,8 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Icon } from "@/components/common/icons";
 import { Card, Field, FormMessage, Modal } from "@/components/common/primitives";
-import { ModelDetailModal } from "@/components/features/models/model-detail-modal";
 import { UserEditModal } from "@/components/features/users/user-edit-modal";
-import { displayLocationName, displayModelName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
+import { displayLocationName, humanizeIdentifier, isSiteLocation, locationSearchText } from "@/lib/format";
 import {
   createBuilding,
   createSite,
@@ -46,11 +45,6 @@ function parseMetadata(value: string) {
 
 function titleCase(value?: string | null) {
   return humanizeIdentifier(value);
-}
-
-function shortJson(value?: Record<string, unknown> | null) {
-  if (!value || Object.keys(value).length === 0) return "No metadata";
-  return JSON.stringify(value, null, 2);
 }
 
 function readNumber(value: unknown) {
@@ -195,7 +189,6 @@ export function AssetsPage() {
 
   const [activeModal, setActiveModal] = useState<AssetModal>(null);
   const [editingOperator, setEditingOperator] = useState<ManagedUser | null>(null);
-  const [detailModel, setDetailModel] = useState<RegisteredModel | null>(null);
   const [assetFormError, setAssetFormError] = useState<string | null>(null);
 
   const [siteId, setSiteId] = useState("");
@@ -283,6 +276,7 @@ export function AssetsPage() {
     [filteredActiveSiteBuildings, safeBuildingPage],
   );
   const selectedLocation = selectedLocationId ? locationById.get(selectedLocationId) ?? null : null;
+  const selectedChildren = selectedLocation ? locations.filter((item) => item.parent_id === selectedLocation.id) : [];
   const selectedPoint = selectedLocation ? locationPoint(selectedLocation) : null;
   const locationRangeStart = filteredSites.length ? (safeLocationPage - 1) * LOCATIONS_PER_PAGE + 1 : 0;
   const locationRangeEnd = Math.min(safeLocationPage * LOCATIONS_PER_PAGE, filteredSites.length);
@@ -464,8 +458,6 @@ export function AssetsPage() {
     () => locations.filter((location) => modelsForLocation(location).some((model) => model.production_version)).length,
     [locations, modelsForLocation],
   );
-  const selectedModels = selectedLocation ? modelsForLocation(selectedLocation) : [];
-  const selectedChildren = selectedLocation ? locations.filter((item) => item.parent_id === selectedLocation.id) : [];
   const assignedOperatorsForLocation = useCallback((location: LocationOption | null): AssignedOperator[] => {
     if (!location) return [];
 
@@ -705,9 +697,8 @@ export function AssetsPage() {
         </Card>
 
         <Card
-          title={selectedLocation ? displayLocationName(selectedLocation.name, selectedLocation.id) : "Asset Map"}
-          sub={selectedLocation ? selectedLocation.id : "Select a location to inspect map, metadata, operators, and model coverage"}
-          icon="map"
+          title={selectedLocation ? displayLocationName(selectedLocation.name, selectedLocation.id) : "Asset Details"}
+          icon="building"
         >
           {selectedLocation ? (
             <>
@@ -728,11 +719,6 @@ export function AssetsPage() {
               </div>
 
               <div className="asset-detail-body">
-                <div className="asset-detail-hd">
-                  <h3>{displayLocationName(selectedLocation.name, selectedLocation.id)}</h3>
-                  <p>{selectedLocation.id}</p>
-                </div>
-
                 <div className="asset-detail-facts">
                   <div><span>Type</span><b>{titleCase(selectedLocation.location_type)}</b></div>
                   <div><span>Site</span><b>{isSiteLocation(selectedLocation) ? selectedLocation.id : selectedLocation.parent_id ?? "No site"}</b></div>
@@ -777,47 +763,11 @@ export function AssetsPage() {
                   </div>
                 )}
 
-                {canViewModelCoverage && (
-                  <div className="asset-detail-section">
-                    <span className="asset-summary-label">Models</span>
-                    <div className="asset-detail-list compact">
-                      {selectedModels.map((model) => (
-                        <button
-                          key={model.name}
-                          className="asset-detail-list-action"
-                          type="button"
-                          title={model.name}
-                          onClick={() => setDetailModel(model)}
-                        >
-                          {displayModelName(model.name)}
-                        </button>
-                      ))}
-                      {selectedModels.length === 0 && <span>No matching models</span>}
-                    </div>
-                  </div>
-                )}
-
-                <div className="asset-detail-section">
-                  <span className="asset-summary-label">Child Assets</span>
-                  <div className="asset-detail-list compact">
-                    {selectedChildren.slice(0, 6).map((item) => (
-                      <button key={item.id} className="asset-detail-list-action" type="button" onClick={() => selectLocation(item)}>
-                        {displayLocationName(item.name, item.id)}
-                      </button>
-                    ))}
-                    {selectedChildren.length === 0 && <span>No child locations</span>}
-                  </div>
-                </div>
-
-                <div className="asset-detail-section">
-                  <span className="asset-summary-label">Metadata JSON</span>
-                  <pre className="asset-json">{shortJson(selectedLocation.metadata)}</pre>
-                </div>
               </div>
             </>
           ) : (
             <div className="asset-detail-empty-state">
-              <Icon name="map" />
+              <Icon name="building" />
               <b>No location selected</b>
               <small>Pick a location from the list to see its details here.</small>
             </div>
@@ -905,19 +855,6 @@ export function AssetsPage() {
             setUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
             setMessage(`${updated.full_name} was updated.`);
           }}
-        />
-      )}
-
-      {detailModel && (
-        <ModelDetailModal
-          model={detailModel}
-          onClose={() => setDetailModel(null)}
-          onModelsChanged={(nextModels) => {
-            setModels(nextModels);
-            setDetailModel((current) => current ? nextModels.find((model) => model.name === current.name) ?? current : current);
-          }}
-          onMessage={setMessage}
-          onError={setError}
         />
       )}
     </main>

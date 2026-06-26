@@ -3005,6 +3005,7 @@ table.tbl tbody tr:last-child td {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 14px;
+    margin-top: 22px;
     margin-bottom: 22px;
 }
 
