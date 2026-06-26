@@ -413,19 +413,21 @@ export function AssetsPage() {
   }
 
   function selectLocation(location: LocationOption) {
-    setSelectedLocationId(location.id);
     if (isSiteLocation(location)) {
+      setSelectedLocationId(null);
       setActiveSiteId(location.id);
       setBuildingQuery("");
       setBuildingPage(1);
       return;
     }
 
+    setSelectedLocationId(location.id);
     setActiveSiteId(location.parent_id ?? null);
   }
 
   function showSiteList() {
     setActiveSiteId(null);
+    setSelectedLocationId(null);
     setBuildingQuery("");
     setBuildingPage(1);
   }
@@ -496,28 +498,18 @@ export function AssetsPage() {
 
   return (
     <main className="page assets-page">
-      <div className="page-head assets-head">
-        <div>
-          <h1 className="page-title">Asset Management</h1>
-          <p className="page-sub">
-            {canManageAssets
-              ? "Site hierarchy, building inventory, metadata, and model coverage."
-              : "Your accessible site hierarchy, building inventory, and metadata."}
-          </p>
+      {canManageAssets && (
+        <div className="page-head-actions asset-primary-actions">
+          <button className="btn btn-primary" type="button" onClick={() => openAssetModal("site")}>
+            <Icon name="map" />
+            <span>Create Site</span>
+          </button>
+          <button className="btn btn-primary" type="button" onClick={() => openAssetModal("building")}>
+            <Icon name="building" />
+            <span>Create Building</span>
+          </button>
         </div>
-        {canManageAssets && (
-          <div className="page-head-actions asset-primary-actions">
-            <button className="btn btn-primary" type="button" onClick={() => openAssetModal("site")}>
-              <Icon name="map" />
-              <span>Create Site</span>
-            </button>
-            <button className="btn btn-primary" type="button" onClick={() => openAssetModal("building")}>
-              <Icon name="building" />
-              <span>Create Building</span>
-            </button>
-          </div>
-        )}
-      </div>
+      )}
 
       {error && <div className="anomaly-error">{error}</div>}
       {message && <div className="models-success">{message}</div>}
@@ -568,11 +560,6 @@ export function AssetsPage() {
                     />
                   </div>
                 </div>
-                <span className="asset-search-help">
-                  {buildingQuery.trim()
-                    ? `${filteredActiveSiteBuildings.length} building results`
-                    : `${activeSiteBuildings.length} buildings`}
-                </span>
               </div>
 
               <div className="asset-browser-list">
@@ -650,13 +637,6 @@ export function AssetsPage() {
                     />
                   </div>
                 </div>
-                <span className="asset-search-help">
-                  {locationSearchLoading
-                    ? "Searching..."
-                    : locationQuery.trim()
-                      ? `${filteredSites.length} site results`
-                      : `${filteredSites.length} sites`}
-                </span>
               </div>
 
               <div className="asset-browser-list">
