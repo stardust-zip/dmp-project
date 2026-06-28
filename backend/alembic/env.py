@@ -3,6 +3,7 @@
 This module configures Alembic to auto-detect all SQLAlchemy models
 defined in src.models and generate migrations based on schema changes.
 """
+
 import os
 from logging.config import fileConfig
 
@@ -25,11 +26,15 @@ if config.config_file_name is not None:
 
 # Import all models so Base.metadata is fully populated
 # Must import Base and ALL model modules for auto-generation to work
-from src.models import Base  # noqa: E402
 # Import models module to ensure all model classes are registered on Base.metadata
 import src.models  # noqa: E402, F401
+from src.models import Base  # noqa: E402
 
 target_metadata = Base.metadata
+
+# Read version_table from alembic.ini to avoid conflicts with other applications
+# sharing the same database (e.g., MLflow uses its own alembic_version table).
+VERSION_TABLE = config.get_main_option("version_table", "alembic_version")
 
 
 def run_migrations_offline() -> None:
@@ -42,6 +47,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         compare_server_default=True,
+        version_table=VERSION_TABLE,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -60,6 +66,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_type=True,
             compare_server_default=True,
+            version_table=VERSION_TABLE,
         )
         with context.begin_transaction():
             context.run_migrations()
