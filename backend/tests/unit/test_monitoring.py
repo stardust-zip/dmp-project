@@ -1,11 +1,9 @@
 """Tests for monitoring services: PredictionLogger, PerformanceEvaluator, DriftDetector, HealthCalculator."""
 
-import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 
 from src.ml.monitoring.drift_detector import DriftDetector, _classify_psi_severity, _compute_psi
 from src.ml.monitoring.health_calculator import (
@@ -14,6 +12,29 @@ from src.ml.monitoring.health_calculator import (
     _performance_score,
 )
 from src.ml.monitoring.performance_evaluator import PerformanceEvaluator, MAE_RATIO_WARNING, MAE_RATIO_CRITICAL
+from src.ml.monitoring.prediction_logger import PredictionLogger
+
+
+class FakeDB:
+    def __init__(self):
+        self.added = []
+        self.commits = 0
+        self.refreshed = []
+        self.query_result = []
+
+    def add(self, value):
+        self.added.append(value)
+
+    def commit(self):
+        self.commits += 1
+
+    def refresh(self, value):
+        self.refreshed.append(value)
+
+    def query(self, *args):
+        query = MagicMock()
+        query.filter.return_value.all.return_value = self.query_result
+        return query
 
 
 class TestComputePSI:
@@ -183,3 +204,123 @@ class TestPerformanceEvaluator:
             period_end=datetime.now(timezone.utc),
         )
         assert result is None
+
+
+class TestPredictionLogger:
+    def test_log_prediction_persists_single_prediction_with_utc_timestamp(self):
+        db = FakeDB()
+        timestamp = datetime(2026, 6, 1, 12, 0)
+
+        result = PredictionLogger().log_prediction(
+            db,
+            timestamp=timestamp,
+            building_id="building-1",
+            metric_type_id="electricity",
+            predicted_value=42.5,
+            mlflow_run_id="run-1",
+            model_name="model-a",
+            model_version="3",
+            model_task="forecasting",
+            feature_values={"hour": 12},
+            prediction_context={"source": "unit-test"},
+        )
+
+        assert result is db.added[0]
+        assert result.timestamp.tzinfo == timezone.utc
+        assert result.building_id == "building-1"
+        assert result.metric_type_id == "electricity"
+        assert result.predicted_value == 42.5
+        assert result.feature_values == {"hour": 12}
+        assert result.prediction_context == {"source": "unit-test"}
+        assert db.commits == 1
+        assert db.refreshed == [result]
+
+    def test_log_batch_persists_predictions_and_preserves_prefilled_actual_errors(self):
+        db = FakeDB()
+        timestamp = datetime(2026, 6, 1, 12, 0)
+
+        logs = PredictionLogger().log_batch(
+            db,
+            [
+                {
+                    "timestamp": timestamp,
+                    "building_id": "building-1",
+                    "metric_type_id": "electricity",
+                    "predicted_value": 40.0,
+                    "actual_value": 42.0,
+                    "error": 2.0,
+                    "mlflow_run_id": "run-1",
+                    "model_name": "model-a",
+                    "model_version": "3",
+                    "model_task": "forecasting",
+                },
+                {
+                    "timestamp": timestamp.replace(hour=13, tzinfo=timezone.utc),
+                    "building_id": "building-1",
+                    "metric_type_id": "electricity",
+                    "predicted_value": 41.0,
+                    "mlflow_run_id": "run-1",
+                    "model_name": "model-a",
+                    "model_version": "3",
+                    "model_task": "forecasting",
+                    "prediction_context": {"source": "future"},
+                },
+            ],
+        )
+
+        assert logs == db.added
+        assert len(logs) == 2
+        assert logs[0].timestamp.tzinfo == timezone.utc
+        assert logs[0].actual_value == 42.0
+        assert logs[0].error == 2.0
+        assert logs[1].actual_value is None
+        assert logs[1].error is None
+        assert logs[1].prediction_context == {"source": "future"}
+        assert db.commits == 1
+        assert db.refreshed == logs
+
+    def test_log_batch_returns_empty_without_commit_when_no_predictions(self):
+        db = FakeDB()
+
+        assert PredictionLogger().log_batch(db, []) == []
+        assert db.added == []
+        assert db.commits == 0
+
+    def test_fill_actuals_updates_matching_logs_and_computes_error(self):
+        db = FakeDB()
+        timestamp = datetime(2026, 6, 1, 12, 34, tzinfo=timezone.utc)
+        log = MagicMock()
+        log.timestamp = timestamp
+        log.predicted_value = 10.0
+        log.actual_value = None
+        log.error = None
+        db.query_result = [log]
+
+        updated = PredictionLogger().fill_actuals(
+            db,
+            "building-1",
+            "electricity",
+            {datetime(2026, 6, 1, 12, tzinfo=timezone.utc): 12.5},
+        )
+
+        assert updated == 1
+        assert log.actual_value == 12.5
+        assert log.error == 2.5
+        assert db.commits == 1
+
+    def test_fill_actuals_does_not_commit_when_no_actuals_match(self):
+        db = FakeDB()
+        log = MagicMock()
+        log.timestamp = datetime(2026, 6, 1, 13, tzinfo=timezone.utc)
+        log.predicted_value = 10.0
+        db.query_result = [log]
+
+        updated = PredictionLogger().fill_actuals(
+            db,
+            "building-1",
+            "electricity",
+            {datetime(2026, 6, 1, 12, tzinfo=timezone.utc): 12.5},
+        )
+
+        assert updated == 0
+        assert db.commits == 0

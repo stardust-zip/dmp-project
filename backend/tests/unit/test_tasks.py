@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
-import pytest
+from src.ml.monitoring.health_calculator import HealthResult
 from src.ml.training import algorithm_for_task
 from src.schemas import MLAlgorithm, ModelTask, ModelTrainingRequest
 from src.tasks import (
@@ -489,3 +490,180 @@ class TestCheckAlertsTask:
             check_alerts_task.apply().get()
 
         mock_db.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Supplementary function-based tests (use .run() and real HealthResult objects)
+# ---------------------------------------------------------------------------
+
+
+def test_fill_prediction_actuals_task_matches_telemetry_and_closes_session():
+    session = MagicMock()
+    pairs_query = MagicMock()
+    telemetry_query = MagicMock()
+    session.query.side_effect = [pairs_query, telemetry_query]
+    pairs_query.filter.return_value.distinct.return_value.all.return_value = [
+        ("building-1", "electricity")
+    ]
+    telemetry_query.join.return_value.filter.return_value.all.return_value = [
+        SimpleNamespace(
+            timestamp=datetime(2026, 6, 1, 12, 34, tzinfo=timezone.utc),
+            value=25.5,
+        )
+    ]
+    prediction_logger = MagicMock()
+    prediction_logger.fill_actuals.return_value = 1
+
+    with (
+        patch("src.tasks.SessionLocal", return_value=session),
+        patch("src.tasks.PredictionLogger", return_value=prediction_logger),
+    ):
+        result = fill_prediction_actuals_task.run(hours_lookback=12)
+
+    assert result == {"updated_count": 1, "pairs_checked": 1}
+    prediction_logger.fill_actuals.assert_called_once()
+    _, building_id, metric_type_id, actuals = prediction_logger.fill_actuals.call_args[0]
+    assert building_id == "building-1"
+    assert metric_type_id == "electricity"
+    assert actuals == {datetime(2026, 6, 1, 12, tzinfo=timezone.utc): 25.5}
+    session.close.assert_called_once()
+
+
+def test_evaluate_model_performance_task_delegates_to_evaluator_and_closes_session():
+    session = MagicMock()
+    evaluator = MagicMock()
+    evaluator.evaluate_all_models.return_value = [SimpleNamespace(), SimpleNamespace()]
+
+    with (
+        patch("src.tasks.SessionLocal", return_value=session),
+        patch("src.tasks.PerformanceEvaluator", return_value=evaluator),
+    ):
+        result = evaluate_model_performance_task.run(period_hours=48)
+
+    assert result == {"evaluated_models": 2, "period_hours": 48}
+    evaluator.evaluate_all_models.assert_called_once_with(session, period_hours=48)
+    session.close.assert_called_once()
+
+
+def test_detect_model_drift_task_runs_detector_for_each_pair_and_health_scores():
+    session = MagicMock()
+    pairs_query = MagicMock()
+    session.query.return_value = pairs_query
+    pairs_query.distinct.return_value.all.return_value = [
+        ("model-a", "1", "forecasting", "run-1"),
+        ("model-b", "2", "prediction", "run-2"),
+    ]
+    detector = MagicMock()
+    detector.detect_all_drifts.side_effect = [
+        [SimpleNamespace(), SimpleNamespace()],
+        [SimpleNamespace()],
+    ]
+    calculator = MagicMock()
+    calculator.calculate_all_models.return_value = {
+        "model-a:1": SimpleNamespace(),
+        "model-b:2": SimpleNamespace(),
+    }
+
+    with (
+        patch("src.tasks.SessionLocal", return_value=session),
+        patch("src.tasks.DriftDetector", return_value=detector),
+        patch("src.tasks.HealthCalculator", return_value=calculator),
+    ):
+        result = detect_model_drift_task.run(period_hours=168)
+
+    assert result == {
+        "drift_reports": 3,
+        "health_scores": 2,
+        "period_hours": 168,
+    }
+    assert detector.detect_all_drifts.call_count == 2
+    detector.detect_all_drifts.assert_any_call(
+        session,
+        "model-a",
+        "1",
+        period_hours=168,
+        mlflow_run_id="run-1",
+        model_task="forecasting",
+    )
+    calculator.calculate_all_models.assert_called_once_with(session)
+    session.close.assert_called_once()
+
+
+def test_detect_model_drift_task_continues_when_one_model_fails():
+    session = MagicMock()
+    pairs_query = MagicMock()
+    session.query.return_value = pairs_query
+    pairs_query.distinct.return_value.all.return_value = [
+        ("model-a", "1", "forecasting", "run-1"),
+        ("model-b", "2", "forecasting", "run-2"),
+    ]
+    detector = MagicMock()
+    detector.detect_all_drifts.side_effect = [RuntimeError("boom"), [SimpleNamespace()]]
+    calculator = MagicMock()
+    calculator.calculate_all_models.return_value = {"model-b:2": SimpleNamespace()}
+
+    with (
+        patch("src.tasks.SessionLocal", return_value=session),
+        patch("src.tasks.DriftDetector", return_value=detector),
+        patch("src.tasks.HealthCalculator", return_value=calculator),
+    ):
+        result = detect_model_drift_task.run(period_hours=24)
+
+    assert result["drift_reports"] == 1
+    assert result["health_scores"] == 1
+    assert detector.detect_all_drifts.call_count == 2
+    session.close.assert_called_once()
+
+
+def test_check_alerts_task_reports_degraded_models_and_high_drifts():
+    session = MagicMock()
+    high_drift = SimpleNamespace(
+        severity="high",
+        drift_type="prediction_drift",
+        drift_score=0.42,
+    )
+    calculator = MagicMock()
+    calculator.calculate_all_models.return_value = {
+        "model-a:1": HealthResult(
+            health_score=65.0,
+            status="degraded",
+            performance_score=50.0,
+            data_drift_score=100.0,
+            concept_drift_score=100.0,
+            prediction_drift_score=80.0,
+            active_drifts=[],
+        ),
+        "model-b:2": HealthResult(
+            health_score=85.0,
+            status="healthy",
+            performance_score=100.0,
+            data_drift_score=100.0,
+            concept_drift_score=100.0,
+            prediction_drift_score=20.0,
+            active_drifts=[high_drift],
+        ),
+    }
+
+    with (
+        patch("src.tasks.SessionLocal", return_value=session),
+        patch("src.tasks.HealthCalculator", return_value=calculator),
+    ):
+        result = check_alerts_task.run()
+
+    assert result["total_alerts"] == 2
+    assert result["models_checked"] == 2
+    assert {
+        "model": "model-a:1",
+        "status": "degraded",
+        "health_score": 65.0,
+        "reason": "Health score below 70",
+    } in result["alerts"]
+    assert {
+        "model": "model-b:2",
+        "status": "high",
+        "drift_type": "prediction_drift",
+        "drift_score": 0.42,
+        "reason": "Active high prediction_drift",
+    } in result["alerts"]
+    session.close.assert_called_once()
+
