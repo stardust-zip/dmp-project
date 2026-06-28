@@ -7,35 +7,129 @@ on:
     branches: [ "main" ]
 
 jobs:
-  integration-check:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Gate 1 — Static analysis (fastest feedback, runs first)
+  # ─────────────────────────────────────────────────────────────────────────
+  lint:
+    name: "Lint"
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-    - name: Install uv
-      uses: astral-sh/setup-uv@v8.1.0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
 
-    - name: Set up Python
-      uses: actions/setup-python@v6
-      with:
-        python-version: '3.12'
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
-    - name: Code Linter & Format Test
-      run: |
-        uv pip install ruff --system
-        ruff check backend/src/
+      - name: Run Ruff linter
+        run: |
+          uv pip install ruff --system
+          ruff check backend/src/
 
-    - name: Run Tests
-      run: |
-        uv sync --frozen --group dev
-        uv run pytest backend/tests/ -v
+  # ─────────────────────────────────────────────────────────────────────────
+  # Gate 2 — Tests (run in parallel, all need lint to pass first)
+  # ─────────────────────────────────────────────────────────────────────────
+  unit-tests:
+    name: "Unit Tests"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-    - name: DVC Test (Data Tracking)
-      run: |
-        uv pip install dvc dvc-gdrive --system
-        dvc status
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
 
-    - name: Docker Compose Build Test
-      run: |
-        docker compose build
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run unit tests
+        run: |
+          uv sync --frozen --group dev
+          uv run pytest backend/tests/unit/ -v
+
+  integration-tests:
+    name: "Integration Tests"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run integration tests
+        run: |
+          uv sync --frozen --group dev
+          uv run pytest backend/tests/integration/ -v
+
+  infrastructure-tests:
+    name: "Infrastructure & Portability Tests"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run infrastructure and portability tests
+        run: |
+          uv sync --frozen --group dev
+          uv run pytest backend/tests/infrastructure/ -v
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Gate 3 — Build validation (runs only when all tests are green)
+  # ─────────────────────────────────────────────────────────────────────────
+  docker-compose-build:
+    name: "Docker Compose Build"
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, infrastructure-tests]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Create environment file from example
+        # docker-compose.yml requires a .env file for variable substitution.
+        # .env.example contains safe placeholder values suitable for a build test.
+        run: cp .env.example .env
+
+      - name: Build all Docker images
+        run: docker compose build
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Independent — DVC data tracking (no dependency on test results)
+  # ─────────────────────────────────────────────────────────────────────────
+  dvc-check:
+    name: "DVC Data Tracking"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Check DVC data tracking status
+        run: |
+          uv pip install dvc dvc-gdrive --system
+          dvc status
