@@ -23,15 +23,23 @@ router = APIRouter(prefix="/system", tags=["system"])
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 
+_ALEMBIC_VERSION_TABLE = "dmp_alembic_version"
+
+
 def _get_alembic_status() -> dict:
-    """Query alembic_version table and migration files to determine state."""
+    """Query dmp_alembic_version table and migration files to determine state.
+
+    Uses the custom table name configured in alembic.ini (version_table =
+    dmp_alembic_version) to avoid conflicting with MLflow's own alembic_version
+    table in the shared database.
+    """
     try:
         with engine.connect() as conn:
             inspector = inspect(engine)
             table_names = inspector.get_table_names()
 
-            # No alembic_version table — migrations have never run.
-            if "alembic_version" not in table_names:
+            # dmp_alembic_version is absent — migrations have never run.
+            if _ALEMBIC_VERSION_TABLE not in table_names:
                 return {
                     "current_revision": None,
                     "head_revision": _resolve_head_revision(),
@@ -39,7 +47,9 @@ def _get_alembic_status() -> dict:
                 }
 
             # Current revision applied in the database.
-            result = conn.execute(text("SELECT version_num FROM alembic_version"))
+            result = conn.execute(
+                text(f"SELECT version_num FROM {_ALEMBIC_VERSION_TABLE}")
+            )
             current: str | None = result.scalar()
 
             # Head revision from the most recent migration file.
