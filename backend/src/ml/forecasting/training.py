@@ -80,13 +80,13 @@ TREE_DEVICE = "cpu"
 XGB_PARAMS = {
     "objective": "reg:squarederror",
     "eval_metric": "rmse",
-    "n_estimators": 2000,
+    "n_estimators": 1500,
     "early_stopping_rounds": 200,
-    "learning_rate": 0.1,
+    "learning_rate": 0.05,
     "max_depth": 8,
     "min_child_weight": 10,
     "subsample": 0.8,
-    "colsample_bytree": 0.8,
+    "colsample_bytree": 0.6,
     "reg_alpha": 2,
     "reg_lambda": 1.0,
     "random_state": RANDOM_STATE,
@@ -97,13 +97,21 @@ XGB_PARAMS = {
 LGBM_PARAMS = {
     "objective": "regression",
     "metric": "rmse",
-    "n_estimators": 2000,
+    "n_estimators": 1500,
     "learning_rate": 0.05,
+    "num_leaves": 511,
     "max_depth": 8,
-    "subsample": 0.85,
-    "colsample_bytree": 0.85,
+    "min_child_samples": 50,
+    "feature_fraction": 0.7,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "reg_alpha": 2,
+    "reg_lambda": 1.0,
+    "min_gain_to_split": 0.01,
     "random_state": RANDOM_STATE,
+    "n_jobs": -1 if TREE_DEVICE == "cpu" else 1,
     "verbose": -1,
+    "device": TREE_DEVICE,
 }
 
 
@@ -227,8 +235,8 @@ def train_forecasting_model(
 
     horizon = int(getattr(request, "forecast_horizon_hours", DEFAULT_FORECAST_HORIZON))
     weather_mode = getattr(request, "weather_mode", DEFAULT_WEATHER_MODE)
-    # Forecasting always trains XGBoost (the UI no longer offers a choice).
-    algorithm = MLAlgorithm.XGBoost
+    # Forecasting trains LightGBM (best-performing on this data).
+    algorithm = MLAlgorithm.LightGBM
 
     # --- Determine whether we're training per-building or globally ---
     target_building_id = request.building_id or None
