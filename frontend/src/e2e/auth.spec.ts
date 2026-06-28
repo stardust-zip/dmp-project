@@ -33,7 +33,8 @@ async function mockSuccessfulLogin(page: Page) {
 }
 
 async function seedSession(page: Page) {
-  await page.addInitScript((session) => {
+  await page.goto("/login");
+  await page.evaluate((session) => {
     window.localStorage.setItem("dmp.auth.session", JSON.stringify(session));
   }, {
     accessToken: tokenFor(),
@@ -104,6 +105,7 @@ test.describe("Logout", () => {
     await page.goto("/dashboard");
     await page.locator(".profile").click();
     await page.getByRole("button", { name: "Sign out" }).click();
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem("dmp.auth.session"))).toBeNull();
 
     await page.goto("/dashboard");
     await page.waitForURL(/\/login/);
