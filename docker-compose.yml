@@ -102,17 +102,7 @@ services:
         condition: service_healthy
     networks:
       - dmp_network
-    command: >
-      sh -c "
-      if python -c 'from sqlalchemy import inspect; from src.database import engine; print(\"users\" in inspect(engine).get_table_names())' 2>/dev/null | grep -q True; then
-        if ! python -c 'from sqlalchemy import inspect; from src.database import engine; print(\"alembic_version\" in inspect(engine).get_table_names())' 2>/dev/null | grep -q True; then
-          echo 'Existing database detected without alembic_version. Stamping head...';
-          alembic stamp head;
-        fi;
-      fi;
-      alembic upgrade head &&
-      python -m src.seeders.users &&
-      uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: ["./entrypoint.sh"]
     healthcheck:
       test:
         [

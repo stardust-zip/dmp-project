@@ -14,9 +14,11 @@ RUN uv sync --frozen
 COPY backend/src ./src
 COPY backend/alembic.ini ./alembic.ini
 COPY backend/alembic ./alembic
+COPY backend/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 # Use the virtual environment Python
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Default command (overridden by docker-compose.yml)
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./entrypoint.sh"]
