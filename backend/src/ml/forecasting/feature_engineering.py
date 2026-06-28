@@ -18,9 +18,11 @@ from __future__ import annotations
 import pandas as pd
 
 from src.ml.forecasting.types import (
+    ALLOWED_WEATHER_MODES,
     CAT_FEATURES,
     DEFAULT_FORECAST_HORIZON,
     DEFAULT_WEATHER_MODE,
+    FORECAST_WEATHER_MODE,
     LOOKBACK_HOURS,
     TARGET_COL,
 )
@@ -74,6 +76,7 @@ def build_forecast_feature_matrix(
     weather_mode: str = DEFAULT_WEATHER_MODE,
     *,
     include_target: bool = True,
+    weather_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Build the forecasting feature matrix from raw telemetry.
 
@@ -103,9 +106,10 @@ def build_forecast_feature_matrix(
         dropped. ``feature_cols`` is the ordered list fed to the model;
         ``cat_features`` the subset that is categorical.
     """
-    if weather_mode != DEFAULT_WEATHER_MODE:
-        raise NotImplementedError(
-            f"weather_mode={weather_mode!r} is not supported yet (MVP is energy-only)."
+    if weather_mode not in ALLOWED_WEATHER_MODES:
+        raise ValueError(
+            f"weather_mode={weather_mode!r} is not supported. "
+            f"Allowed: {sorted(ALLOWED_WEATHER_MODES)}."
         )
     if "consumption" not in df.columns or "timestamp" not in df.columns:
         raise ValueError("Input must contain 'timestamp' and 'consumption' columns.")
@@ -156,18 +160,53 @@ def build_forecast_feature_matrix(
     out["month"] = out["timestamp"].dt.month.astype("float32")
     out["is_weekend"] = (out["day_of_week"] >= 5).astype("float32")
 
-    missing = [c for c in FEATURE_COLUMNS if c not in out.columns]
+    # --- Phase 2: weather features (forecast mode) ---
+    # Direct h-step-ahead: a row at issue time T predicts consumption(T+H), so the
+    # weather feature it carries must be the weather at the TARGET time T+H. We
+    # relabel the weather frame's timestamps to T = obs_time - H (a pure, gap-safe
+    # operation on exogenous data) then left-merge on [timestamp, site_id]. Weather
+    # is per-site and broadcasts to every building in that site (same pattern as
+    # anomaly._merge_weather). Identical in training and inference -> no skew.
+    weather_feature_cols: list[str] = []
+    if (
+        weather_mode == FORECAST_WEATHER_MODE
+        and weather_df is not None
+        and not weather_df.empty
+    ):
+        wshift = weather_df.copy()
+        wshift["timestamp"] = pd.to_datetime(wshift["timestamp"], utc=True) - pd.Timedelta(
+            hours=forecast_horizon_hours
+        )
+        out = out.merge(wshift, on=["timestamp", "site_id"], how="left")
+        weather_feature_cols = [
+            c for c in wshift.columns if c not in ("timestamp", "site_id")
+        ]
+        for c in weather_feature_cols:
+            if c in out.columns:
+                out[c] = out[c].astype("float32")
+
+    feature_cols = list(FEATURE_COLUMNS) + weather_feature_cols
+
+    missing = [c for c in feature_cols if c not in out.columns]
     if missing:
         raise ValueError(f"Telemetry is missing required columns: {missing}")
 
-    required = list(FEATURE_COLUMNS) + (["target"] if include_target else [])
+    # Dropna fork: TRAINING (include_target=True) drops rows lacking weather
+    # (partial-coverage handling). INFERENCE (include_target=False) KEEPS weather
+    # NaN — the future region is ffilled by the caller and any residual gap is
+    # handled by the pipeline's SimpleImputer, so we must not drop rows here.
+    if include_target:
+        required = list(feature_cols) + ["target"]
+    else:
+        required = list(FEATURE_COLUMNS)
     before = len(out)
     out = out.dropna(subset=required).reset_index(drop=True)
     dropped = before - len(out)
     if dropped:
-        # Boundary rows (lag/rolling warmup) and the target tail are dropped.
-        # Logged by the caller; kept silent here to stay a pure function.
+        # Boundary rows (lag/rolling warmup), the target tail, and (training only)
+        # rows without weather coverage are dropped. Logged by the caller; kept
+        # silent here to stay a pure function.
         pass
 
     cat_features = [c for c in CAT_FEATURES if c in FEATURE_COLUMNS]
-    return out, list(FEATURE_COLUMNS), cat_features
+    return out, feature_cols, cat_features

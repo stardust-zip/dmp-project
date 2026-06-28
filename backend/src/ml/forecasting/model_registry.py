@@ -12,7 +12,12 @@ from typing import Protocol
 import mlflow.sklearn
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
-from src.ml.forecasting.types import CAT_FEATURES, DEFAULT_METRIC_TYPE, MODEL_NAME
+from src.ml.forecasting.types import (
+    CAT_FEATURES,
+    DEFAULT_METRIC_TYPE,
+    DEFAULT_WEATHER_MODE,
+    MODEL_NAME,
+)
 
 import mlflow
 
@@ -104,6 +109,7 @@ class ForecastingMlflowRegistry:
             "forecast_horizon": str(horizon),
             "algorithm": algorithm,
             "metric": metric_tag,
+            "weather_mode": weather_mode,
         }
         building_id = getattr(request, "building_id", None)
         if building_id:
@@ -216,10 +222,11 @@ class ForecastingMlflowRegistry:
     def load_production_forecast_model(self, model_name: str = MODEL_NAME):
         """Load the production forecasting pipeline + metadata.
 
-        Returns ``(pipeline, feature_cols, cat_features, horizon, metric, run_id)``
-        or ``None`` when no production version exists. ``run_id`` is the MLflow run
-        that produced the version (used to tag persisted ``ForecastResult`` rows).
-        Used by inference (Phase 2).
+        Returns ``(pipeline, feature_cols, cat_features, horizon, metric, run_id,
+        weather_mode)`` or ``None`` when no production version exists. ``run_id`` is
+        the MLflow run that produced the version (used to tag persisted
+        ``ForecastResult`` rows). ``weather_mode`` defaults to ``"none"`` for models
+        trained before Phase 2 (so old models load unchanged). Used by inference.
         """
         version = self.find_production_version(model_name)
         if version is None:
@@ -255,6 +262,15 @@ class ForecastingMlflowRegistry:
             horizon = 24
 
         metric_tag = tags.get("metric", DEFAULT_METRIC_TYPE)
+        weather_mode = tags.get("weather_mode", DEFAULT_WEATHER_MODE)
         cat_features = [c for c in CAT_FEATURES if c in feature_cols]
         run_id = getattr(version, "run_id", None)
-        return pipeline, feature_cols, cat_features, horizon, metric_tag, run_id
+        return (
+            pipeline,
+            feature_cols,
+            cat_features,
+            horizon,
+            metric_tag,
+            run_id,
+            weather_mode,
+        )

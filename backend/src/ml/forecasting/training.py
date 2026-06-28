@@ -41,12 +41,14 @@ from src.ml.anomaly.telemetry_loaders import (
     downcast_telemetry_dtypes,
     load_telemetry_for_training,
 )
+from src.ml.anomaly.weather_loaders import load_weather_for_range
 from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
 from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
 from src.ml.forecasting.types import (
     DEFAULT_FORECAST_HORIZON,
     DEFAULT_WEATHER_MODE,
+    FORECAST_WEATHER_MODE,
     LOOKBACK_HOURS,
     RANDOM_STATE,
     forecast_model_name,
@@ -297,12 +299,35 @@ def train_forecasting_model(
     downcast_telemetry_dtypes(df)
     gc.collect()
 
+    # --- Phase 2: load weather when weather_mode == "forecast" ---
+    # Direct h-step-ahead: weather features reference the target time T+H, so load
+    # weather covering [start, end + horizon] (target times). The feature builder
+    # shifts it by -H internally. Weather coverage is ~2016-2017; rows outside it
+    # have NaN weather and are dropped by the builder's dropna (training mode), so
+    # a range extending beyond 2016-2017 reduces the training set.
+    weather_df = pd.DataFrame()
+    if weather_mode == FORECAST_WEATHER_MODE:
+        site_ids = df["site_id"].dropna().unique().tolist()
+        if site_ids:
+            wstart = pd.Timestamp(request.time_range_start)
+            wend = pd.Timestamp(request.time_range_end) + pd.Timedelta(hours=horizon)
+            weather_df, _weather_cols = load_weather_for_range(db, site_ids, wstart, wend)
+            if weather_df.empty:
+                append_log(
+                    "No weather data for the requested range; "
+                    "rows without weather coverage will be dropped."
+                )
+            else:
+                append_log(f"Weather loaded: {_weather_cols}")
+        else:
+            append_log("No site_ids in telemetry; skipping weather load.")
+
     # --- Feature matrix (single shared builder; used by inference too) ---
     append_log(
         f"Building feature matrix (horizon={horizon}h, weather={weather_mode})..."
     )
     feature_df, feature_cols, cat_features = build_forecast_feature_matrix(
-        df, horizon, weather_mode
+        df, horizon, weather_mode, weather_df=weather_df
     )
     if feature_df.empty:
         raise ValueError(

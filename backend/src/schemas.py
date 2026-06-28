@@ -206,7 +206,8 @@ class ModelTrainingRequest(BaseSchema):
     )
     weather_mode: str = Field(
         default="none",
-        description="Forecasting: weather feature mode. MVP supports 'none' only.",
+        description="Forecasting: weather feature mode. 'none' = energy-only; "
+        "'forecast' = include weather aligned to the target time (weather(T+H)).",
     )
 
     @field_validator("metrics")
@@ -216,6 +217,14 @@ class ModelTrainingRequest(BaseSchema):
         if not metrics:
             raise ValueError("At least one metric is required")
         return metrics
+
+    @field_validator("weather_mode")
+    @classmethod
+    def normalize_weather_mode(cls, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in {"none", "forecast"}:
+            raise ValueError("weather_mode must be 'none' or 'forecast'")
+        return mode
 
     @model_validator(mode="after")
     def site_id_required_for_prediction(self) -> "ModelTrainingRequest":
