@@ -731,3 +731,46 @@ class ModelVersionComparisonResponse(BaseSchema):
     metrics: list[str] = Field(
         default_factory=lambda: ["mae", "rmse", "mape", "r2_score"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Experiment comparison schemas
+# ---------------------------------------------------------------------------
+
+
+class ExperimentVersionDetail(BaseSchema):
+    """
+    Full profile of a single registered model version for side-by-side
+    comparison.  All dict fields use str keys so they serialise cleanly to
+    JSON regardless of the MLflow backend.
+    """
+
+    version: str
+    run_id: str
+    algorithm: str | None = None
+    current_stage: str | None = None
+    status: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    hyperparameters: dict[str, str] = Field(default_factory=dict)
+    training_metrics: dict[str, float] = Field(default_factory=dict)
+    evaluation_metrics: dict[str, float] = Field(default_factory=dict)
+    tags: dict[str, str] = Field(default_factory=dict)
+    training_building_count: int | None = None
+    training_metric_count: int | None = None
+    training_row_count: int | None = None
+    data_source: str | None = None
+    training_start: str | None = None
+    training_end: str | None = None
+    feature_count: int | None = None
+
+
+class ExperimentComparisonResponse(BaseSchema):
+    """Top-level response for GET /models/{name}/experiments/compare."""
+
+    model_name: str
+    versions: list[ExperimentVersionDetail]
+    common_hyperparameters: list[str]
+    common_evaluation_metrics: list[str]
+    comparison_period_start: datetime
+    comparison_period_end: datetime
