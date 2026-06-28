@@ -23,6 +23,7 @@ Design notes
 
 from __future__ import annotations
 
+import gc
 import logging
 
 import lightgbm as lgb
@@ -36,7 +37,10 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 from sqlalchemy.orm import Session
-from src.ml.anomaly.telemetry_loaders import load_telemetry_for_training
+from src.ml.anomaly.telemetry_loaders import (
+    downcast_telemetry_dtypes,
+    load_telemetry_for_training,
+)
 from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
 from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
@@ -149,16 +153,20 @@ def _fit_and_evaluate(
     preprocessor = _build_preprocessor(cat_features, num_features)
     preprocessor.fit(train_df[feature_cols])
 
-    x_train = preprocessor.transform(train_df[feature_cols])
-    x_test = preprocessor.transform(test_df[feature_cols])
-    y_train = train_df[TARGET_COLUMN].to_numpy(dtype=float)
-    y_test = test_df[TARGET_COLUMN].to_numpy(dtype=float)
+    # Cast the transformed matrices to float32 before fitting: it halves the
+    # memory of x_train/x_val/x_test (the largest allocations at training time on
+    # the full grid), and XGBoost's tree_method="hist" consumes float32 natively.
+    # Early stopping is keyed on iteration count, not dtype, so it is unaffected.
+    x_train = preprocessor.transform(train_df[feature_cols]).astype(np.float32)
+    x_test = preprocessor.transform(test_df[feature_cols]).astype(np.float32)
+    y_train = train_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
+    y_test = test_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
 
     estimator = _make_estimator(algorithm)
     fit_kwargs: dict = {}
     if algorithm != MLAlgorithm.LinearRegression and not val_df.empty:
-        x_val = preprocessor.transform(val_df[feature_cols])
-        y_val = val_df[TARGET_COLUMN].to_numpy(dtype=float)
+        x_val = preprocessor.transform(val_df[feature_cols]).astype(np.float32)
+        y_val = val_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
         fit_kwargs["eval_set"] = [(x_val, y_val)]
         if algorithm == MLAlgorithm.LightGBM:
             fit_kwargs["callbacks"] = [
@@ -242,6 +250,13 @@ def train_forecasting_model(
     else:
         append_log(f"Loaded {len(df):,} rows, {df['building_id'].nunique()} buildings.")
 
+    # Downcast float64->float32 BEFORE cleaning so the ~2.5x hourly-grid expansion
+    # and the IQR/interpolate steps operate on half-size numerics. Mirrors the
+    # anomaly module's downcast_telemetry_dtypes (the portable part of its memory
+    # strategy; anomaly's chunked training is not viable here because forecasting
+    # uses XGBRegressor, whose sklearn API has no incremental/init_model fit).
+    downcast_telemetry_dtypes(df)
+
     # --- Clean telemetry: hourly align, IQR outliers->null, interpolate/seasonal-fill.
     # Single shared cleaner with inference (no train/serve skew). High-missing
     # buildings are only dropped in global (all-buildings) mode; a single,
@@ -260,6 +275,11 @@ def train_forecasting_model(
         f"{clean_stats['gaps_filled']:,} gaps interpolated, "
         f"{clean_stats['buildings_dropped']} buildings dropped (>30% missing)."
     )
+
+    # Re-downcast (cleaning may upcast during align/interpolate) and release the
+    # transient intermediates before the feature-matrix build allocates again.
+    downcast_telemetry_dtypes(df)
+    gc.collect()
 
     # --- Feature matrix (single shared builder; used by inference too) ---
     append_log(
@@ -305,6 +325,18 @@ def train_forecasting_model(
             "Validation split is empty; cannot apply early stopping. Widen the time range."
         )
 
+    # Capture the values we still need from the large frames, then FREE them
+    # before the fit. This is the peak-memory moment: the cleaned frame (df),
+    # the full feature matrix (feature_df), the three split copies, the
+    # transformed X matrices, and XGBoost's internal allocations all overlap.
+    # The splits are independent copies, so deleting df/feature_df is safe.
+    # Mirrors anomaly's `del df; gc.collect()` before training.
+    trained_building_ids = sorted(df["building_id"].astype(str).unique().tolist())
+    training_rows = len(feature_df)
+    n_buildings = int(feature_df["building_id"].nunique())
+    del df, feature_df
+    gc.collect()
+
     # --- Train + evaluate ---
     append_log(f"Training {algorithm.value} (direct {horizon}h-ahead)...")
     pipeline, metrics = _fit_and_evaluate(
@@ -331,7 +363,7 @@ def train_forecasting_model(
     append_log(f"Model registered as {model_name}.")
 
     # --- Record building coverage so the forecast UI can hide dropped buildings. ---
-    trained_building_ids = sorted(df["building_id"].astype(str).unique().tolist())
+    # trained_building_ids was captured before the fit (df is freed by then).
     dropped_building_ids = sorted(clean_stats.get("dropped_building_ids", []))
     registry.log_coverage_artifact(
         trained_building_ids=trained_building_ids,
@@ -352,7 +384,7 @@ def train_forecasting_model(
         "test_mae": metrics["test_mae"],
         "test_rmse": metrics["test_rmse"],
         "test_mape": metrics["test_mape"],
-        "training_rows": float(len(feature_df)),
-        "n_buildings": float(feature_df["building_id"].nunique()),
+        "training_rows": float(training_rows),
+        "n_buildings": float(n_buildings),
         "horizon": float(horizon),
     }

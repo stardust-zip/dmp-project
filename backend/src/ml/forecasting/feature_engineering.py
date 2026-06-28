@@ -52,9 +52,19 @@ def _coerce_input(df: pd.DataFrame) -> pd.DataFrame:
     df[TARGET_COL] = pd.to_numeric(df[TARGET_COL], errors="coerce")
     if "sqm" in df.columns:
         df["sqm"] = pd.to_numeric(df["sqm"], errors="coerce")
+    # Encode categorical metadata as pandas "category" (NOT "string"). On the full
+    # electricity grid the loader returns ~20M rows: object string columns cost
+    # ~50 bytes/row each (~1 GB per column) and were the dominant RAM consumer —
+    # the root cause of the worker OOM during feature-matrix build. "category"
+    # stores them as int codes (~20 MB per column) with identical values.
     for col in CAT_FEATURES:
         if col in df.columns:
-            df[col] = df[col].astype("string")
+            df[col] = df[col].astype("category")
+    # site_id rides along as static metadata (it is not a model feature) but is
+    # equally bloated as a string; categorize it too so it stops multiplying RAM
+    # across the copies the builder makes below.
+    if "site_id" in df.columns and "site_id" not in CAT_FEATURES:
+        df["site_id"] = df["site_id"].astype("category")
     return df
 
 
@@ -100,39 +110,51 @@ def build_forecast_feature_matrix(
     if "consumption" not in df.columns or "timestamp" not in df.columns:
         raise ValueError("Input must contain 'timestamp' and 'consumption' columns.")
 
-    out = _coerce_input(df).sort_values(["building_id", "timestamp"]).reset_index(drop=True)
+    out = _coerce_input(df)
 
-    grouped = out.groupby("building_id", sort=False)[TARGET_COL]
+    # Lag / rolling / target are computed per building in a SINGLE pass (each
+    # group time-sorted) rather than as N separate ``grouped.transform(lambda)``
+    # calls. The transform pattern allocated one full-length float64 Series per
+    # feature AND re-aligned it to the original index — multiplying peak memory
+    # ~8x and triggering the worker OOM on the full electricity grid. Computing
+    # per group keeps only one small frame alive at a time; the concat at the end
+    # is the single large allocation. Calendar features are added afterwards on
+    # the concatenated frame (cheap and vectorized). The cleaner already returns
+    # rows sorted by (building, timestamp); the per-group sort below is kept for
+    # robustness (e.g. inference passes a single building sorted by timestamp).
+    parts: list[pd.DataFrame] = []
+    # observed=True: building_id is now a category; only iterate over building
+    # IDs actually present (mirrors the original object-dtype groupby behaviour
+    # and avoids emitting empty groups for unused categories).
+    for _building_id, group in out.groupby("building_id", sort=False, observed=True):
+        group = group.sort_values("timestamp")
+        s = group[TARGET_COL]
+        part = group.assign(
+            lag_1h=s.shift(1).astype("float32"),
+            lag_24h=s.shift(24).astype("float32"),
+            lag_168h=s.shift(LOOKBACK_HOURS).astype("float32"),
+            # Rolling features include the current hour (legitimate for direct
+            # h-step-ahead forecasting: every value up to and including t is
+            # observed before the forecast target t + horizon).
+            rolling_mean_24h=s.rolling(24, min_periods=1).mean().astype("float32"),
+            rolling_std_24h=s.rolling(24, min_periods=2).std().astype("float32"),
+            rolling_mean_168h=s.rolling(LOOKBACK_HOURS, min_periods=1).mean().astype("float32"),
+            rolling_std_168h=s.rolling(LOOKBACK_HOURS, min_periods=2).std().astype("float32"),
+        )
+        # Direct h-step-ahead target (training only). At inference we do not have
+        # the future actual, so the target column is omitted and rows are kept.
+        if include_target:
+            part["target"] = s.shift(-forecast_horizon_hours).astype("float32")
+        parts.append(part)
+
+    out = pd.concat(parts, ignore_index=True)
+    del parts
 
     # Calendar features from the timestamp.
     out["hour"] = out["timestamp"].dt.hour.astype("float32")
     out["day_of_week"] = out["timestamp"].dt.dayofweek.astype("float32")
     out["month"] = out["timestamp"].dt.month.astype("float32")
     out["is_weekend"] = (out["day_of_week"] >= 5).astype("float32")
-
-    # Lag features (strictly past).
-    out["lag_1h"] = grouped.shift(1).astype("float32")
-    out["lag_24h"] = grouped.shift(24).astype("float32")
-    out["lag_168h"] = grouped.shift(LOOKBACK_HOURS).astype("float32")
-
-    # Rolling features INCLUDING the current hour (legitimate for direct forecasting).
-    out["rolling_mean_24h"] = grouped.transform(
-        lambda s: s.rolling(24, min_periods=1).mean()
-    ).astype("float32")
-    out["rolling_std_24h"] = grouped.transform(
-        lambda s: s.rolling(24, min_periods=2).std()
-    ).astype("float32")
-    out["rolling_mean_168h"] = grouped.transform(
-        lambda s: s.rolling(LOOKBACK_HOURS, min_periods=1).mean()
-    ).astype("float32")
-    out["rolling_std_168h"] = grouped.transform(
-        lambda s: s.rolling(LOOKBACK_HOURS, min_periods=2).std()
-    ).astype("float32")
-
-    # Direct h-step-ahead target (training only). At inference we do not have
-    # the future actual, so the target column is omitted and rows are kept.
-    if include_target:
-        out["target"] = grouped.shift(-forecast_horizon_hours).astype("float32")
 
     missing = [c for c in FEATURE_COLUMNS if c not in out.columns]
     if missing:
