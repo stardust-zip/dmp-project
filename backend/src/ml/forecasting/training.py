@@ -67,14 +67,30 @@ EARLY_STOPPING_ROUNDS = 100
 # ``notebooks/forecasting/EDA/diagnose_mape.py`` for the measurement.
 MAPE_MIN_ACTUAL = 1.0
 
+# Tree-learner device. The Celery worker is CPU-only; on CPU n_jobs=-1 uses all
+# cores, while on GPU a single job is preferred (XGBoost parallelizes on GPU).
+TREE_DEVICE = "cpu"
+
+# XGBoost: squared-error (RMSE) objective with RMSE-driven early stopping. This
+# replaces the former reg:absoluteerror (MAE) objective. ``device``/``tree_method``
+# require XGBoost >= 2.0 (pyproject pins >= 2.0.3). early_stopping_rounds=200 is
+# set in the constructor (the LightGBM path keeps its own EARLY_STOPPING_ROUNDS).
 XGB_PARAMS = {
+    "objective": "reg:squarederror",
+    "eval_metric": "rmse",
     "n_estimators": 2000,
-    "learning_rate": 0.05,
+    "early_stopping_rounds": 200,
+    "learning_rate": 0.1,
     "max_depth": 8,
-    "objective": "reg:absoluteerror",
-    "tree_method": "hist",
-    "early_stopping_rounds": EARLY_STOPPING_ROUNDS,
+    "min_child_weight": 10,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 2,
+    "reg_lambda": 1.0,
     "random_state": RANDOM_STATE,
+    "n_jobs": -1 if TREE_DEVICE == "cpu" else 1,
+    "tree_method": "hist",
+    "device": TREE_DEVICE,
 }
 LGBM_PARAMS = {
     "objective": "regression",
