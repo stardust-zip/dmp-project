@@ -1,5 +1,12 @@
 # Implementation Plan: Project Portability
 
+> **⚠️ Historical document — do not follow as instructions.**
+> This file records the planning and rationale from the portability sprint
+> completed on 2026-06-25.  Some code snippets are intentionally simplified
+> or pre-date the final implementation.  For the current architecture, see
+> [`portability.md`](./portability.md).  For day-to-day usage, see the
+> project [`README.md`](../../README.md).
+
 **Based on:** [`docs/architecture/portability.md`](./portability.md)
 **Status:** ✅ All phases completed
 **Last Updated:** 2026-06-25

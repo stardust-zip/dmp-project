@@ -53,10 +53,9 @@ in `.env`:
 | `monitoring` | Prometheus, Grafana, DbGate | Observability only |
 | `analytics` | JupyterLab | Data exploration |
 
-> **Profile precedence:** The `.env` file value takes priority.  If you
-> override it with `COMPOSE_PROFILES=...` on the command line, that value
-> is used instead.  Running `./setup` again later honours whatever is in
-> `.env`.
+> **Profile precedence:** A `COMPOSE_PROFILES=...` value set in the calling
+> shell overrides whatever is in `.env`.  Running `./setup` later honours
+> whatever is in `.env` (since no shell override is present).
 
 ### Data Options
 
@@ -156,11 +155,9 @@ Without it, `./setup` automatically falls back to the Git LFS sample data
 (see [Data Options](#data-options)).
 
 ```bash
-# Authenticate (contact the team for credentials)
-dvc remote modify --local gdrive gdrive_client_id "YOUR_CLIENT_ID"
-dvc remote modify --local gdrive gdrive_client_secret "YOUR_CLIENT_SECRET"
-
-# Pull data
+# The GDrive OAuth app credentials are already committed in .dvc/config.
+# Just run dvc pull — it will open a browser tab to authenticate your
+# Google account the first time.
 dvc pull
 ```
 
@@ -181,6 +178,128 @@ After `dvc pull`, re-run `./setup` to restart services with the full dataset.
    git add data/new_dataset.csv.dvc
    git commit -m "data: added new dataset"
    ```
+
+---
+
+## Project Layout
+
+```
+dmp-project/
+├── backend/
+│   ├── alembic/            # Migration scripts (versioned schema history)
+│   │   └── versions/       # One file per migration — never edit by hand
+│   ├── src/
+│   │   ├── api/v1/
+│   │   │   ├── endpoints/  # One file per domain: auth, telemetry, forecast, …
+│   │   │   ├── deps.py     # FastAPI dependency injection (auth, DB session)
+│   │   │   └── router.py   # Mounts all endpoint routers
+│   │   ├── core/
+│   │   │   ├── config.py   # Pydantic Settings — all env vars read here
+│   │   │   └── security.py # JWT encode/decode, password hashing
+│   │   ├── ml/             # ML inference helpers called by endpoints
+│   │   ├── seeders/        # Data seeding scripts (users, metadata, telemetry)
+│   │   ├── models.py       # SQLAlchemy ORM models (single source of truth)
+│   │   ├── schemas.py      # Pydantic request/response schemas
+│   │   ├── database.py     # Engine + session factory
+│   │   ├── tasks.py        # Celery task definitions (training, forecasting)
+│   │   └── main.py         # FastAPI app factory + middleware
+│   ├── tests/              # pytest suite (TestClient, no live DB required)
+│   ├── alembic.ini         # Alembic config (version_table = dmp_alembic_version)
+│   ├── Dockerfile
+│   └── entrypoint.sh       # Migration-safe startup (stamp/upgrade/retry logic)
+├── forecasting_module/     # Pure-Python ML pipeline (importable by Jupyter + backend)
+├── frontend/               # Next.js dashboard
+├── grafana/                # Grafana dashboard provisioning configs
+├── sample-data/            # Git LFS — representative CSV subset (~20 MB)
+├── docs/architecture/      # Architecture decision records
+├── docker-compose.yml      # All services + profiles
+├── .env.example            # Env var template (copy → .env)
+├── pyproject.toml          # Python deps (uv) + tool config
+└── setup                   # Idempotent one-command bootstrap
+```
+
+---
+
+## Development Workflow
+
+`backend/src/` is bind-mounted into the container and uvicorn runs with
+`--reload`, so **Python changes take effect immediately** without a rebuild.
+
+```bash
+# After pulling new code (migrations, deps, or config changes):
+./setup
+
+# Day-to-day: just edit files under backend/src/ — the running container
+# picks up changes automatically via uvicorn --reload.
+
+# If you change pyproject.toml (new dependency):
+docker compose build backend worker celery-beat
+docker compose up -d backend worker celery-beat
+
+# Tail live logs while working:
+docker compose logs -f backend
+docker compose logs -f worker
+
+# Open an interactive shell inside the backend container:
+docker compose exec backend bash
+
+# Run a one-off Python expression in the app context:
+docker compose exec backend python -c "from src.database import engine; print(engine.url)"
+```
+
+### Adding a new API endpoint
+
+1. Create (or add to) a file in `backend/src/api/v1/endpoints/`.
+2. Define a `router = APIRouter(prefix="/your-resource", tags=["your-resource"])`.
+3. Register it in `backend/src/api/v1/router.py`.
+4. Test immediately at `http://localhost:8000/docs` — no restart needed.
+
+---
+
+## Running Tests
+
+Tests use FastAPI's `TestClient` and dependency overrides — **no live database
+required**.
+
+```bash
+# Run the full test suite inside the backend container:
+docker compose exec backend uv run pytest backend/tests/ -v
+
+# Run a specific test file:
+docker compose exec backend uv run pytest backend/tests/test_users.py -v
+
+# Run with coverage:
+docker compose exec backend uv run pytest backend/tests/ --cov=src --cov-report=term-missing
+```
+
+The pre-push hook (`.githooks/pre-push`) runs `ruff check` automatically.
+To run the linter manually:
+
+```bash
+docker compose exec backend uv run ruff check backend/src/
+```
+
+---
+
+## Environment Variables
+
+All variables are read through `backend/src/core/config.py` via Pydantic Settings.
+The `.env` file is the authoritative source; `docker-compose.yml` overrides
+connection strings inside containers (e.g. `@localhost` → `@db`).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `POSTGRES_USER` | `dmp_user` | PostgreSQL credentials (shared by DB, MLflow, backend) |
+| `POSTGRES_PASSWORD` | `dmp_password` | |
+| `POSTGRES_DB` | `dmp_db` | |
+| `DATABASE_URL` | `postgresql://…@localhost:5432/dmp_db` | Host-side URL; containers use `@db:5432` |
+| `REDIS_URL` | `redis://localhost:6379/0` | |
+| `MLFLOW_TRACKING_URI` | `http://mlflow:5000` | Set automatically by docker-compose |
+| `SECRET_KEY` | `demo_super_secret_key…` | **Change this in any non-local environment** |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `10080` (7 days) | JWT lifetime |
+| `COMPOSE_PROFILES` | `backend` | Which Docker Compose profile to activate |
+| `GRAFANA_ADMIN_USER` | `admin` | Grafana login |
+| `GRAFANA_ADMIN_PASSWORD` | `admin` | |
 
 ---
 
