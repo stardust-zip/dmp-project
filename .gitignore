@@ -20,7 +20,11 @@ personal_docs/
 # Frontend build/dependency artifacts
 frontend/node_modules/
 frontend/.next/
+frontend/.next-e2e/
 frontend/out/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 
 # Docker Data Volumes
 pgdata/
