@@ -56,6 +56,16 @@ check_prereqs() {
         exit 1
     fi
 
+    # Warn if Git LFS is absent: sample-data CSVs are LFS-tracked, so without
+    # it the fallback seeder copies pointer stubs instead of real CSV files.
+    if ! git lfs version &>/dev/null; then
+        warn "git-lfs is not installed. Sample data files will be LFS pointer stubs."
+        warn "Install git-lfs and run 'git lfs pull' to fix this before seeding."
+    elif ! git lfs ls-files --name-only 2>/dev/null | grep -q .; then
+        warn "git-lfs is installed but no LFS files have been pulled yet."
+        warn "Run 'git lfs pull' to download sample-data CSVs."
+    fi
+
     info "All prerequisites satisfied."
 }
 
@@ -171,8 +181,26 @@ setup_hooks() {
     fi
 }
 
+# ─── Helper: warn on host port conflicts before docker compose up ─────────────
+check_port_availability() {
+    local conflicts=0
+    # These are the host ports always bound regardless of profile.
+    for port in 5432 6379 5000; do
+        if ss -tlnH "sport = :${port}" 2>/dev/null | grep -q .; then
+            warn "Port ${port} is already in use on this host."
+            warn "A local service may conflict with Docker — check with: ss -tlnp | grep :${port}"
+            conflicts=$((conflicts + 1))
+        fi
+    done
+    if [ "$conflicts" -gt 0 ]; then
+        warn "${conflicts} port conflict(s) detected. 'docker compose up' may fail."
+        warn "Either stop the conflicting services or remap ports in docker-compose.yml."
+    fi
+}
+
 # ─── Step 4: Build and Start ────────────────────────────────────────────────
 build_and_start() {
+    check_port_availability
     info "Building Docker images (using layer cache)..."
     docker compose build
 
@@ -267,7 +295,7 @@ seed_if_needed() {
     fi
 
     info "Seeding reference data (locations, devices, metadata)..."
-    if docker compose exec -T backend python -m src.seeder --phase reference 2>/dev/null; then
+    if docker compose exec -T backend python -m src.seeder --phase reference; then
         info "✓ Reference data seeded successfully."
     else
         warn "Seeding reference data failed. You can retry later with:"

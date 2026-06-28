@@ -23,6 +23,12 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 import os, sys
 
+# Derive the expected table names from the models themselves so this check
+# stays correct automatically as the schema evolves — never hard-code them.
+import src.models
+from src.models import Base
+EXPECTED_APP_TABLES = set(Base.metadata.tables.keys())
+
 engine = create_engine(os.environ['DATABASE_URL'])
 insp = inspect(engine)
 
@@ -44,9 +50,8 @@ with engine.connect() as conn:
         sys.exit(0)  # Revision exists — all good
     except Exception:
         # Orphaned revision — delete it
-        app_tables = {'users', 'location', 'device', 'telemetry_data'}
         existing = set(insp.get_table_names())
-        has_app_tables = bool(app_tables & existing)
+        has_app_tables = bool(EXPECTED_APP_TABLES & existing)
 
         print(f'[entrypoint] Orphaned alembic version ({db_version}) detected.')
         conn.execute(text('DELETE FROM dmp_alembic_version'))
@@ -66,11 +71,17 @@ stamp_if_needed() {
 from sqlalchemy import create_engine, inspect, text
 import os, sys
 
+# Same as fix_orphaned_version: derive expected tables from the models so the
+# detection stays in sync with the schema without any manual list to maintain.
+import src.models
+from src.models import Base
+EXPECTED_APP_TABLES = set(Base.metadata.tables.keys())
+
 engine = create_engine(os.environ['DATABASE_URL'])
 insp = inspect(engine)
 tables = set(insp.get_table_names())
 
-has_app_tables = bool({'users', 'location', 'device', 'telemetry_data'} & tables)
+has_app_tables = bool(EXPECTED_APP_TABLES & tables)
 if not has_app_tables:
     sys.exit(1)  # No app tables — let alembic upgrade handle it
 
