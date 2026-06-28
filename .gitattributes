@@ -3,3 +3,6 @@
 # which breaks the shebang when Docker COPYs the script into a Linux image
 # (exec: no such file or directory).
 *.sh text eol=lf
+# The top-level setup script has no extension so *.sh does not cover it.
+setup text eol=lf
+sample-data/**/*.csv filter=lfs diff=lfs merge=lfs -text

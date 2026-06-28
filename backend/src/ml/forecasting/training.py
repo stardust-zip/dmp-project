@@ -126,7 +126,7 @@ def _mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
-    mask = y_true > MAPE_MIN_ACTUAL
+    mask = np.abs(y_true) > MAPE_MIN_ACTUAL
     if not mask.any():
         return float("nan")
     return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100.0)

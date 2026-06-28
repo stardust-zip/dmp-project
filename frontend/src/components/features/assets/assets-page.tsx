@@ -23,7 +23,6 @@ type LocationFilter = "all" | "active" | "archived";
 type AssetModal = "site" | "building" | null;
 type DetailTarget = { kind: "location"; item: LocationOption } | null;
 
-const LOCATION_INDEX_LIMIT = 1000;
 const LOCATIONS_PER_PAGE = 24;
 
 type GeoPoint = {
@@ -299,7 +298,7 @@ export function AssetsPage() {
     setError(null);
     const errors: string[] = [];
     const errorMessage = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
-    const locationRequest = getLocationOptions({ includeArchived: true, limit: LOCATION_INDEX_LIMIT });
+    const locationRequest = getLocationOptions({ includeArchived: true });
     const modelRequest = canViewModelCoverage ? getRegisteredModels() : Promise.resolve({ models: [] });
     const usersRequest = canManageAssets ? getUsers() : Promise.resolve([]);
 
@@ -349,7 +348,7 @@ export function AssetsPage() {
 
       setLocationSearchLoading(true);
       try {
-        const data = await getLocationOptions({ q: query, includeArchived: true, limit: LOCATION_INDEX_LIMIT }, controller.signal);
+        const data = await getLocationOptions({ q: query, includeArchived: true }, controller.signal);
         setSearchedLocations(data.locations);
       } catch {
         if (!controller.signal.aborted) setSearchedLocations([]);
@@ -376,7 +375,7 @@ export function AssetsPage() {
 
       setMapSearchLoading(true);
       try {
-        const data = await getLocationOptions({ q: query, includeArchived: true, limit: LOCATION_INDEX_LIMIT }, controller.signal);
+        const data = await getLocationOptions({ q: query, includeArchived: true }, controller.signal);
         setMapSearchedLocations(data.locations);
       } catch {
         if (!controller.signal.aborted) setMapSearchedLocations([]);

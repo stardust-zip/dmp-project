@@ -3,7 +3,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from src.api.v1.deps import get_current_admin, get_current_user, user_has_global_read_access
+from src.api.v1.deps import (
+    get_current_admin,
+    get_current_user,
+    user_has_global_read_access,
+)
 from src.database import get_db
 from src.models import (
     Device,
@@ -45,7 +49,7 @@ async def list_locations(
         description="Filter buildings by parent site ID.",
     ),
     include_archived: bool = Query(False),
-    limit: int = Query(50, ge=1, le=1000),
+    limit: int | None = Query(None, ge=1),
     db: Session = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> dict[str, list[LocationResponse]]:
@@ -72,11 +76,10 @@ async def list_locations(
             )
         )
 
-    try:
-        locations = query.order_by(Location.id).limit(limit).all()
-        iter(locations)
-    except TypeError:
-        locations = query.limit(limit).all()
+    query = query.order_by(Location.id)
+    if limit is not None:
+        query = query.limit(limit)
+    locations = query.all()
     return {
         "locations": [
             _location_response(loc)
@@ -86,7 +89,9 @@ async def list_locations(
     }
 
 
-@router.post("/sites", response_model=LocationResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/sites", response_model=LocationResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_site(
     payload: SiteCreate,
     db: Session = Depends(get_db),
@@ -122,7 +127,9 @@ async def create_building(
     if site is None:
         raise HTTPException(status_code=404, detail="Site not found.")
     if _is_archived(site):
-        raise HTTPException(status_code=422, detail="Cannot add a building to an archived site.")
+        raise HTTPException(
+            status_code=422, detail="Cannot add a building to an archived site."
+        )
 
     _ensure_location_type(db, payload.location_type_id, "Building")
     building = _create_location(
@@ -151,7 +158,9 @@ async def update_location(
     if payload.parent_id:
         parent = _get_location_or_404(db, payload.parent_id)
         if parent.id == location.id:
-            raise HTTPException(status_code=422, detail="A location cannot be its own parent.")
+            raise HTTPException(
+                status_code=422, detail="A location cannot be its own parent."
+            )
         location.parent_id = parent.id
     if payload.location_type_id:
         _ensure_location_type(db, payload.location_type_id)
@@ -179,12 +188,12 @@ async def list_metrics(
     Retrieve all available metric types (utilities) for UI dropdowns.
     """
     metrics = db.query(MetricType).all()
-    return {
-        "metrics": [_metric_response(metric) for metric in metrics]
-    }
+    return {"metrics": [_metric_response(metric) for metric in metrics]}
 
 
-@router.post("/metrics", response_model=MetricTypeResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/metrics", response_model=MetricTypeResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_metric(
     payload: MetricTypeCreate,
     db: Session = Depends(get_db),
@@ -197,7 +206,9 @@ async def create_metric(
     if existing:
         raise HTTPException(status_code=409, detail="Metric already exists.")
 
-    metric = MetricType(id=payload.id, unit=payload.unit, description=payload.description)
+    metric = MetricType(
+        id=payload.id, unit=payload.unit, description=payload.description
+    )
     db.add(metric)
     db.commit()
     db.refresh(metric)
@@ -225,7 +236,9 @@ async def update_metric(
     return _metric_response(metric)
 
 
-@router.post("/devices", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/devices", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED
+)
 async def register_device(
     payload: DeviceRegisterRequest,
     db: Session = Depends(get_db),
@@ -435,7 +448,9 @@ def _ensure_location_type(
 
 
 def _ensure_device_type(db: Session, device_type_id: str) -> None:
-    device_type = db.query(DeviceType).filter(DeviceType.id == device_type_id).one_or_none()
+    device_type = (
+        db.query(DeviceType).filter(DeviceType.id == device_type_id).one_or_none()
+    )
     if device_type is None:
         db.add(DeviceType(id=device_type_id, description="Registered device"))
         db.flush()

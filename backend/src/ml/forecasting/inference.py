@@ -66,6 +66,84 @@ def _static_columns(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _log_forecasts_for_monitoring(
+    db,
+    *,
+    building_id: str,
+    metric_type_id: str,
+    future_map: dict,
+    overlay_map: dict | None = None,
+    actual_map: dict | None = None,
+    mlflow_run_id: str,
+    model_name: str,
+    model_version: str = "unknown",
+) -> None:
+    """Log forecast predictions to prediction_log for monitoring.
+
+    Overlay predictions (past honest forecasts) are logged with actual_value
+    already populated so that performance evaluation works immediately after
+    a forecast run without waiting for the fill_actuals Celery task.
+    """
+    try:
+        predictions = []
+
+        # Overlay predictions: past honest H-ahead forecasts where actuals are known.
+        # Logging these with actual_value pre-filled lets the evaluator run right away.
+        if overlay_map and actual_map:
+            for ts, predicted in sorted(overlay_map.items()):
+                ts_key = ts.replace(minute=0, second=0, microsecond=0)
+                actual = actual_map.get(ts_key)
+                entry: dict = {
+                    "timestamp": ts.to_pydatetime()
+                    if hasattr(ts, "to_pydatetime")
+                    else ts,
+                    "building_id": building_id,
+                    "metric_type_id": metric_type_id,
+                    "predicted_value": float(predicted),
+                    "mlflow_run_id": mlflow_run_id,
+                    "model_name": model_name,
+                    "model_version": model_version,
+                    "model_task": "forecasting",
+                    "feature_values": None,
+                    "prediction_context": {"source": "forecast_overlay"},
+                }
+                if actual is not None:
+                    entry["actual_value"] = float(actual)
+                    entry["error"] = float(actual) - float(predicted)
+                predictions.append(entry)
+
+        # Future predictions: no actuals yet; fill_actuals task populates them later.
+        for ts, value in sorted(future_map.items()):
+            predictions.append(
+                {
+                    "timestamp": ts.to_pydatetime()
+                    if hasattr(ts, "to_pydatetime")
+                    else ts,
+                    "building_id": building_id,
+                    "metric_type_id": metric_type_id,
+                    "predicted_value": float(value),
+                    "mlflow_run_id": mlflow_run_id,
+                    "model_name": model_name,
+                    "model_version": model_version,
+                    "model_task": "forecasting",
+                    "feature_values": None,
+                    "prediction_context": {"source": "forecast_pipeline"},
+                }
+            )
+
+        from src.ml.monitoring.prediction_logger import PredictionLogger
+
+        PredictionLogger().log_batch(db, predictions)
+        with_actuals = sum(1 for p in predictions if p.get("actual_value") is not None)
+        logger.info(
+            "Logged %d forecast predictions to prediction_log for monitoring (%d with actuals)",
+            len(predictions),
+            with_actuals,
+        )
+    except Exception:
+        logger.warning("Failed to log forecasts for monitoring", exc_info=True)
+
+
 def forecast_for_building(
     db,
     *,
@@ -254,12 +332,35 @@ def forecast_for_building(
         metric_type_id,
     )
 
-    # --- Merged timeline for the chart ---
+    # --- Build actual_map BEFORE logging for monitoring ---
     actual_map = {
         pd.Timestamp(ts): float(v)
         for ts, v in zip(df["timestamp"], df["consumption"])
         if pd.notna(v)
     }
+
+    # --- Log predictions for monitoring ---
+    # Get model version for logging
+    _model_version = "unknown"
+    try:
+        _reg = ForecastingMlflowRegistry()
+        _v = _reg.find_production_version(used_model_name)
+        if _v is not None:
+            _model_version = str(_v.version)
+    except Exception:
+        pass
+
+    _log_forecasts_for_monitoring(
+        db=db,
+        building_id=building_id,
+        metric_type_id=metric_type_id,
+        future_map=future_map,
+        overlay_map=overlay_map,
+        actual_map=actual_map,
+        mlflow_run_id=run_id,
+        model_name=used_model_name,
+        model_version=_model_version,
+    )
     forecast_map = {**overlay_map, **future_map}
     all_ts = sorted(set(actual_map) | set(forecast_map))
     points = [

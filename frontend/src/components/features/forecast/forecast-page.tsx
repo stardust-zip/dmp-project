@@ -118,7 +118,7 @@ export function ForecastPage() {
       return;
     }
     const controller = new AbortController();
-    getLocationOptions({ parentId: siteId, limit: 1000 }, controller.signal)
+    getLocationOptions({ parentId: siteId }, controller.signal)
       .then((data) => {
         const childBuildings = data.locations.filter((location) => location.id !== siteId);
         setBuildings(childBuildings);

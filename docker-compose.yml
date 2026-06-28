@@ -74,6 +74,7 @@ services:
     restart: unless-stopped
 
   backend:
+    profiles: ["backend", "full"]
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -81,6 +82,8 @@ services:
     working_dir: /app
     volumes:
       - ./backend/src:/app/src
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/alembic:/app/alembic
       - ./pyproject.toml:/app/pyproject.toml
       - ./data:/app/data
       - mlflow_artifacts:/mlflow/artifacts
@@ -99,17 +102,22 @@ services:
         condition: service_healthy
     networks:
       - dmp_network
-    command: >
-      sh -c "python -m src.seeders.users &&
-      uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: ["./entrypoint.sh"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
     restart: unless-stopped
 
   worker:
+    profiles: ["backend", "full"]
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -136,7 +144,36 @@ services:
     command: celery -A src.tasks worker --loglevel=info
     restart: unless-stopped
 
+  celery-beat:
+    profiles: ["backend", "full"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: dmp_celery_beat
+    working_dir: /app
+    volumes:
+      - ./backend/src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./data:/app/data
+      - mlflow_artifacts:/mlflow/artifacts
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - dmp_network
+    command: celery -A src.tasks beat --loglevel=info
+    restart: unless-stopped
+
   frontend:
+    profiles: ["frontend", "full"]
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -157,6 +194,7 @@ services:
     restart: unless-stopped
 
   jupyter:
+    profiles: ["analytics", "full"]
     image: ghcr.io/astral-sh/uv:python3.11-bookworm
     container_name: dmp_jupyter
     working_dir: /app
@@ -179,6 +217,7 @@ services:
       uv run jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''"
 
   prometheus:
+    profiles: ["monitoring", "full"]
     image: prom/prometheus:v3.12.0
     container_name: dmp_prometheus
     volumes:
@@ -199,6 +238,7 @@ services:
     restart: unless-stopped
 
   grafana:
+    profiles: ["monitoring", "full"]
     image: grafana/grafana:13.0.2
     container_name: dmp_grafana
     environment:
@@ -224,7 +264,8 @@ services:
     restart: unless-stopped
 
   dbgate:
-    image: dbgate/dbgate:latest
+    profiles: ["monitoring", "full"]
+    image: dbgate/dbgate:6.3.0
     container_name: dbgate-web
     restart: unless-stopped
     ports:
@@ -258,4 +299,3 @@ volumes:
   grafana_data:
   dbgate_data:
   frontend_node_modules:
-
