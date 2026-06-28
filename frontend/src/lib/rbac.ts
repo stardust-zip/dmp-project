@@ -22,6 +22,7 @@ export const MAIN_NAV: NavItem[] = [
   { href: "/assets", label: "Assets", icon: "map", roles: ASSET_MANAGEMENT_ROLES },
   { href: "/models", label: "AI Engineering", icon: "cpu", roles: AI_ENGINEERING_ROLES },
   { href: "/monitoring", label: "Monitoring", icon: "gauge", roles: MONITORING_ROLES },
+  { href: "/experiments", label: "Experiments", icon: "sliders", roles: AI_ENGINEERING_ROLES },
   { href: "/users", label: "Users", icon: "users", roles: USER_MANAGEMENT_ROLES },
 ];
 
@@ -37,6 +38,9 @@ export function canAccessPath(user: AuthUser | null | undefined, pathname: strin
   }
   if (pathname.startsWith("/monitoring")) {
     return hasAnyRole(user, MONITORING_ROLES);
+  }
+  if (pathname.startsWith("/experiments")) {
+    return hasAnyRole(user, AI_ENGINEERING_ROLES);
   }
   if (pathname.startsWith("/assets")) {
     return hasAnyRole(user, ASSET_DASHBOARD_ROLES);

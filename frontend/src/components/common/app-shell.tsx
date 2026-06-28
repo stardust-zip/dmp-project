@@ -15,6 +15,7 @@ function routeLabel(pathname: string) {
   if (pathname.startsWith("/forecast")) return "Forecasting";
   if (pathname.startsWith("/models")) return "AI Engineering";
   if (pathname.startsWith("/monitoring")) return "Model Monitoring";
+  if (pathname.startsWith("/experiments")) return "Experiment Comparison";
   if (pathname.startsWith("/assets")) return "Dashboard";
   if (pathname.startsWith("/users")) return "User Management";
   if (pathname.startsWith("/settings")) return "Settings";

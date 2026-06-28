@@ -747,6 +747,7 @@ class ExperimentVersionDetail(BaseSchema):
 
     version: str
     run_id: str
+    model_task: str | None = None
     algorithm: str | None = None
     current_stage: str | None = None
     status: str | None = None
@@ -754,15 +755,19 @@ class ExperimentVersionDetail(BaseSchema):
     ended_at: datetime | None = None
     hyperparameters: dict[str, str] = Field(default_factory=dict)
     training_metrics: dict[str, float] = Field(default_factory=dict)
-    evaluation_metrics: dict[str, float] = Field(default_factory=dict)
+    evaluation_metrics: dict[str, float | None] = Field(default_factory=dict)
     tags: dict[str, str] = Field(default_factory=dict)
     training_building_count: int | None = None
     training_metric_count: int | None = None
     training_row_count: int | None = None
     data_source: str | None = None
+    training_data_source: str | None = None
     training_start: str | None = None
     training_end: str | None = None
     feature_count: int | None = None
+    run_start_time: int | None = None
+    run_end_time: int | None = None
+    run_status: str | None = None
 
 
 class ExperimentComparisonResponse(BaseSchema):
@@ -770,7 +775,38 @@ class ExperimentComparisonResponse(BaseSchema):
 
     model_name: str
     versions: list[ExperimentVersionDetail]
-    common_hyperparameters: list[str]
-    common_evaluation_metrics: list[str]
+    common_hyperparameters: list[str] = Field(
+        default_factory=list,
+        description="Hyperparameter keys shared across all compared versions",
+    )
+    common_evaluation_metrics: list[str] = Field(
+        default_factory=list,
+        description="Evaluation metric keys shared across all compared versions",
+    )
+    common_metrics: list[str] = Field(
+        default_factory=lambda: ["mae", "rmse", "mape", "r2_score"],
+        description="Evaluation metric keys available in all compared versions",
+    )
     comparison_period_start: datetime
     comparison_period_end: datetime
+
+
+class ExperimentCompareRequest(BaseSchema):
+    """Request body for multi-version comparison (POST variant for many versions)."""
+
+    versions: list[str] = Field(
+        ...,
+        min_length=2,
+        max_length=10,
+        description="Version strings to compare (2–10 versions)",
+    )
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    include_training_data: bool = Field(
+        default=True,
+        description="Include training dataset attributes from prediction_log",
+    )
+    include_hyperparameters: bool = Field(
+        default=True,
+        description="Include hyperparameter comparison from MLflow params",
+    )
