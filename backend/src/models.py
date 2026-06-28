@@ -86,9 +86,6 @@ model_task_enum = Enum(
     "forecasting", "anomaly_detection", "prediction", name="model_task"
 )
 
-prediction_log_status_enum = Enum(
-    "Pending", "Filled", "Expired", name="prediction_log_status"
-)
 drift_severity_enum = Enum(
     "none", "low", "medium", "high", "critical", name="drift_severity"
 )
