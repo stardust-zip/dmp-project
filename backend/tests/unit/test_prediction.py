@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import mlflow.pyfunc
 import pandas as pd
@@ -182,3 +182,206 @@ def test_model_repository_skips_broken_artifact_versions(monkeypatch):
         "models:/dmp_energy_prediction_BuildingA_electricity/2",
         "models:/dmp_energy_prediction_BuildingA_electricity/1",
     ]
+
+
+# ---------------------------------------------------------------------------
+# PredictionLogger injection and _log_prediction_batch
+# ---------------------------------------------------------------------------
+
+
+class CapturingLogger:
+    """Test double for PredictionLogger that records calls without touching a DB."""
+
+    def __init__(self):
+        self.batches: list[list[dict]] = []
+        self.fill_calls: list[tuple] = []
+
+    def log_batch(self, db, predictions: list[dict]) -> list:
+        self.batches.append(list(predictions))
+        return []
+
+    def fill_actuals(self, db, building_id: str, metric_type_id: str, actuals: dict) -> int:
+        self.fill_calls.append((building_id, metric_type_id, actuals))
+        return len(actuals)
+
+
+class TestPredictionLoggingIntegration:
+    """Verify that predict_scenario and expected_vs_actual route through PredictionLogger."""
+
+    def test_injected_logger_is_used_instead_of_default(self):
+        logger = CapturingLogger()
+        service = PredictionService(
+            model_repository=FakeModelRepository(),
+            prediction_logger=logger,
+        )
+        request = PredictionScenarioRequest(
+            site_id="SiteA",
+            building_id="BuildingA",
+            metric_type="electricity",
+            scenario_date="2026-06-10T00:00:00Z",
+            opening_time="09:00",
+            closing_time="11:00",
+            unit_rate=0.2,
+        )
+
+        service.predict_scenario(_fake_db(), request)
+
+        assert len(logger.batches) == 1
+
+    def test_log_batch_receives_one_entry_per_prediction_hour(self):
+        logger = CapturingLogger()
+        service = PredictionService(
+            model_repository=FakeModelRepository(),
+            prediction_logger=logger,
+        )
+        request = PredictionScenarioRequest(
+            site_id="SiteA",
+            building_id="BuildingA",
+            metric_type="electricity",
+            scenario_date="2026-06-10T00:00:00Z",
+            opening_time="08:00",
+            closing_time="11:00",  # 3 hours → 3 points
+            unit_rate=0.1,
+        )
+
+        service.predict_scenario(_fake_db(), request)
+
+        assert len(logger.batches[0]) == 3
+
+    def test_logged_entries_contain_required_monitoring_fields(self):
+        logger = CapturingLogger()
+        service = PredictionService(
+            model_repository=FakeModelRepository(),
+            prediction_logger=logger,
+        )
+        request = PredictionScenarioRequest(
+            site_id="SiteA",
+            building_id="BuildingA",
+            metric_type="electricity",
+            scenario_date="2026-06-10T00:00:00Z",
+            opening_time="10:00",
+            closing_time="11:00",
+            unit_rate=None,
+        )
+
+        service.predict_scenario(_fake_db(), request)
+
+        entry = logger.batches[0][0]
+        assert entry["building_id"] == "BuildingA"
+        assert entry["metric_type_id"] == "electricity"
+        assert isinstance(entry["predicted_value"], float)
+        assert "model_name" in entry
+        assert "model_version" in entry
+
+    def test_logger_failure_does_not_propagate_to_caller(self):
+        """A broken logger must not prevent the prediction response from being returned."""
+        broken_logger = MagicMock()
+        broken_logger.log_batch.side_effect = RuntimeError("DB connection lost")
+
+        service = PredictionService(
+            model_repository=FakeModelRepository(),
+            prediction_logger=broken_logger,
+        )
+        request = PredictionScenarioRequest(
+            site_id="SiteA",
+            building_id="BuildingA",
+            metric_type="electricity",
+            scenario_date="2026-06-10T00:00:00Z",
+            opening_time="08:00",
+            closing_time="09:00",
+            unit_rate=0.2,
+        )
+
+        # Must not raise; the prediction result is returned even when logging fails
+        response = service.predict_scenario(_fake_db(), request)
+        assert response is not None
+
+
+# ---------------------------------------------------------------------------
+# _log_expected_actual_batch
+# ---------------------------------------------------------------------------
+
+
+class TestExpectedActualLogging:
+    def test_fill_actuals_is_called_when_actual_values_are_present(self):
+        logger = CapturingLogger()
+        service = PredictionService(
+            model_repository=FakeModelRepository(),
+            prediction_logger=logger,
+        )
+        actual_rows = [
+            SimpleNamespace(
+                timestamp=datetime(2026, 6, 1, 8, tzinfo=timezone.utc),
+                actual_value=140.0,
+            ),
+            SimpleNamespace(
+                timestamp=datetime(2026, 6, 1, 9, tzinfo=timezone.utc),
+                actual_value=150.0,
+            ),
+        ]
+        request = ExpectedActualReportRequest(
+            site_id="SiteA",
+            building_id="BuildingA",
+            metric_type="electricity",
+            start_time="2026-06-01T00:00:00Z",
+            end_time="2026-06-30T23:59:59Z",
+            closing_time="18:00",
+        )
+
+        service.expected_vs_actual(_fake_db(actual_rows), request)
+
+        assert len(logger.batches) == 1
+        assert len(logger.fill_calls) == 1
+
+    def test_fill_actuals_receives_correct_building_and_metric_type(self):
+        logger = CapturingLogger()
+        service = PredictionService(
+            model_repository=FakeModelRepository(),
+            prediction_logger=logger,
+        )
+        actual_rows = [
+            SimpleNamespace(
+                timestamp=datetime(2026, 6, 1, 10, tzinfo=timezone.utc),
+                actual_value=200.0,
+            ),
+        ]
+        request = ExpectedActualReportRequest(
+            site_id="SiteA",
+            building_id="BuildingA",
+            metric_type="electricity",
+            start_time="2026-06-01T00:00:00Z",
+            end_time="2026-06-30T23:59:59Z",
+            closing_time="18:00",
+        )
+
+        service.expected_vs_actual(_fake_db(actual_rows), request)
+
+        building_id, metric_type_id, _ = logger.fill_calls[0]
+        assert building_id == "BuildingA"
+        assert metric_type_id == "electricity"
+
+    def test_expected_actual_logger_failure_does_not_propagate(self):
+        broken_logger = MagicMock()
+        broken_logger.log_batch.side_effect = RuntimeError("network error")
+
+        service = PredictionService(
+            model_repository=FakeModelRepository(),
+            prediction_logger=broken_logger,
+        )
+        actual_rows = [
+            SimpleNamespace(
+                timestamp=datetime(2026, 6, 1, 8, tzinfo=timezone.utc),
+                actual_value=140.0,
+            ),
+        ]
+        request = ExpectedActualReportRequest(
+            site_id="SiteA",
+            building_id="BuildingA",
+            metric_type="electricity",
+            start_time="2026-06-01T00:00:00Z",
+            end_time="2026-06-30T23:59:59Z",
+            closing_time="18:00",
+        )
+
+        response = service.expected_vs_actual(_fake_db(actual_rows), request)
+        assert response is not None
