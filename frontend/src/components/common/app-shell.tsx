@@ -9,6 +9,7 @@ import { Modal } from "@/components/common/primitives";
 import { SettingsContent } from "@/components/features/settings/settings-page";
 import { MAIN_NAV, hasAnyRole } from "@/lib/rbac";
 import { useSettingsStore } from "@/lib/settings-store";
+import { SimTopbarWidget } from "@/components/common/sim-topbar-widget";
 
 function routeLabel(pathname: string) {
   if (pathname.startsWith("/anomaly")) return "Anomaly Detection";
@@ -101,6 +102,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <b>{meta}</b>
           </div>
           <div className="topbar-spacer" />
+          <SimTopbarWidget />
 
           <div className="account-menu-wrap" onClick={(event) => event.stopPropagation()}>
             <div
