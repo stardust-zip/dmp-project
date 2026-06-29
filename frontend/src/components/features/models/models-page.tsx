@@ -23,6 +23,7 @@ import {
   type TrainModelPayload,
   type TrainingValidationResponse,
   type TrainingDataSource,
+  type WeatherMode,
 } from "@/lib/models-api";
 
 const MODEL_TASK_OPTIONS: Array<{ value: ModelTask; label: string }> = [
@@ -275,6 +276,7 @@ export function ModelsPage() {
   const [modelTask, setModelTask] = useState<ModelTask>("forecasting");
   const [dataSource, setDataSource] = useState<TrainingDataSource>("csv");
   const [forecastHorizon, setForecastHorizon] = useState(24);
+  const [weatherMode, setWeatherMode] = useState<WeatherMode>("none");
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [metricQuery, setMetricQuery] = useState("");
   const [startDate, setStartDate] = useState(defaultStartDate);
@@ -502,7 +504,7 @@ export function ModelsPage() {
       model_task: modelTask,
       data_source: dataSource,
       ...(isForecasting
-        ? { algorithm: "xgboost", forecast_horizon_hours: forecastHorizon }
+        ? { algorithm: "xgboost", forecast_horizon_hours: forecastHorizon, weather_mode: weatherMode }
         : {}),
     }),
     [
@@ -516,6 +518,7 @@ export function ModelsPage() {
       selectedMetrics,
       startDate,
       trainingMode,
+      weatherMode,
     ],
   );
   const buildingSelectionValid = trainingMode === "all" || Boolean(selectedBuildingId);
@@ -917,6 +920,28 @@ export function ModelsPage() {
                         )
                       }
                     />
+                  </Field>
+                )}
+                {isForecasting && (
+                  <Field label="Weather features">
+                    <div className="training-mode-toggle">
+                      <button
+                        type="button"
+                        className={weatherMode === "none" ? "is-active" : ""}
+                        onClick={() => setWeatherMode("none")}
+                        title="Energy-only features (no weather)"
+                      >
+                        None
+                      </button>
+                      <button
+                        type="button"
+                        className={weatherMode === "forecast" ? "is-active" : ""}
+                        onClick={() => setWeatherMode("forecast")}
+                        title="Include weather aligned to the target time"
+                      >
+                        Forecast
+                      </button>
+                    </div>
                   </Field>
                 )}
               </div>
