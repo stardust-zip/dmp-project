@@ -18,7 +18,7 @@
     "jsx": "react-jsx",
     "incremental": true,
     "ignoreDeprecations": "6.0",
-    "types": ["vitest/globals", "@testing-library/jest-dom/vitest"],
+    "types": [],
     "plugins": [
       {
         "name": "next"
@@ -45,6 +45,7 @@
     "playwright.config.ts",
     "vitest.config.ts",
     "e2e",
-    "src/test"
+    "src/test",
+    "src/**/__tests__/**"
   ]
 }
