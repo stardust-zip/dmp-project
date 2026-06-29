@@ -127,6 +127,8 @@ export interface PipelineLog {
 
 export type ModelTask = "forecasting" | "anomaly_detection" | "prediction";
 export type TrainingDataSource = "csv" | "db";
+/** Forecasting only: weather feature mode — "none" = energy-only, "forecast" = weather aligned to target time. */
+export type WeatherMode = "none" | "forecast";
 
 export interface TrainModelPayload {
   site_id: string | null;
@@ -141,6 +143,8 @@ export interface TrainModelPayload {
   algorithm?: string | null;
   /** Forecasting only: direct forecast horizon in hours (defines the model). */
   forecast_horizon_hours?: number;
+  /** Forecasting only: weather feature mode ("none" energy-only | "forecast" weather at target time). */
+  weather_mode?: WeatherMode;
 }
 
 export interface TrainModelResponse {
