@@ -206,7 +206,8 @@ class ModelTrainingRequest(BaseSchema):
     )
     weather_mode: str = Field(
         default="none",
-        description="Forecasting: weather feature mode. MVP supports 'none' only.",
+        description="Forecasting: weather feature mode. 'none' = energy-only; "
+        "'forecast' = include weather aligned to the target time (weather(T+H)).",
     )
 
     @field_validator("metrics")
@@ -216,6 +217,14 @@ class ModelTrainingRequest(BaseSchema):
         if not metrics:
             raise ValueError("At least one metric is required")
         return metrics
+
+    @field_validator("weather_mode")
+    @classmethod
+    def normalize_weather_mode(cls, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in {"none", "forecast"}:
+            raise ValueError("weather_mode must be 'none' or 'forecast'")
+        return mode
 
     @model_validator(mode="after")
     def site_id_required_for_prediction(self) -> "ModelTrainingRequest":
@@ -618,3 +627,195 @@ class AnomalyTimelineResponse(BaseSchema):
     items: list[AnomalyEventResponse]
     points: list[AnomalyTimelinePointResponse] = Field(default_factory=list)
     gaps: list[AnomalyTimelineGapResponse] = Field(default_factory=list)
+
+
+# -----------------------------------------
+# Monitoring & Drift Detection Schemas
+# -----------------------------------------
+
+
+class PredictionLogCreate(BaseSchema):
+    timestamp: datetime
+    building_id: str
+    metric_type_id: str
+    predicted_value: float
+    mlflow_run_id: str
+    model_name: str
+    model_version: str
+    model_task: str
+    feature_values: dict[str, Any] | None = None
+    prediction_context: dict[str, Any] | None = None
+
+
+class PredictionLogResponse(BaseSchema):
+    id: str
+    timestamp: datetime
+    building_id: str
+    metric_type_id: str
+    predicted_value: float
+    actual_value: float | None = None
+    error: float | None = None
+    mlflow_run_id: str
+    model_name: str
+    model_version: str
+    model_task: str
+    feature_values: dict[str, Any] | None = None
+    prediction_context: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class ModelPerformanceResponse(BaseSchema):
+    id: str
+    model_name: str
+    model_version: str
+    mlflow_run_id: str
+    model_task: str
+    building_id: str | None = None
+    metric_type_id: str | None = None
+    period_start: datetime
+    period_end: datetime
+    sample_count: int
+    mae: float | None = None
+    rmse: float | None = None
+    mape: float | None = None
+    r2_score: float | None = None
+    mean_error: float | None = None
+    p10_error: float | None = None
+    p90_error: float | None = None
+    baseline_mae: float | None = None
+    baseline_rmse: float | None = None
+    performance_ratio: float | None = None
+    computed_at: datetime
+
+
+class ModelPerformanceTimelineResponse(BaseSchema):
+    model_name: str
+    model_version: str
+    metrics: list[ModelPerformanceResponse]
+
+
+class DriftReportResponse(BaseSchema):
+    id: str
+    model_name: str
+    model_version: str
+    mlflow_run_id: str
+    model_task: str
+    drift_type: str
+    feature_name: str | None = None
+    period_start: datetime
+    period_end: datetime
+    drift_score: float
+    drift_threshold: float
+    is_drifted: bool
+    severity: str
+    reference_stats: dict[str, Any]
+    current_stats: dict[str, Any]
+    details: dict[str, Any] | None = None
+    computed_at: datetime
+
+
+class ModelDriftTimelineResponse(BaseSchema):
+    model_name: str
+    model_version: str
+    overall_drift: list[DriftReportResponse]
+    feature_drift: dict[str, list[DriftReportResponse]] = Field(default_factory=dict)
+
+
+class ModelMonitoringSummary(BaseSchema):
+    model_name: str
+    model_version: str
+    health_score: float  # 0-100
+    status: str  # "healthy", "degraded", "critical"
+    last_performance: ModelPerformanceResponse | None = None
+    active_drifts: list[DriftReportResponse] = Field(default_factory=list)
+    total_predictions: int = 0
+    pending_actuals: int = 0
+
+
+class ModelVersionComparisonResponse(BaseSchema):
+    model_name: str
+    versions: list[dict[str, Any]]
+    comparison_period_start: datetime
+    comparison_period_end: datetime
+    metrics: list[str] = Field(
+        default_factory=lambda: ["mae", "rmse", "mape", "r2_score"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Experiment comparison schemas
+# ---------------------------------------------------------------------------
+
+
+class ExperimentVersionDetail(BaseSchema):
+    """
+    Full profile of a single registered model version for side-by-side
+    comparison.  All dict fields use str keys so they serialise cleanly to
+    JSON regardless of the MLflow backend.
+    """
+
+    version: str
+    run_id: str
+    model_task: str | None = None
+    algorithm: str | None = None
+    current_stage: str | None = None
+    status: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    hyperparameters: dict[str, str] = Field(default_factory=dict)
+    training_metrics: dict[str, float] = Field(default_factory=dict)
+    evaluation_metrics: dict[str, float | None] = Field(default_factory=dict)
+    tags: dict[str, str] = Field(default_factory=dict)
+    training_building_count: int | None = None
+    training_metric_count: int | None = None
+    training_row_count: int | None = None
+    data_source: str | None = None
+    training_data_source: str | None = None
+    training_start: str | None = None
+    training_end: str | None = None
+    feature_count: int | None = None
+    run_start_time: int | None = None
+    run_end_time: int | None = None
+    run_status: str | None = None
+
+
+class ExperimentComparisonResponse(BaseSchema):
+    """Top-level response for GET /models/{name}/experiments/compare."""
+
+    model_name: str
+    versions: list[ExperimentVersionDetail]
+    common_hyperparameters: list[str] = Field(
+        default_factory=list,
+        description="Hyperparameter keys shared across all compared versions",
+    )
+    common_evaluation_metrics: list[str] = Field(
+        default_factory=list,
+        description="Evaluation metric keys shared across all compared versions",
+    )
+    common_metrics: list[str] = Field(
+        default_factory=lambda: ["mae", "rmse", "mape", "r2_score"],
+        description="Evaluation metric keys available in all compared versions",
+    )
+    comparison_period_start: datetime
+    comparison_period_end: datetime
+
+
+class ExperimentCompareRequest(BaseSchema):
+    """Request body for multi-version comparison (POST variant for many versions)."""
+
+    versions: list[str] = Field(
+        ...,
+        min_length=2,
+        max_length=10,
+        description="Version strings to compare (2–10 versions)",
+    )
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    include_training_data: bool = Field(
+        default=True,
+        description="Include training dataset attributes from prediction_log",
+    )
+    include_hyperparameters: bool = Field(
+        default=True,
+        description="Include hyperparameter comparison from MLflow params",
+    )

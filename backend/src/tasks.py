@@ -1,4 +1,5 @@
 import gc
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ import mlflow.pyfunc
 import numpy as np
 import pandas as pd
 from celery import Celery
+from celery.schedules import crontab
 from celery.signals import task_failure, task_revoked
 from mlflow.tracking import MlflowClient
 from sklearn.compose import ColumnTransformer
@@ -18,8 +20,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from src.core.config import settings
 from src.database import SessionLocal
+from src.ml.monitoring.drift_detector import DriftDetector
+from src.ml.monitoring.health_calculator import HealthCalculator
+from src.ml.monitoring.performance_evaluator import PerformanceEvaluator
+from src.ml.monitoring.prediction_logger import PredictionLogger
 from src.ml.training import algorithm_for_task, cleaned_meter_csv_path
-from src.models import AIPipelineLog, Device, Location, TelemetryData
+from src.models import AIPipelineLog, Device, Location, PredictionLog, TelemetryData
 from src.schemas import (
     MLAlgorithm,
     ModelTask,
@@ -28,6 +34,8 @@ from src.schemas import (
 )
 
 import mlflow
+
+logger = logging.getLogger(__name__)
 
 redis_url = settings.REDIS_URL
 celery_app = Celery("dmp_tasks", broker=redis_url, backend=redis_url)
@@ -74,12 +82,13 @@ def _pipeline_log_status_value(pipeline_log: AIPipelineLog) -> str:
     return status.name if hasattr(status, "name") else str(status)
 
 
-def _external_task_failure_message(exception: object, task_state: str = "FAILURE") -> str:
+def _external_task_failure_message(
+    exception: object, task_state: str = "FAILURE"
+) -> str:
     exception_name = type(exception).__name__
     exception_text = str(exception) or task_state
     message = (
-        "Pipeline failed outside the task handler: "
-        f"{exception_name}: {exception_text}"
+        f"Pipeline failed outside the task handler: {exception_name}: {exception_text}"
     )
     if "SIGKILL" in exception_text or "signal 9" in exception_text:
         message += (
@@ -108,7 +117,11 @@ def mark_pipeline_log_external_failure(
         if pipeline_log is None:
             return False
 
-        if _pipeline_log_status_value(pipeline_log) in {"Success", "Failed", "Cancelled"}:
+        if _pipeline_log_status_value(pipeline_log) in {
+            "Success",
+            "Failed",
+            "Cancelled",
+        }:
             return False
 
         message = _external_task_failure_message(exception, task_state)
@@ -228,7 +241,11 @@ def train_model_task(
             ),
         )
     else:
-        log_status = pipeline_log.status.name if hasattr(pipeline_log.status, "name") else pipeline_log.status
+        log_status = (
+            pipeline_log.status.name
+            if hasattr(pipeline_log.status, "name")
+            else pipeline_log.status
+        )
         if log_status == "Cancelled":
             db.close()
             return {"message": "Pipeline was cancelled; retry skipped."}
@@ -802,7 +819,11 @@ def _mock_training_metrics(request: ModelTrainingRequest) -> dict[str, float]:
 
 def _utc_timestamp(value: datetime) -> pd.Timestamp:
     timestamp = pd.Timestamp(value)
-    return timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+    return (
+        timestamp.tz_localize("UTC")
+        if timestamp.tzinfo is None
+        else timestamp.tz_convert("UTC")
+    )
 
 
 def _load_anomaly_backfill_telemetry_from_csv(
@@ -844,8 +865,7 @@ def _load_anomaly_backfill_telemetry_from_csv(
 
         raw["timestamp"] = pd.to_datetime(raw["timestamp"], utc=True, errors="coerce")
         raw = raw[
-            (raw["timestamp"] >= lookback_start)
-            & (raw["timestamp"] <= range_end)
+            (raw["timestamp"] >= lookback_start) & (raw["timestamp"] <= range_end)
         ]
         if raw.empty:
             continue
@@ -900,7 +920,9 @@ def _load_anomaly_backfill_telemetry_from_csv(
     )
     null_sub = df["sub_primaryspaceusage"].isna()
     df.loc[null_sub, "sub_primaryspaceusage"] = df.loc[null_sub, "primaryspaceusage"]
-    df["timezone"] = df["building_id"].map(lambda b: loc_meta.get(b, {}).get("timezone"))
+    df["timezone"] = df["building_id"].map(
+        lambda b: loc_meta.get(b, {}).get("timezone")
+    )
     return df
 
 
@@ -912,7 +934,9 @@ def run_anomaly_inference_task(self):
 
     db = SessionLocal()
     try:
-        target_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        target_hour = datetime.now(timezone.utc).replace(
+            minute=0, second=0, microsecond=0
+        )
         count = run_hourly_inference(db, target_hour)
         return {"rows_written": count, "target_hour": target_hour.isoformat()}
     finally:
@@ -933,12 +957,12 @@ def run_anomaly_backfill_task(
     from datetime import datetime, timezone
 
     import pandas as pd
+    from src.ml.anomaly.feature_engineering import build_feature_matrix
     from src.ml.anomaly.inference import (
         _apply_quality_mask,
         load_production_anomaly_model,
         run_rule_based_checks,
     )
-    from src.ml.anomaly.feature_engineering import build_feature_matrix
     from src.ml.anomaly.scoring import classify_severity, score_anomalies
     from src.ml.anomaly.store import AnomalyEventStore
     from src.ml.anomaly.telemetry_loaders import downcast_telemetry_dtypes
@@ -978,16 +1002,21 @@ def run_anomaly_backfill_task(
 
     try:
         _append_terminal_log(
-            db, pipeline_log,
+            db,
+            pipeline_log,
             f"Backfill started: {start_iso} → {end_iso}",
         )
 
         mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
         model_result = load_production_anomaly_model()
         if model_result is None:
-            raise ValueError("No production anomaly model found for backfill inference.")
+            raise ValueError(
+                "No production anomaly model found for backfill inference."
+            )
 
-        model, resid_stats, feature_cols, _cat_features, use_weather, metrics = model_result
+        model, resid_stats, feature_cols, _cat_features, use_weather, metrics = (
+            model_result
+        )
         _append_terminal_log(
             db,
             pipeline_log,
@@ -1001,7 +1030,9 @@ def run_anomaly_backfill_task(
             end=end,
         )
         if telemetry_df.empty:
-            raise ValueError("No cleaned CSV telemetry found for the requested backfill range.")
+            raise ValueError(
+                "No cleaned CSV telemetry found for the requested backfill range."
+            )
 
         target_start = _utc_timestamp(start)
         target_end = _utc_timestamp(end)
@@ -1010,7 +1041,9 @@ def run_anomaly_backfill_task(
             & (telemetry_df["timestamp"] <= target_end)
         ].copy()
         if range_df.empty:
-            raise ValueError("No cleaned CSV telemetry found inside the requested backfill range.")
+            raise ValueError(
+                "No cleaned CSV telemetry found inside the requested backfill range."
+            )
 
         _append_terminal_log(
             db,
@@ -1024,7 +1057,8 @@ def run_anomaly_backfill_task(
 
         # --- Rule-based checks over full CSV-backed range ---
         _append_terminal_log(
-            db, pipeline_log,
+            db,
+            pipeline_log,
             f"Running rule-based checks: {len(range_df):,} rows, {range_df['building_id'].nunique()} buildings.",
         )
         rule_events = run_rule_based_checks(
@@ -1036,17 +1070,26 @@ def run_anomaly_backfill_task(
         existing_loc_ids = {
             str(row[0])
             for row in db.query(Location.id)
-            .filter(Location.id.in_(sorted({finding.building_id for finding in rule_events})))
+            .filter(
+                Location.id.in_(
+                    sorted({finding.building_id for finding in rule_events})
+                )
+            )
             .all()
         }
-        persisted = [finding for finding in rule_events if finding.building_id in existing_loc_ids]
+        persisted = [
+            finding
+            for finding in rule_events
+            if finding.building_id in existing_loc_ids
+        ]
         skipped = len(rule_events) - len(persisted)
 
         if persisted:
             AnomalyEventStore(db).insert_findings(persisted)
 
         _append_terminal_log(
-            db, pipeline_log,
+            db,
+            pipeline_log,
             f"Rule-based complete: {len(rule_events)} events, "
             f"{len(persisted)} persisted, {skipped} skipped (unknown buildings).",
         )
@@ -1057,7 +1100,8 @@ def run_anomaly_backfill_task(
         # --- LGBm inference over CSV-backed feature matrix ---
         total_hours = int((end - start).total_seconds() // 3600) + 1
         _append_terminal_log(
-            db, pipeline_log,
+            db,
+            pipeline_log,
             f"Starting LGBm inference for {total_hours} hours from CSV telemetry...",
         )
 
@@ -1090,7 +1134,9 @@ def run_anomaly_backfill_task(
                 f"Weather feature load complete: {weather_feature_cols or 'none'}.",
             )
         else:
-            _append_terminal_log(db, pipeline_log, "Weather features disabled for this model.")
+            _append_terminal_log(
+                db, pipeline_log, "Weather features disabled for this model."
+            )
 
         _append_terminal_log(
             db,
@@ -1111,10 +1157,14 @@ def run_anomaly_backfill_task(
             pipeline_log,
             f"Feature matrix complete: {len(feature_df):,} rows, {len(feature_cols)} model features.",
         )
-        score_df = feature_df[
-            (feature_df["timestamp"] >= target_start)
-            & (feature_df["timestamp"] <= target_end)
-        ].dropna(subset=["consumption"]).copy()
+        score_df = (
+            feature_df[
+                (feature_df["timestamp"] >= target_start)
+                & (feature_df["timestamp"] <= target_end)
+            ]
+            .dropna(subset=["consumption"])
+            .copy()
+        )
         _append_terminal_log(
             db,
             pipeline_log,
@@ -1123,22 +1173,30 @@ def run_anomaly_backfill_task(
 
         if score_df.empty:
             total_written = 0
-            _append_terminal_log(db, pipeline_log, "No non-missing CSV rows available for LGBm scoring.")
+            _append_terminal_log(
+                db, pipeline_log, "No non-missing CSV rows available for LGBm scoring."
+            )
         else:
             existing_loc_ids = {
                 str(row[0])
                 for row in db.query(Location.id)
-                .filter(Location.id.in_(score_df["building_id"].astype(str).unique().tolist()))
+                .filter(
+                    Location.id.in_(
+                        score_df["building_id"].astype(str).unique().tolist()
+                    )
+                )
                 .all()
             }
             before_filter = len(score_df)
-            score_df = score_df[score_df["building_id"].astype(str).isin(existing_loc_ids)].copy()
+            score_df = score_df[
+                score_df["building_id"].astype(str).isin(existing_loc_ids)
+            ].copy()
             skipped_lgbm = before_filter - len(score_df)
 
             score_chunk_size = 50_000
             scored_chunks = []
             for offset_idx in range(0, len(score_df), score_chunk_size):
-                chunk = score_df.iloc[offset_idx: offset_idx + score_chunk_size].copy()
+                chunk = score_df.iloc[offset_idx : offset_idx + score_chunk_size].copy()
                 _append_terminal_log(
                     db,
                     pipeline_log,
@@ -1167,30 +1225,50 @@ def run_anomaly_backfill_task(
 
             records = []
             for _, row in scored.iterrows():
-                records.append({
-                    "building_id": str(row["building_id"]),
-                    "site_id": str(row.get("site_id", "")),
-                    "timestamp": row["timestamp"],
-                    "metric_type_id": str(row.get("metric_type_id", DEFAULT_METRIC_TYPE)),
-                    "primary_space_usage": row.get("primaryspaceusage"),
-                    "actual_value": float(row["consumption"]) if pd.notna(row.get("consumption")) else None,
-                    "predicted_value": float(row["predicted_value"]) if pd.notna(row.get("predicted_value")) else None,
-                    "residual": float(row["residual"]) if pd.notna(row.get("residual")) else None,
-                    "residual_z": float(row["residual_z"]) if pd.notna(row.get("residual_z")) else None,
-                    "anomaly_score": float(row["anomaly_score"]) if pd.notna(row.get("anomaly_score")) else None,
-                    "is_anomaly": bool(row["is_anomaly"]),
-                    "direction": str(row["direction"]) if pd.notna(row.get("direction")) else None,
-                    "severity": str(row["severity"]),
-                    "source": "lgbm",
-                    "mlflow_run_id": None,
-                })
+                records.append(
+                    {
+                        "building_id": str(row["building_id"]),
+                        "site_id": str(row.get("site_id", "")),
+                        "timestamp": row["timestamp"],
+                        "metric_type_id": str(
+                            row.get("metric_type_id", DEFAULT_METRIC_TYPE)
+                        ),
+                        "primary_space_usage": row.get("primaryspaceusage"),
+                        "actual_value": float(row["consumption"])
+                        if pd.notna(row.get("consumption"))
+                        else None,
+                        "predicted_value": float(row["predicted_value"])
+                        if pd.notna(row.get("predicted_value"))
+                        else None,
+                        "residual": float(row["residual"])
+                        if pd.notna(row.get("residual"))
+                        else None,
+                        "residual_z": float(row["residual_z"])
+                        if pd.notna(row.get("residual_z"))
+                        else None,
+                        "anomaly_score": float(row["anomaly_score"])
+                        if pd.notna(row.get("anomaly_score"))
+                        else None,
+                        "is_anomaly": bool(row["is_anomaly"]),
+                        "direction": str(row["direction"])
+                        if pd.notna(row.get("direction"))
+                        else None,
+                        "severity": str(row["severity"]),
+                        "source": "lgbm",
+                        "mlflow_run_id": None,
+                    }
+                )
 
             store = AnomalyEventStore(db)
             chunk_size = 50_000
             for offset_idx in range(0, len(records), chunk_size):
-                chunk = records[offset_idx: offset_idx + chunk_size]
+                chunk = records[offset_idx : offset_idx + chunk_size]
                 store.upsert(chunk, commit=False)
-                if offset_idx == 0 or (offset_idx + len(chunk)) % 5_000 == 0 or offset_idx + len(chunk) == len(records):
+                if (
+                    offset_idx == 0
+                    or (offset_idx + len(chunk)) % 5_000 == 0
+                    or offset_idx + len(chunk) == len(records)
+                ):
                     _append_terminal_log(
                         db,
                         pipeline_log,
@@ -1209,14 +1287,16 @@ def run_anomaly_backfill_task(
                 )
 
         _append_terminal_log(
-            db, pipeline_log,
+            db,
+            pipeline_log,
             f"LGBm inference complete: {total_hours} hours, {total_written} rows written.",
         )
 
         pipeline_log.execution_time_ms = int((perf_counter() - start_perf) * 1000)
         pipeline_log.status = "Success"  # type: ignore
         _append_terminal_log(
-            db, pipeline_log,
+            db,
+            pipeline_log,
             f"Backfill finished in {pipeline_log.execution_time_ms} ms.",
         )
         db.commit()
@@ -1232,7 +1312,9 @@ def run_anomaly_backfill_task(
         if pipeline_log is not None:
             pipeline_log.status = "Failed"  # type: ignore
             pipeline_log.execution_time_ms = int((perf_counter() - start_perf) * 1000)
-            _append_terminal_log(db, pipeline_log, f"Backfill failed: {type(e).__name__}: {e}")
+            _append_terminal_log(
+                db, pipeline_log, f"Backfill failed: {type(e).__name__}: {e}"
+            )
             db.commit()
         raise
 
@@ -1246,4 +1328,304 @@ celery_app.conf.beat_schedule = {
         "task": "run_anomaly_inference_task",
         "schedule": 3600.0,
     },
+    # Monitoring tasks
+    "fill-actuals-every-6h": {
+        "task": "monitoring.fill_prediction_actuals",
+        "schedule": crontab(hour="*/6"),
+        "kwargs": {"hours_lookback": 48},
+    },
+    "evaluate-performance-every-12h": {
+        "task": "monitoring.evaluate_model_performance",
+        "schedule": crontab(hour="*/12"),
+        "kwargs": {"period_hours": 24},
+    },
+    "detect-drift-daily": {
+        "task": "monitoring.detect_model_drift",
+        "schedule": crontab(hour=2, minute=0),
+        "kwargs": {"period_hours": 168},
+    },
+    "check-alerts-every-4h": {
+        "task": "monitoring.check_alerts",
+        "schedule": crontab(hour="*/4"),
+    },
 }
+
+
+# -----------------------------------------
+# Monitoring Celery Tasks
+# -----------------------------------------
+
+
+@celery_app.task(bind=True, name="monitoring.fill_prediction_actuals")
+def fill_prediction_actuals_task(
+    self,
+    hours_lookback: int = 48,
+) -> dict:
+    """Match logged predictions with actual telemetry values.
+
+    This task runs every 6 hours to fill in actual values for
+    predictions that were made within the lookback window.
+
+    Args:
+        hours_lookback: How many hours back to look for unfilled predictions.
+
+    Returns:
+        Dict with count of updated predictions.
+    """
+    db = SessionLocal()
+    try:
+        logger = logging.getLogger(__name__)
+        logger.info("Starting fill_prediction_actuals (lookback=%dh)", hours_lookback)
+
+        prediction_logger = PredictionLogger()
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=hours_lookback)
+
+        # Find distinct building/metric pairs with unfilled predictions
+        pairs = (
+            db.query(
+                PredictionLog.building_id,
+                PredictionLog.metric_type_id,
+            )
+            .filter(
+                PredictionLog.timestamp >= cutoff,
+                PredictionLog.actual_value.is_(None),
+            )
+            .distinct()
+            .all()
+        )
+
+        total_updated = 0
+        for building_id, metric_type_id in pairs:
+            # Load actual telemetry for this building/metric in the time window
+            telemetry_rows = (
+                db.query(TelemetryData)
+                .join(Device, Device.id == TelemetryData.device_id)
+                .filter(
+                    Device.location_id == building_id,
+                    TelemetryData.metric_type_id == metric_type_id,
+                    TelemetryData.timestamp >= cutoff,
+                )
+                .all()
+            )
+
+            if not telemetry_rows:
+                continue
+
+            # Build actuals dict: timestamp -> value
+            actuals: dict[datetime, float] = {}
+            for row in telemetry_rows:
+                ts = row.timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                else:
+                    ts = ts.astimezone(timezone.utc)
+                # Normalize to hour
+                ts_key = ts.replace(minute=0, second=0, microsecond=0)
+                actuals[ts_key] = float(row.value)
+
+            if actuals:
+                updated = prediction_logger.fill_actuals(
+                    db, building_id, metric_type_id, actuals
+                )
+                total_updated += updated
+
+        logger.info(
+            "fill_prediction_actuals completed: %d predictions updated", total_updated
+        )
+        return {"updated_count": total_updated, "pairs_checked": len(pairs)}
+
+    except Exception:
+        logger.exception("fill_prediction_actuals failed")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="monitoring.evaluate_model_performance")
+def evaluate_model_performance_task(
+    self,
+    period_hours: int = 24,
+) -> dict:
+    """Compute MAE/RMSE/MAPE for production models.
+
+    This task runs every 12 hours to evaluate model performance
+    based on prediction logs that have been filled with actuals.
+
+    Args:
+        period_hours: Number of hours to look back for evaluation.
+
+    Returns:
+        Dict with count of evaluated models.
+    """
+    db = SessionLocal()
+    try:
+        logger = logging.getLogger(__name__)
+        logger.info("Starting evaluate_model_performance (period=%dh)", period_hours)
+
+        evaluator = PerformanceEvaluator()
+        records = evaluator.evaluate_all_models(db, period_hours=period_hours)
+
+        logger.info(
+            "evaluate_model_performance completed: %d records created",
+            len(records),
+        )
+        return {
+            "evaluated_models": len(records),
+            "period_hours": period_hours,
+        }
+
+    except Exception:
+        logger.exception("evaluate_model_performance failed")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="monitoring.detect_model_drift")
+def detect_model_drift_task(
+    self,
+    period_hours: int = 168,
+) -> dict:
+    """Run PSI + KS tests on all production models.
+
+    This task runs daily at 2 AM to detect data drift,
+    concept drift, and prediction drift.
+
+    Args:
+        period_hours: Hours to look back (default 168 = 7 days).
+
+    Returns:
+        Dict with count of drift reports generated.
+    """
+    db = SessionLocal()
+    try:
+        logger = logging.getLogger(__name__)
+        logger.info("Starting detect_model_drift (period=%dh)", period_hours)
+
+        # Find all model/version pairs
+        pairs = (
+            db.query(
+                PredictionLog.model_name,
+                PredictionLog.model_version,
+                PredictionLog.model_task,
+                PredictionLog.mlflow_run_id,
+            )
+            .distinct()
+            .all()
+        )
+
+        detector = DriftDetector()
+        total_reports = 0
+
+        for model_name, model_version, model_task, mlflow_run_id in pairs:
+            try:
+                reports = detector.detect_all_drifts(
+                    db,
+                    model_name,
+                    model_version,
+                    period_hours=period_hours,
+                    mlflow_run_id=mlflow_run_id,
+                    model_task=model_task,
+                )
+                total_reports += len(reports)
+            except Exception:
+                logger.exception(
+                    "Failed to detect drift for %s v%s",
+                    model_name,
+                    model_version,
+                )
+
+        # Also calculate health scores for all models
+        calculator = HealthCalculator()
+        health_results = calculator.calculate_all_models(db)
+
+        logger.info(
+            "detect_model_drift completed: %d drift reports, %d health scores",
+            total_reports,
+            len(health_results),
+        )
+        return {
+            "drift_reports": total_reports,
+            "health_scores": len(health_results),
+            "period_hours": period_hours,
+        }
+
+    except Exception:
+        logger.exception("detect_model_drift failed")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="monitoring.check_alerts")
+def check_alerts_task(
+    self,
+) -> dict:
+    """Check for critical drift and performance degradation.
+
+    This task runs every 4 hours to identify models that need attention
+    and could trigger alerts/notifications.
+
+    Returns:
+        Dict with count of alerts and affected models.
+    """
+    db = SessionLocal()
+    try:
+        logger = logging.getLogger(__name__)
+        logger.info("Starting check_alerts")
+
+        calculator = HealthCalculator()
+        health_results = calculator.calculate_all_models(db)
+
+        alerts = []
+        for key, result in health_results.items():
+            if result.status == "critical":
+                alerts.append(
+                    {
+                        "model": key,
+                        "status": "critical",
+                        "health_score": result.health_score,
+                        "reason": "Health score below 40",
+                    }
+                )
+            elif result.status == "degraded":
+                alerts.append(
+                    {
+                        "model": key,
+                        "status": "degraded",
+                        "health_score": result.health_score,
+                        "reason": "Health score below 70",
+                    }
+                )
+
+            # Check for active high/critical drifts
+            if result.active_drifts:
+                for drift in result.active_drifts:
+                    if drift.severity in ("high", "critical"):
+                        alerts.append(
+                            {
+                                "model": key,
+                                "status": drift.severity,
+                                "drift_type": drift.drift_type,
+                                "drift_score": drift.drift_score,
+                                "reason": f"Active {drift.severity} {drift.drift_type}",
+                            }
+                        )
+
+        logger.info(
+            "check_alerts completed: %d alerts for %d models",
+            len(alerts),
+            len(health_results),
+        )
+        return {
+            "total_alerts": len(alerts),
+            "alerts": alerts,
+            "models_checked": len(health_results),
+        }
+
+    except Exception:
+        logger.exception("check_alerts failed")
+        raise
+    finally:
+        db.close()

@@ -1,15 +1,16 @@
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 
-import mlflow
 import mlflow.pyfunc
 import pandas as pd
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 from sqlalchemy.orm import Session
 from src.core.config import settings
-from src.models import Device, Location, MetricType, TelemetryData
+from src.ml.monitoring.prediction_logger import PredictionLogger
+from src.models import Device, Location, MetricType, PredictionLog, TelemetryData
 from src.schemas import (
     ExpectedActualPoint,
     ExpectedActualReportRequest,
@@ -19,6 +20,7 @@ from src.schemas import (
     PredictionScenarioResponse,
 )
 
+logger = logging.getLogger(__name__)
 
 PREDICTION_FEATURE_COLUMNS = [
     "sqm",
@@ -68,7 +70,9 @@ class PredictionModelRepository:
         for version in self._candidate_versions(model_name):
             try:
                 model = mlflow.pyfunc.load_model(f"models:/{model_name}/{version}")
-                return LoadedPredictionModel(name=model_name, version=version, model=model)
+                return LoadedPredictionModel(
+                    name=model_name, version=version, model=model
+                )
             except MlflowException as exc:
                 errors.append(f"{model_name}/{version}: {exc}")
                 continue
@@ -97,7 +101,9 @@ class PredictionModelRepository:
     def _candidate_versions(self, model_name: str) -> list[str]:
         candidates = []
         try:
-            production = self.client.get_model_version_by_alias(model_name, "production")
+            production = self.client.get_model_version_by_alias(
+                model_name, "production"
+            )
             candidates.append(str(production.version))
         except Exception:
             pass
@@ -123,7 +129,9 @@ class PredictionModelRepository:
 
 
 class PredictionFeatureBuilder:
-    def building_profile(self, db: Session, site_id: str, building_id: str) -> BuildingProfile:
+    def building_profile(
+        self, db: Session, site_id: str, building_id: str
+    ) -> BuildingProfile:
         location = db.query(Location).filter(Location.id == building_id).one_or_none()
         if location is None:
             raise ValueError(f"Unknown building: {building_id}")
@@ -210,9 +218,11 @@ class PredictionService:
         self,
         model_repository: PredictionModelRepository | None = None,
         feature_builder: PredictionFeatureBuilder | None = None,
+        prediction_logger: PredictionLogger | None = None,
     ):
         self.model_repository = model_repository or PredictionModelRepository()
         self.feature_builder = feature_builder or PredictionFeatureBuilder()
+        self.prediction_logger = prediction_logger or PredictionLogger()
 
     def predict_scenario(
         self,
@@ -243,6 +253,17 @@ class PredictionService:
             if request.unit_rate is not None
             else None
         )
+
+        # Log predictions for monitoring
+        self._log_prediction_batch(
+            db=db,
+            request=request,
+            model_name=loaded.name,
+            model_version=loaded.version,
+            points=points,
+            features=features,
+        )
+
         return PredictionScenarioResponse(
             site_id=request.site_id,
             building_id=request.building_id,
@@ -302,6 +323,17 @@ class PredictionService:
         variance_percent = (
             (variance_total / expected_total) * 100 if expected_total != 0 else None
         )
+
+        # Log predictions with actuals for monitoring
+        self._log_expected_actual_batch(
+            db=db,
+            request=request,
+            model_name=loaded.name,
+            model_version=loaded.version,
+            points=points,
+            features=features,
+        )
+
         return ExpectedActualReportResponse(
             site_id=request.site_id,
             building_id=request.building_id,
@@ -315,6 +347,88 @@ class PredictionService:
             unit=unit,
             points=points,
         )
+
+    def _log_prediction_batch(
+        self,
+        db: Session,
+        request: PredictionScenarioRequest,
+        model_name: str,
+        model_version: str,
+        points: list[PredictionHourlyPoint],
+        features: pd.DataFrame,
+    ) -> list[PredictionLog]:
+        """Log prediction batch for monitoring."""
+        try:
+            predictions = []
+            for idx, point in enumerate(points):
+                predictions.append(
+                    {
+                        "timestamp": point.timestamp,
+                        "building_id": request.building_id,
+                        "metric_type_id": request.metric_type,
+                        "predicted_value": point.expected_value,
+                        "mlflow_run_id": "",
+                        "model_name": model_name,
+                        "model_version": model_version,
+                        "model_task": "forecasting",
+                        "feature_values": _extract_feature_row(features, idx),
+                        "prediction_context": {
+                            "site_id": request.site_id,
+                            "scenario_date": str(request.scenario_date),
+                        },
+                    }
+                )
+            return self.prediction_logger.log_batch(db, predictions)
+        except Exception:
+            logger.warning("Failed to log predictions for monitoring", exc_info=True)
+            return []
+
+    def _log_expected_actual_batch(
+        self,
+        db: Session,
+        request: ExpectedActualReportRequest,
+        model_name: str,
+        model_version: str,
+        points: list[ExpectedActualPoint],
+        features: pd.DataFrame,
+    ) -> list[PredictionLog]:
+        """Log expected vs actual predictions for monitoring."""
+        try:
+            predictions = []
+            for idx, point in enumerate(points):
+                predictions.append(
+                    {
+                        "timestamp": point.timestamp,
+                        "building_id": request.building_id,
+                        "metric_type_id": request.metric_type,
+                        "predicted_value": point.expected_value,
+                        "mlflow_run_id": "",
+                        "model_name": model_name,
+                        "model_version": model_version,
+                        "model_task": "forecasting",
+                        "feature_values": _extract_feature_row(features, idx),
+                        "prediction_context": {
+                            "site_id": request.site_id,
+                            "start_time": str(request.start_time),
+                            "end_time": str(request.end_time),
+                        },
+                    }
+                )
+            logs = self.prediction_logger.log_batch(db, predictions)
+            # Fill actuals
+            actuals = {
+                _to_utc(p.timestamp): p.actual_value
+                for p in points
+                if p.actual_value is not None
+            }
+            if actuals:
+                self.prediction_logger.fill_actuals(
+                    db, request.building_id, request.metric_type, actuals
+                )
+            return logs
+        except Exception:
+            logger.warning("Failed to log expected/actual predictions", exc_info=True)
+            return []
 
 
 def _predict(model: object, features: pd.DataFrame) -> list[float]:
@@ -343,7 +457,10 @@ def _load_actual_usage(
     )
     return pd.DataFrame(
         [
-            {"timestamp": _to_utc(row.timestamp), "actual_value": float(row.actual_value)}
+            {
+                "timestamp": _to_utc(row.timestamp),
+                "actual_value": float(row.actual_value),
+            }
             for row in rows
         ]
     )
@@ -358,7 +475,9 @@ def _metric_unit(db: Session, metric_type: str) -> str:
 
 
 def _registered_prediction_model_name(site_id: str, metric_type: str) -> str:
-    return _safe_model_name(f"dmp_energy_prediction_{site_id}_{metric_type.strip().lower()}")
+    return _safe_model_name(
+        f"dmp_energy_prediction_{site_id}_{metric_type.strip().lower()}"
+    )
 
 
 def _prediction_model_candidates(
@@ -393,3 +512,9 @@ def _to_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _extract_feature_row(features_df: pd.DataFrame, idx: int) -> dict:
+    """Extract a single feature row as a dict for logging."""
+    row = features_df.iloc[idx]
+    return {col: row[col] for col in features_df.columns}

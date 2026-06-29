@@ -55,6 +55,11 @@ DEFAULT_FORECAST_HORIZON = 24
 # MVP is energy-only features. weather_mode="forecast" (future-weather shift) is Phase 2.
 DEFAULT_WEATHER_MODE = "none"
 
+# Phase 2: weather features aligned to the target time (weather(T+H) on an issue-time T
+# row). The set of modes the forecasting pipeline accepts.
+FORECAST_WEATHER_MODE = "forecast"
+ALLOWED_WEATHER_MODES = {"none", FORECAST_WEATHER_MODE}
+
 # Categorical features passed through OrdinalEncoder(handle_unknown="use_encoded_value").
 CAT_FEATURES = ["building_id", "primaryspaceusage", "timezone"]
 

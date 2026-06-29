@@ -29,6 +29,7 @@ later used to predict ``t + horizon``.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src.ml.forecasting.types import (
@@ -46,6 +47,17 @@ _STATIC_META_COLS = (
     "metric_type_id",
     "site_id",
     "sqm",
+    "primaryspaceusage",
+    "timezone",
+)
+
+# Object-dtype string columns that ride along per building. Categorized early in
+# the cleaner to keep them cheap (int codes) through align/IQR/interp. ``sqm`` is
+# excluded: it is numeric and a model feature.
+_STRING_META_COLS = (
+    "building_id",
+    "metric_type_id",
+    "site_id",
     "primaryspaceusage",
     "timezone",
 )
@@ -90,6 +102,18 @@ def clean_telemetry_for_forecasting(
         return (df.copy(), _empty_stats()) if return_stats else df.copy()
 
     out = df.copy()
+    # Categorize object-dtype string columns up front so they stay cheap (int
+    # codes) through the ~2.5x hourly-grid expansion, IQR outlier step, and
+    # interpolation. On the full electricity grid these columns are ~1+ GB each
+    # as Python strings and were the dominant RAM consumer during cleaning (the
+    # worker OOM). feature_engineering._coerce_input already categorizes the
+    # same columns *after* cleaning; moving it earlier cuts the dominant term
+    # *during* cleaning. sqm is left numeric (it is a model feature).
+    # The dtype==object guard makes this idempotent (a category input on a
+    # second clean pass is left untouched).
+    for _col in _STRING_META_COLS:
+        if _col in out.columns and out[_col].dtype == object:
+            out[_col] = out[_col].astype("category")
     out[timestamp_col] = pd.to_datetime(out[timestamp_col], utc=True, errors="coerce")
     out = out.dropna(subset=[timestamp_col])
     out[value_col] = pd.to_numeric(out[value_col], errors="coerce")
@@ -102,8 +126,11 @@ def clean_telemetry_for_forecasting(
     out = out.sort_values([building_col, timestamp_col]).reset_index(drop=True)
 
     buildings_dropped = 0
+    dropped_building_ids: list[str] = []
     if drop_high_missing:
-        out, buildings_dropped = _drop_high_missing_buildings(out, value_col, building_col)
+        out, buildings_dropped, dropped_building_ids = _drop_high_missing_buildings(
+            out, value_col, building_col
+        )
 
     outliers_flagged = _flag_outliers_iqr(out, timestamp_col, value_col, building_col)
 
@@ -111,14 +138,20 @@ def clean_telemetry_for_forecasting(
 
     stats = {
         "buildings_dropped": buildings_dropped,
+        "dropped_building_ids": dropped_building_ids,
         "outliers_flagged": outliers_flagged,
         "gaps_filled": gaps_filled,
     }
     return (out, stats) if return_stats else out
 
 
-def _empty_stats() -> dict[str, int]:
-    return {"buildings_dropped": 0, "outliers_flagged": 0, "gaps_filled": 0}
+def _empty_stats() -> dict:
+    return {
+        "buildings_dropped": 0,
+        "dropped_building_ids": [],
+        "outliers_flagged": 0,
+        "gaps_filled": 0,
+    }
 
 
 def _nullify_negative_consumption(df: pd.DataFrame, value_col: str) -> None:
@@ -140,7 +173,7 @@ def _align_hourly_grid(
 
     tz = df[timestamp_col].dt.tz
     pieces = []
-    for building_id, group in df.groupby(building_col, sort=False):
+    for building_id, group in df.groupby(building_col, sort=False, observed=True):
         group = group.sort_values(timestamp_col)
         full_hours = pd.date_range(
             group[timestamp_col].min(),
@@ -169,21 +202,25 @@ def _align_hourly_grid(
 
 def _drop_high_missing_buildings(
     df: pd.DataFrame, value_col: str, building_col: str
-) -> tuple[pd.DataFrame, int]:
+) -> tuple[pd.DataFrame, int, list[str]]:
     """Drop buildings whose consumption null-rate exceeds the threshold.
 
     Mirror of ``forecasting_module/preprocessing.py:handle_missing_consumption``
     step 0. Only meaningful for global/all-buildings training.
+
+    Returns ``(filtered_df, n_dropped, dropped_building_ids)``. The dropped IDs
+    travel with the model version (coverage artifact) so the forecast UI can hide
+    buildings the model never saw during training.
     """
     if df.empty:
-        return df, 0
-    missing_rate = df.groupby(building_col)[value_col].apply(
+        return df, 0, []
+    missing_rate = df.groupby(building_col, observed=True)[value_col].apply(
         lambda s: s.isna().mean()
     )
+    drop = missing_rate[missing_rate > MISSING_RATE_THRESHOLD].index.astype(str).tolist()
     keep = missing_rate[missing_rate <= MISSING_RATE_THRESHOLD].index
-    n_dropped = int(len(missing_rate) - len(keep))
     out = df[df[building_col].isin(keep)].copy()
-    return out, n_dropped
+    return out, len(drop), drop
 
 
 def _flag_outliers_iqr(
@@ -197,6 +234,16 @@ def _flag_outliers_iqr(
     Mirror of ``forecasting_module/outlier.py:detect_electricity_outliers``.
     Values strictly outside ``[Q1 - IQR_MULTIPLIER*IQR, Q3 + IQR_MULTIPLIER*IQR]``
     within each (building, hour) group are nulled (the row is kept).
+
+    Vectorized: per-(building,hour) fences are joined onto the frame with a
+    left-merge instead of the former ``list(zip(...))`` + Python dict lookup over
+    every row (which allocated several GB of Python objects on the ~20M-row grid
+    and triggered the worker OOM). ``observed=True`` is required because
+    ``building_col`` is a pandas category by this point (otherwise the groupby
+    would emit fence rows for every unused category). The merge's left frame is
+    ``df[[building_col, "_hour"]]`` so the output is row-aligned with ``df``
+    (each left row matches exactly one fence row, order preserved) — no re-sort
+    is needed before :func:`_interpolate_and_seasonal_fill`.
     """
     if df.empty:
         return 0
@@ -207,29 +254,34 @@ def _flag_outliers_iqr(
         return 0
 
     stats = (
-        observed.groupby([building_col, "_hour"])[value_col]
+        observed.groupby([building_col, "_hour"], observed=True)[value_col]
         .quantile([0.25, 0.75])
         .unstack()
         .rename(columns={0.25: "Q1", 0.75: "Q3"})
+        .reset_index()
     )
     stats["IQR"] = stats["Q3"] - stats["Q1"]
     stats["lower"] = stats["Q1"] - IQR_MULTIPLIER * stats["IQR"]
     stats["upper"] = stats["Q3"] + IQR_MULTIPLIER * stats["IQR"]
 
-    # Map the per-(building,hour) fence onto each row via map on the index keys.
-    # This keeps the result aligned to the ORIGINAL df index (merge would reorder).
-    key = list(zip(df[building_col], df["_hour"]))
-    lower_by_key = stats["lower"].to_dict()
-    upper_by_key = stats["upper"].to_dict()
-    lower = pd.Series([lower_by_key.get(k) for k in key], index=df.index)
-    upper = pd.Series([upper_by_key.get(k) for k in key], index=df.index)
-
-    non_null = df[value_col].notna()
-    out_of_fence = non_null & (
-        (df[value_col] < lower) | (df[value_col] > upper)
+    # Left-join the per-(building,hour) fences onto every row. The left frame
+    # carries df's row order; since each left row matches exactly one fence row,
+    # the merged arrays are positionally aligned with df. Rows whose
+    # (building,hour) had no observed value get NaN fences -> the comparisons
+    # below are False -> not flagged, matching the former ``has_fence`` guard.
+    fences = stats[[building_col, "_hour", "lower", "upper"]]
+    merged = df[[building_col, "_hour"]].merge(
+        fences, on=[building_col, "_hour"], how="left"
     )
-    # Only flip rows where a fence was computed (group had >= 2 distinct values).
-    has_fence = lower.notna() | upper.notna()
+    lower = merged["lower"].to_numpy()
+    upper = merged["upper"].to_numpy()
+    values = df[value_col].to_numpy()
+    non_null = df[value_col].notna().to_numpy()
+
+    out_of_fence = non_null & ((values < lower) | (values > upper))
+    # Explicit guard (redundant given NaN-comparison semantics, but cheap and
+    # self-documenting): only flag where a fence was actually computed.
+    has_fence = (~np.isnan(lower)) | (~np.isnan(upper))
     mask = out_of_fence & has_fence
     n_flagged = int(mask.sum())
 
@@ -252,7 +304,7 @@ def _interpolate_and_seasonal_fill(
         return 0
 
     filled_total = 0
-    for _building_id, idx in df.groupby(building_col, sort=False).groups.items():
+    for _building_id, idx in df.groupby(building_col, sort=False, observed=True).groups.items():
         group = df.loc[idx].sort_index()
         s = group[value_col]
         before = int(s.isna().sum())

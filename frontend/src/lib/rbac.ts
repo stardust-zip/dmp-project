@@ -2,6 +2,7 @@ import type { AuthRole, AuthUser } from "@/types/auth";
 import type { IconName } from "@/types";
 
 export const AI_ENGINEERING_ROLES: AuthRole[] = ["Admin", "AI_Engineer"];
+export const MONITORING_ROLES: AuthRole[] = ["Admin", "AI_Engineer"];
 export const ASSET_DASHBOARD_ROLES: AuthRole[] = ["Admin", "AI_Engineer", "Operator"];
 export const ASSET_MANAGEMENT_ROLES: AuthRole[] = ["Admin"];
 export const USER_MANAGEMENT_ROLES: AuthRole[] = ["Admin"];
@@ -20,6 +21,8 @@ export const MAIN_NAV: NavItem[] = [
   { href: "/forecast", label: "Forecasting", icon: "trend" },
   { href: "/assets", label: "Assets", icon: "map", roles: ASSET_MANAGEMENT_ROLES },
   { href: "/models", label: "AI Engineering", icon: "cpu", roles: AI_ENGINEERING_ROLES },
+  { href: "/monitoring", label: "Monitoring", icon: "gauge", roles: MONITORING_ROLES },
+  { href: "/experiments", label: "Experiments", icon: "sliders", roles: AI_ENGINEERING_ROLES },
   { href: "/users", label: "Users", icon: "users", roles: USER_MANAGEMENT_ROLES },
 ];
 
@@ -31,6 +34,12 @@ export function hasAnyRole(user: AuthUser | null | undefined, roles?: AuthRole[]
 
 export function canAccessPath(user: AuthUser | null | undefined, pathname: string) {
   if (pathname.startsWith("/models")) {
+    return hasAnyRole(user, AI_ENGINEERING_ROLES);
+  }
+  if (pathname.startsWith("/monitoring")) {
+    return hasAnyRole(user, MONITORING_ROLES);
+  }
+  if (pathname.startsWith("/experiments")) {
     return hasAnyRole(user, AI_ENGINEERING_ROLES);
   }
   if (pathname.startsWith("/assets")) {

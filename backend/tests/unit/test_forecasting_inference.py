@@ -72,7 +72,7 @@ def _install_mocks(monkeypatch, pipeline, feature_cols, cat_features, df):
     monkeypatch.setattr(
         inference_module.ForecastingMlflowRegistry,
         "load_production_forecast_model",
-        lambda self, model_name="dmp_energy_forecasting": (pipeline, feature_cols, cat_features, 24, "electricity", "run-123"),
+        lambda self, model_name="dmp_energy_forecasting": (pipeline, feature_cols, cat_features, 24, "electricity", "run-123", "none"),
     )
     monkeypatch.setattr(
         inference_module.ForecastResultStore,
@@ -234,3 +234,73 @@ def test_forecast_for_building_no_production_model(monkeypatch):
             forecast_hours=24,
         )
     assert exc.value.status_code == 404
+
+
+def test_forecast_for_building_weather_mode(monkeypatch):
+    """A weather-trained model: weather loaded + ffilled, future points produced,
+    no missing-column exception at predict (Phase 2)."""
+    from src.ml.anomaly import weather_loaders
+
+    horizon = 24
+    df = _make_single_building_telemetry(n_hours=600)  # B0 / S0
+    wdf = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2017-01-01", periods=700, freq="h", tz="UTC"),
+            "site_id": "S0",
+            "airTemperature": np.arange(700, dtype="float32"),
+        }
+    )
+    feature_df, feature_cols, cat_features = build_forecast_feature_matrix(
+        df, horizon, weather_mode="forecast", weather_df=wdf
+    )
+    train_df, val_df, test_df = _temporal_split(feature_df)
+    pipeline, _m = _fit_and_evaluate(
+        train_df, val_df, test_df, feature_cols, cat_features, MLAlgorithm.LinearRegression
+    )
+
+    monkeypatch.setattr(
+        inference_module.ForecastingMlflowRegistry,
+        "load_production_forecast_model",
+        lambda self, model_name="dmp_energy_forecasting": (
+            pipeline,
+            feature_cols,
+            cat_features,
+            horizon,
+            "electricity",
+            "run-w",
+            "forecast",
+        ),
+    )
+    monkeypatch.setattr(
+        inference_module.ForecastResultStore,
+        "upsert",
+        lambda self, records, commit=True: len(records),
+    )
+    monkeypatch.setattr(inference_module, "_ensure_meter_device", lambda *a, **k: None)
+    monkeypatch.setattr(
+        telemetry_loaders,
+        "query_telemetry_window",
+        lambda db, start, end, metrics=None: df[
+            (df["timestamp"] >= pd.Timestamp(start)) & (df["timestamp"] <= pd.Timestamp(end))
+        ].copy(),
+    )
+    monkeypatch.setattr(
+        weather_loaders,
+        "load_weather_for_range",
+        lambda db, site_ids, start, end: (wdf, ["airTemperature"]),
+    )
+
+    input_start = pd.Timestamp("2017-01-01 00:00", tz="UTC")
+    input_end = input_start + pd.Timedelta(hours=400)
+    result = forecast_for_building(
+        db=None,
+        building_id="B0",
+        metric_type_id="electricity",
+        input_start=input_start,
+        input_end=input_end,
+        forecast_hours=48,
+    )
+    divider = pd.Timestamp(result["divider_timestamp"])
+    future_pts = [p for p in result["points"] if pd.Timestamp(p["timestamp"]) > divider]
+    assert len(future_pts) == 48
+    assert all(p["forecast"] is not None for p in future_pts)

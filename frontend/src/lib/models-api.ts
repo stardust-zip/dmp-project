@@ -451,12 +451,23 @@ export interface ForecastAvailabilityResponse {
   recommended_input_end?: string | null;
 }
 
+export interface ForecastModelCoverageResponse {
+  model_run_id: string | null;
+  trained_building_ids: string[];
+  dropped_building_ids: string[];
+}
+
 export function getForecastAvailability(buildingId: string, metricType: string, signal?: AbortSignal) {
   const search = new URLSearchParams({
     building_id: buildingId,
     metric_type: metricType,
   });
   return apiGet<ForecastAvailabilityResponse>(`/api/v1/forecast/availability?${search.toString()}`, signal);
+}
+
+/** Building coverage of the production forecasting model (trained vs dropped). */
+export function getForecastModelCoverage(signal?: AbortSignal) {
+  return apiGet<ForecastModelCoverageResponse>("/api/v1/forecast/model-coverage", signal);
 }
 
 /** Generate a real future forecast (sync) and overlay it on recent actuals. */

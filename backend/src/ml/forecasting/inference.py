@@ -28,11 +28,14 @@ import logging
 from typing import Any
 
 import pandas as pd
-from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
+from src.ml.forecasting.feature_engineering import (
+    FEATURE_COLUMNS,
+    build_forecast_feature_matrix,
+)
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
 from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
 from src.ml.forecasting.store import ForecastResultStore, _ensure_meter_device
-from src.ml.forecasting.types import LOOKBACK_HOURS
+from src.ml.forecasting.types import FORECAST_WEATHER_MODE, LOOKBACK_HOURS
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,133 @@ def _static_columns(df: pd.DataFrame) -> dict[str, Any]:
         "primaryspaceusage": row.get("primaryspaceusage"),
         "timezone": row.get("timezone"),
     }
+
+
+def _prepare_inference_weather(
+    db,
+    site_id,
+    model_feature_cols: list[str],
+    wstart: pd.Timestamp,
+    wend: pd.Timestamp,
+) -> pd.DataFrame:
+    """Build a per-site weather frame for forecast-mode inference.
+
+    Loads observed weather for ``[wstart, wend]``, lays it on a complete hourly
+    grid, and carries the last observed value forward (ffill, bfill the leading
+    edge) so the future region beyond observed weather is filled (the chosen
+    future-weather fallback). Only the weather columns the model expects (those in
+    ``model_feature_cols`` but not in the energy-only :data:`FEATURE_COLUMNS`) are
+    kept; any expected column with no observation stays NaN for the pipeline's
+    SimpleImputer. Returns an empty frame if the model has no weather columns or
+    there is no site_id. The feature builder shifts this frame by ``-H``
+    internally, so its timestamps are the TARGET times T+H.
+    """
+    from src.ml.anomaly.weather_loaders import load_weather_for_range
+
+    weather_cols = [c for c in model_feature_cols if c not in FEATURE_COLUMNS]
+    if not weather_cols or site_id is None:
+        return pd.DataFrame()
+
+    grid = pd.DataFrame({"timestamp": pd.date_range(wstart, wend, freq="1h")})
+    grid["site_id"] = site_id
+
+    observed, _obs_cols = load_weather_for_range(db, [site_id], wstart, wend)
+    if not observed.empty:
+        obs = observed.copy()
+        obs["timestamp"] = pd.to_datetime(obs["timestamp"], utc=True)
+        present = [c for c in weather_cols if c in obs.columns]
+        if present:
+            grid = grid.merge(
+                obs[["timestamp", "site_id"] + present],
+                on=["timestamp", "site_id"],
+                how="left",
+            )
+            for c in present:
+                grid[c] = grid[c].ffill().bfill()
+    # Ensure every expected weather column exists; unobserved ones stay NaN so the
+    # pipeline's SimpleImputer fills them (inference mode does not drop NaN weather).
+    for c in weather_cols:
+        if c not in grid.columns:
+            grid[c] = pd.NA
+    return grid
+
+
+def _log_forecasts_for_monitoring(
+    db,
+    *,
+    building_id: str,
+    metric_type_id: str,
+    future_map: dict,
+    overlay_map: dict | None = None,
+    actual_map: dict | None = None,
+    mlflow_run_id: str,
+    model_name: str,
+    model_version: str = "unknown",
+) -> None:
+    """Log forecast predictions to prediction_log for monitoring.
+
+    Overlay predictions (past honest forecasts) are logged with actual_value
+    already populated so that performance evaluation works immediately after
+    a forecast run without waiting for the fill_actuals Celery task.
+    """
+    try:
+        predictions = []
+
+        # Overlay predictions: past honest H-ahead forecasts where actuals are known.
+        # Logging these with actual_value pre-filled lets the evaluator run right away.
+        if overlay_map and actual_map:
+            for ts, predicted in sorted(overlay_map.items()):
+                ts_key = ts.replace(minute=0, second=0, microsecond=0)
+                actual = actual_map.get(ts_key)
+                entry: dict = {
+                    "timestamp": ts.to_pydatetime()
+                    if hasattr(ts, "to_pydatetime")
+                    else ts,
+                    "building_id": building_id,
+                    "metric_type_id": metric_type_id,
+                    "predicted_value": float(predicted),
+                    "mlflow_run_id": mlflow_run_id,
+                    "model_name": model_name,
+                    "model_version": model_version,
+                    "model_task": "forecasting",
+                    "feature_values": None,
+                    "prediction_context": {"source": "forecast_overlay"},
+                }
+                if actual is not None:
+                    entry["actual_value"] = float(actual)
+                    entry["error"] = float(actual) - float(predicted)
+                predictions.append(entry)
+
+        # Future predictions: no actuals yet; fill_actuals task populates them later.
+        for ts, value in sorted(future_map.items()):
+            predictions.append(
+                {
+                    "timestamp": ts.to_pydatetime()
+                    if hasattr(ts, "to_pydatetime")
+                    else ts,
+                    "building_id": building_id,
+                    "metric_type_id": metric_type_id,
+                    "predicted_value": float(value),
+                    "mlflow_run_id": mlflow_run_id,
+                    "model_name": model_name,
+                    "model_version": model_version,
+                    "model_task": "forecasting",
+                    "feature_values": None,
+                    "prediction_context": {"source": "forecast_pipeline"},
+                }
+            )
+
+        from src.ml.monitoring.prediction_logger import PredictionLogger
+
+        PredictionLogger().log_batch(db, predictions)
+        with_actuals = sum(1 for p in predictions if p.get("actual_value") is not None)
+        logger.info(
+            "Logged %d forecast predictions to prediction_log for monitoring (%d with actuals)",
+            len(predictions),
+            with_actuals,
+        )
+    except Exception:
+        logger.warning("Failed to log forecasts for monitoring", exc_info=True)
 
 
 def forecast_for_building(
@@ -113,7 +243,7 @@ def forecast_for_building(
             "No production forecasting model is available. Train one first.",
             status_code=404,
         )
-    pipeline, feature_cols, _cat_features, horizon, metric_tag, run_id = loaded
+    pipeline, feature_cols, _cat_features, horizon, metric_tag, run_id, weather_mode = loaded
     supported_metrics = {m.strip() for m in str(metric_tag).split(",") if m.strip()}
     if supported_metrics and metric_type_id not in supported_metrics:
         raise ForecastError(
@@ -160,11 +290,32 @@ def forecast_for_building(
             f"excessive missing data in the input window.",
         )
 
+    # --- Phase 2: prepare weather once (forecast mode) ---
+    # Build a per-site weather frame covering target times [input_start,
+    # input_end + forecast_hours], ffilled into the future. The feature builder
+    # shifts it by -H internally, so each issue-time row T receives weather at
+    # target T+H. Computed once here (weather is static across recursive waves).
+    if weather_mode == FORECAST_WEATHER_MODE:
+        _site_id = df["site_id"].dropna().iloc[0] if df["site_id"].notna().any() else None
+        weather_df = _prepare_inference_weather(
+            db,
+            _site_id,
+            feature_cols,
+            input_start,
+            input_end + pd.Timedelta(hours=forecast_hours),
+        )
+    else:
+        weather_df = pd.DataFrame()
+
     overlay_start = input_start + pd.Timedelta(hours=LOOKBACK_HOURS) + H_td
 
     # --- Overlay: honest H-ahead forecasts on REAL features ---
     feat_actual, _, _ = build_forecast_feature_matrix(
-        df, forecast_horizon_hours=H, weather_mode="none", include_target=False
+        df,
+        forecast_horizon_hours=H,
+        weather_mode=weather_mode,
+        include_target=False,
+        weather_df=weather_df,
     )
     overlay_map: dict[pd.Timestamp, float] = {}
     t_lo = overlay_start - H_td  # = input_start + LOOKBACK
@@ -194,8 +345,9 @@ def forecast_for_building(
         feat, _, _ = build_forecast_feature_matrix(
             series_df,
             forecast_horizon_hours=H,
-            weather_mode="none",
+            weather_mode=weather_mode,
             include_target=False,
+            weather_df=weather_df,
         )
         avail = feat[feat["timestamp"].isin(wave_t_issue)]
         if avail.empty:
@@ -254,12 +406,35 @@ def forecast_for_building(
         metric_type_id,
     )
 
-    # --- Merged timeline for the chart ---
+    # --- Build actual_map BEFORE logging for monitoring ---
     actual_map = {
         pd.Timestamp(ts): float(v)
         for ts, v in zip(df["timestamp"], df["consumption"])
         if pd.notna(v)
     }
+
+    # --- Log predictions for monitoring ---
+    # Get model version for logging
+    _model_version = "unknown"
+    try:
+        _reg = ForecastingMlflowRegistry()
+        _v = _reg.find_production_version(used_model_name)
+        if _v is not None:
+            _model_version = str(_v.version)
+    except Exception:
+        pass
+
+    _log_forecasts_for_monitoring(
+        db=db,
+        building_id=building_id,
+        metric_type_id=metric_type_id,
+        future_map=future_map,
+        overlay_map=overlay_map,
+        actual_map=actual_map,
+        mlflow_run_id=run_id,
+        model_name=used_model_name,
+        model_version=_model_version,
+    )
     forecast_map = {**overlay_map, **future_map}
     all_ts = sorted(set(actual_map) | set(forecast_map))
     points = [

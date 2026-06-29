@@ -66,10 +66,75 @@ def test_build_forecast_feature_matrix_contract_and_target():
     assert np.isclose(b0.loc[1, "lag_1h"], b0.loc[0, "consumption"])
 
 
-def test_build_forecast_feature_matrix_rejects_unsupported_weather_mode():
+def test_build_forecast_feature_matrix_rejects_unknown_weather_mode():
     df = _make_telemetry(n_hours=300, n_buildings=1)
-    with pytest.raises(NotImplementedError):
-        build_forecast_feature_matrix(df, weather_mode="forecast")
+    with pytest.raises(ValueError):
+        build_forecast_feature_matrix(df, weather_mode="bogus")
+
+
+# --------------------------------------------------------------------------
+# Phase 2: weather features (forecast mode) — weather(T+H) on an issue-time T row.
+# --------------------------------------------------------------------------
+
+
+def _make_weather(n_hours: int, site_id: str = "S0") -> pd.DataFrame:
+    """Synthetic per-site hourly weather; airTemperature(T) == hour index."""
+    ts = pd.date_range("2017-01-01", periods=n_hours, freq="h", tz="UTC")
+    return pd.DataFrame(
+        {
+            "timestamp": ts,
+            "site_id": site_id,
+            "airTemperature": np.arange(n_hours, dtype="float32"),
+            "windSpeed": np.full(n_hours, 5.0, dtype="float32"),
+        }
+    )
+
+
+def test_forecast_weather_mode_appends_weather_columns():
+    horizon = 24
+    df = _make_telemetry(n_hours=400, n_buildings=1)  # building B0, site S0
+    wdf = _make_weather(n_hours=400 + horizon, site_id="S0")
+    feat, feature_cols, _ = build_forecast_feature_matrix(
+        df, horizon, weather_mode="forecast", weather_df=wdf
+    )
+    # Weather cols append after the energy-only FEATURE_COLUMNS (order preserved).
+    assert feature_cols[: len(FEATURE_COLUMNS)] == FEATURE_COLUMNS
+    weather_cols = [c for c in feature_cols if c not in FEATURE_COLUMNS]
+    assert set(weather_cols) == {"airTemperature", "windSpeed"}
+    # No nulls survive in training mode (NaN-weather rows are dropped).
+    assert not feat[feature_cols + ["target"]].isnull().any().any()
+
+
+def test_forecast_weather_shift_is_target_time():
+    """The weather feature on an issue-time row T must be weather(T+H) (-H shift)."""
+    horizon = 24
+    df = _make_telemetry(n_hours=400, n_buildings=1)  # site S0, airTemperature(i)=i
+    wdf = _make_weather(n_hours=400 + horizon, site_id="S0")
+    feat, _, _ = build_forecast_feature_matrix(
+        df, horizon, weather_mode="forecast", weather_df=wdf
+    )
+    b0 = feat[feat["building_id"] == "B0"].sort_values("timestamp").reset_index(drop=True)
+    # First surviving row is at issue hour 168 (lag_168h warmup); its weather must
+    # be the weather at target time 168 + horizon.
+    first_issue_hour = 168
+    assert np.isclose(b0.loc[0, "airTemperature"], first_issue_hour + horizon)
+    assert np.isclose(b0.loc[1, "airTemperature"], (first_issue_hour + 1) + horizon)
+
+
+def test_forecast_weather_partial_coverage_drops_in_training_only():
+    """Training drops rows lacking weather; inference keeps them (imputer fills)."""
+    horizon = 24
+    df = _make_telemetry(n_hours=400, n_buildings=1)
+    # Weather covers only the first ~300 target-hours; later rows lack weather.
+    wdf = _make_weather(n_hours=324, site_id="S0")
+    feat_train, _, _ = build_forecast_feature_matrix(
+        df, horizon, weather_mode="forecast", weather_df=wdf
+    )  # include_target=True (training)
+    feat_inf, _, _ = build_forecast_feature_matrix(
+        df, horizon, weather_mode="forecast", weather_df=wdf, include_target=False
+    )
+    assert 0 < len(feat_train) < len(feat_inf)
+    assert not feat_train["airTemperature"].isnull().any()
 
 
 def _temporal_split(feature_df: pd.DataFrame):
@@ -123,6 +188,30 @@ def test_mape_returns_percent():
     assert np.isfinite(result)
     assert np.isclose(result, ratio * 100.0)
     assert 1.0 < result < 100.0  # a sensible percentage, not 0.02 nor ~400
+
+
+def test_mape_masks_near_zero_actuals():
+    """Actuals <= MAPE_MIN_ACTUAL kWh are excluded so they can't blow up MAPE.
+
+    Regression for the ~10,887% MAPE caused by interpolated near-zero actuals
+    (see ``notebooks/forecasting/EDA/diagnose_mape.py``).
+    """
+    from src.ml.forecasting.training import MAPE_MIN_ACTUAL
+
+    # The first actual is ~0; without the mask this point alone would be a
+    # 1,000,000% error. It must be dropped, leaving only the 10/20/30 points.
+    y_true = np.array([0.001, 10.0, 20.0, 30.0])
+    y_pred = np.array([10.0, 11.0, 19.0, 33.0])
+    result = _mape(y_true, y_pred)
+
+    kept = y_true > MAPE_MIN_ACTUAL
+    expected = np.mean(np.abs((y_true[kept] - y_pred[kept]) / y_true[kept])) * 100.0
+    assert np.isfinite(result)
+    assert np.isclose(result, expected)
+    assert result < 100.0  # not exploded by the 0.001 actual
+
+    # All actuals below the floor -> nothing to average -> NaN (not inf/raise).
+    assert np.isnan(_mape(np.array([0.0, 0.5]), np.array([1.0, 2.0])))
 
 
 # --------------------------------------------------------------------------
@@ -190,6 +279,7 @@ def test_clean_drops_high_missing_building():
     assert "B1" not in set(cleaned["building_id"])
     assert "B0" in set(cleaned["building_id"])
     assert stats["buildings_dropped"] == 1
+    assert stats["dropped_building_ids"] == ["B1"]
 
 
 def test_clean_is_idempotent():

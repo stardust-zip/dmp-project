@@ -90,6 +90,8 @@ def query_telemetry_window(
     df["sub_primaryspaceusage"] = df["building_id"].map(
         lambda b: loc_meta.get(b, {}).get("sub_primaryspaceusage")
     )
+    null_sub = df["sub_primaryspaceusage"].isna()
+    df.loc[null_sub, "sub_primaryspaceusage"] = df.loc[null_sub, "primaryspaceusage"]
     df.sort_values(["timestamp", "building_id"], inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
@@ -97,7 +99,12 @@ def query_telemetry_window(
 
 def _load_telemetry_from_db(db: Session, request: ModelTrainingRequest) -> pd.DataFrame:
     lookback_start = request.time_range_start - timedelta(hours=LOOKBACK_HOURS)
-    return query_telemetry_window(db, lookback_start, request.time_range_end)
+    return query_telemetry_window(
+        db,
+        lookback_start,
+        request.time_range_end,
+        metrics=request.metrics,
+    )
 
 
 def _load_telemetry_from_csv(db: Session, request: ModelTrainingRequest) -> pd.DataFrame:

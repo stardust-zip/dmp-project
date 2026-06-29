@@ -136,7 +136,7 @@ export function Card({
   icon?: IconName;
   iconTone?: Tone;
   actions?: ReactNode;
-  children: ReactNode;
+  children?: ReactNode;
   bodyClass?: string;
   noBody?: boolean;
   style?: CSSProperties;

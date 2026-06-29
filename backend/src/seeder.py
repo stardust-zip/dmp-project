@@ -17,6 +17,7 @@ logger = logging.getLogger("seeder")
 
 DEFAULT_META_CSV = "/app/data/raw/data/metadata/metadata.csv"
 DEFAULT_METER_DIR = "/app/data/raw/data/meters/cleaned"
+DEFAULT_WEATHER_CSV = "/app/data/raw/data/weather/weather.csv"
 DEFAULT_CHUNK_SIZE = 10_000
 DEFAULT_BATCH_SIZE = 10_000
 DEFAULT_DEV_LIMIT = 1_000
@@ -60,12 +61,14 @@ def _parse_metrics(raw: str | None) -> tuple[str, ...]:
     return parsed
 
 
-def _validate_data_paths(meta_csv: str, meter_dir: str) -> None:
+def _validate_data_paths(meta_csv: str, meter_dir: str, weather_csv: str) -> None:
     """Warn if expected data paths don't exist, but don't abort."""
     if not Path(meta_csv).exists():
         logger.warning("Metadata CSV not found at: %s", meta_csv)
     if not Path(meter_dir).is_dir():
         logger.warning("Meter directory not found at: %s", meter_dir)
+    if not Path(weather_csv).exists():
+        logger.warning("Weather CSV not found at: %s", weather_csv)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -119,14 +122,14 @@ def _run_telemetry_phase(
     )
 
 
-def _run_weather_phase(db: Session) -> None:
+def _run_weather_phase(db: Session, weather_csv: str) -> None:
     from src.seeders.weather import seed_weather_data
 
     logger.info("=" * 60)
     logger.info("PHASE 1/1: Weather data → context_data")
     logger.info("=" * 60)
 
-    summary = seed_weather_data(db)
+    summary = seed_weather_data(db, csv_path=weather_csv)
     logger.info("Weather summary: %s", summary)
 
 
@@ -141,13 +144,14 @@ def run_seeder(
     metrics: tuple[str, ...] = ALL_METRICS,
     meta_csv: str = DEFAULT_META_CSV,
     meter_dir: str = DEFAULT_METER_DIR,
+    weather_csv: str = DEFAULT_WEATHER_CSV,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     batch_size: int = DEFAULT_BATCH_SIZE,
     limit: int | None = DEFAULT_DEV_LIMIT,
 ) -> None:
     """Programmatic entry point for the seeder."""
 
-    _validate_data_paths(meta_csv, meter_dir)
+    _validate_data_paths(meta_csv, meter_dir, weather_csv)
 
     init_db()
     db = SessionLocal()
@@ -159,8 +163,8 @@ def run_seeder(
         if phase in ("telemetry", "all"):
             _run_telemetry_phase(db, meter_dir, metrics, chunk_size, batch_size, limit)
 
-        if phase == "weather":
-            _run_weather_phase(db)
+        if phase in ("weather", "all"):
+            _run_weather_phase(db, weather_csv)
 
         logger.info("Database seeding completed successfully.")
 
@@ -227,6 +231,13 @@ if __name__ == "__main__":
             "Overrides --data-dir for meter files."
         ),
     )
+    parser.add_argument(
+        "--weather-csv",
+        default=None,
+        help=(
+            "Explicit path to weather.csv. Overrides --data-dir for the weather file."
+        ),
+    )
 
     parser.add_argument(
         "--chunk-size",
@@ -264,6 +275,9 @@ if __name__ == "__main__":
     meter_dir = args.meter_dir or str(
         Path(args.data_dir) / "data" / "meters" / "cleaned"
     )
+    weather_csv = args.weather_csv or str(
+        Path(args.data_dir) / "data" / "weather" / "weather.csv"
+    )
 
     final_limit: int | None = None if args.full else args.limit
     final_metrics = _parse_metrics(args.metrics)
@@ -273,6 +287,7 @@ if __name__ == "__main__":
     logger.info("  metrics    = %s", ", ".join(final_metrics))
     logger.info("  meta_csv   = %s", meta_csv)
     logger.info("  meter_dir  = %s", meter_dir)
+    logger.info("  weather_csv= %s", weather_csv)
     logger.info("  chunk_size = %d", args.chunk_size)
     logger.info("  batch_size = %d", args.batch_size)
     logger.info(
@@ -284,6 +299,7 @@ if __name__ == "__main__":
         metrics=final_metrics,
         meta_csv=meta_csv,
         meter_dir=meter_dir,
+        weather_csv=weather_csv,
         chunk_size=args.chunk_size,
         batch_size=args.batch_size,
         limit=final_limit,

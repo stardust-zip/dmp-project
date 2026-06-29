@@ -23,6 +23,7 @@ Design notes
 
 from __future__ import annotations
 
+import gc
 import logging
 
 import lightgbm as lgb
@@ -36,20 +37,24 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 from sqlalchemy.orm import Session
-from src.ml.anomaly.telemetry_loaders import load_telemetry_for_training
+from src.ml.anomaly.telemetry_loaders import (
+    downcast_telemetry_dtypes,
+    load_telemetry_for_training,
+)
+from src.ml.anomaly.weather_loaders import load_weather_for_range
 from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
 from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
 from src.ml.forecasting.types import (
     DEFAULT_FORECAST_HORIZON,
     DEFAULT_WEATHER_MODE,
+    FORECAST_WEATHER_MODE,
     LOOKBACK_HOURS,
     RANDOM_STATE,
     forecast_model_name,
 )
-from src.ml.training import algorithm_for_task
 from src.models import AIPipelineLog
-from src.schemas import MLAlgorithm, ModelTask, ModelTrainingRequest
+from src.schemas import MLAlgorithm, ModelTrainingRequest
 from xgboost import XGBRegressor
 
 logger = logging.getLogger(__name__)
@@ -57,25 +62,56 @@ logger = logging.getLogger(__name__)
 TARGET_COLUMN = "target"
 EARLY_STOPPING_ROUNDS = 100
 
+# MAPE divides by the actual, so near-zero actuals blow it up without bound: a
+# 0.001 kWh actual with a 5 kWh prediction is a 500,000% error. Masking only
+# exact zeros (|y| <= 1e-9) left test MAPE at ~10,887% on real data; masking
+# actuals <= 1 kWh brings it to a stable ~17%. See
+# ``notebooks/forecasting/EDA/diagnose_mape.py`` for the measurement.
+MAPE_MIN_ACTUAL = 1.0
+
+# Tree-learner device. The Celery worker is CPU-only; on CPU n_jobs=-1 uses all
+# cores, while on GPU a single job is preferred (XGBoost parallelizes on GPU).
+TREE_DEVICE = "cpu"
+
+# XGBoost: squared-error (RMSE) objective with RMSE-driven early stopping. This
+# replaces the former reg:absoluteerror (MAE) objective. ``device``/``tree_method``
+# require XGBoost >= 2.0 (pyproject pins >= 2.0.3). early_stopping_rounds=200 is
+# set in the constructor (the LightGBM path keeps its own EARLY_STOPPING_ROUNDS).
 XGB_PARAMS = {
-    "n_estimators": 2000,
+    "objective": "reg:squarederror",
+    "eval_metric": "rmse",
+    "n_estimators": 1500,
+    "early_stopping_rounds": 200,
     "learning_rate": 0.05,
     "max_depth": 8,
-    "objective": "reg:absoluteerror",
-    "tree_method": "hist",
-    "early_stopping_rounds": EARLY_STOPPING_ROUNDS,
+    "min_child_weight": 10,
+    "subsample": 0.8,
+    "colsample_bytree": 0.6,
+    "reg_alpha": 2,
+    "reg_lambda": 1.0,
     "random_state": RANDOM_STATE,
+    "n_jobs": -1 if TREE_DEVICE == "cpu" else 1,
+    "tree_method": "hist",
+    "device": TREE_DEVICE,
 }
 LGBM_PARAMS = {
     "objective": "regression",
     "metric": "rmse",
-    "n_estimators": 2000,
+    "n_estimators": 1500,
     "learning_rate": 0.05,
+    "num_leaves": 511,
     "max_depth": 8,
-    "subsample": 0.85,
-    "colsample_bytree": 0.85,
+    "min_child_samples": 50,
+    "feature_fraction": 0.7,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "reg_alpha": 2,
+    "reg_lambda": 1.0,
+    "min_gain_to_split": 0.01,
     "random_state": RANDOM_STATE,
+    "n_jobs": -1 if TREE_DEVICE == "cpu" else 1,
     "verbose": -1,
+    "device": TREE_DEVICE,
 }
 
 
@@ -111,10 +147,16 @@ def _mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
     Matches the frontend's ``unit: "%"`` rendering; ``test_mape`` stored in
     MLflow is therefore a percentage, not a raw ratio.
+
+    Actuals <= ``MAPE_MIN_ACTUAL`` kWh are masked out before averaging. MAPE is
+    unbounded and divides by the actual, so near-zero actuals (interpolated
+    night-time consumption etc.) each contribute thousands of percent and
+    dominate the mean; a 1 kWh floor keeps the metric stable while staying
+    physically meaningful.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
-    mask = np.abs(y_true) > 1e-9
+    mask = np.abs(y_true) > MAPE_MIN_ACTUAL
     if not mask.any():
         return float("nan")
     return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100.0)
@@ -137,16 +179,20 @@ def _fit_and_evaluate(
     preprocessor = _build_preprocessor(cat_features, num_features)
     preprocessor.fit(train_df[feature_cols])
 
-    x_train = preprocessor.transform(train_df[feature_cols])
-    x_test = preprocessor.transform(test_df[feature_cols])
-    y_train = train_df[TARGET_COLUMN].to_numpy(dtype=float)
-    y_test = test_df[TARGET_COLUMN].to_numpy(dtype=float)
+    # Cast the transformed matrices to float32 before fitting: it halves the
+    # memory of x_train/x_val/x_test (the largest allocations at training time on
+    # the full grid), and XGBoost's tree_method="hist" consumes float32 natively.
+    # Early stopping is keyed on iteration count, not dtype, so it is unaffected.
+    x_train = preprocessor.transform(train_df[feature_cols]).astype(np.float32)
+    x_test = preprocessor.transform(test_df[feature_cols]).astype(np.float32)
+    y_train = train_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
+    y_test = test_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
 
     estimator = _make_estimator(algorithm)
     fit_kwargs: dict = {}
     if algorithm != MLAlgorithm.LinearRegression and not val_df.empty:
-        x_val = preprocessor.transform(val_df[feature_cols])
-        y_val = val_df[TARGET_COLUMN].to_numpy(dtype=float)
+        x_val = preprocessor.transform(val_df[feature_cols]).astype(np.float32)
+        y_val = val_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
         fit_kwargs["eval_set"] = [(x_val, y_val)]
         if algorithm == MLAlgorithm.LightGBM:
             fit_kwargs["callbacks"] = [
@@ -189,11 +235,8 @@ def train_forecasting_model(
 
     horizon = int(getattr(request, "forecast_horizon_hours", DEFAULT_FORECAST_HORIZON))
     weather_mode = getattr(request, "weather_mode", DEFAULT_WEATHER_MODE)
-    algorithm = (
-        MLAlgorithm(request.algorithm)
-        if getattr(request, "algorithm", None)
-        else algorithm_for_task(ModelTask.Forecasting)
-    )
+    # Forecasting trains LightGBM (best-performing on this data).
+    algorithm = MLAlgorithm.LightGBM
 
     # --- Determine whether we're training per-building or globally ---
     target_building_id = request.building_id or None
@@ -233,6 +276,13 @@ def train_forecasting_model(
     else:
         append_log(f"Loaded {len(df):,} rows, {df['building_id'].nunique()} buildings.")
 
+    # Downcast float64->float32 BEFORE cleaning so the ~2.5x hourly-grid expansion
+    # and the IQR/interpolate steps operate on half-size numerics. Mirrors the
+    # anomaly module's downcast_telemetry_dtypes (the portable part of its memory
+    # strategy; anomaly's chunked training is not viable here because forecasting
+    # uses XGBRegressor, whose sklearn API has no incremental/init_model fit).
+    downcast_telemetry_dtypes(df)
+
     # --- Clean telemetry: hourly align, IQR outliers->null, interpolate/seasonal-fill.
     # Single shared cleaner with inference (no train/serve skew). High-missing
     # buildings are only dropped in global (all-buildings) mode; a single,
@@ -252,12 +302,40 @@ def train_forecasting_model(
         f"{clean_stats['buildings_dropped']} buildings dropped (>30% missing)."
     )
 
+    # Re-downcast (cleaning may upcast during align/interpolate) and release the
+    # transient intermediates before the feature-matrix build allocates again.
+    downcast_telemetry_dtypes(df)
+    gc.collect()
+
+    # --- Phase 2: load weather when weather_mode == "forecast" ---
+    # Direct h-step-ahead: weather features reference the target time T+H, so load
+    # weather covering [start, end + horizon] (target times). The feature builder
+    # shifts it by -H internally. Weather coverage is ~2016-2017; rows outside it
+    # have NaN weather and are dropped by the builder's dropna (training mode), so
+    # a range extending beyond 2016-2017 reduces the training set.
+    weather_df = pd.DataFrame()
+    if weather_mode == FORECAST_WEATHER_MODE:
+        site_ids = df["site_id"].dropna().unique().tolist()
+        if site_ids:
+            wstart = pd.Timestamp(request.time_range_start)
+            wend = pd.Timestamp(request.time_range_end) + pd.Timedelta(hours=horizon)
+            weather_df, _weather_cols = load_weather_for_range(db, site_ids, wstart, wend)
+            if weather_df.empty:
+                append_log(
+                    "No weather data for the requested range; "
+                    "rows without weather coverage will be dropped."
+                )
+            else:
+                append_log(f"Weather loaded: {_weather_cols}")
+        else:
+            append_log("No site_ids in telemetry; skipping weather load.")
+
     # --- Feature matrix (single shared builder; used by inference too) ---
     append_log(
         f"Building feature matrix (horizon={horizon}h, weather={weather_mode})..."
     )
     feature_df, feature_cols, cat_features = build_forecast_feature_matrix(
-        df, horizon, weather_mode
+        df, horizon, weather_mode, weather_df=weather_df
     )
     if feature_df.empty:
         raise ValueError(
@@ -296,6 +374,18 @@ def train_forecasting_model(
             "Validation split is empty; cannot apply early stopping. Widen the time range."
         )
 
+    # Capture the values we still need from the large frames, then FREE them
+    # before the fit. This is the peak-memory moment: the cleaned frame (df),
+    # the full feature matrix (feature_df), the three split copies, the
+    # transformed X matrices, and XGBoost's internal allocations all overlap.
+    # The splits are independent copies, so deleting df/feature_df is safe.
+    # Mirrors anomaly's `del df; gc.collect()` before training.
+    trained_building_ids = sorted(df["building_id"].astype(str).unique().tolist())
+    training_rows = len(feature_df)
+    n_buildings = int(feature_df["building_id"].nunique())
+    del df, feature_df
+    gc.collect()
+
     # --- Train + evaluate ---
     append_log(f"Training {algorithm.value} (direct {horizon}h-ahead)...")
     pipeline, metrics = _fit_and_evaluate(
@@ -320,6 +410,19 @@ def train_forecasting_model(
         model_name=model_name,
     )
     append_log(f"Model registered as {model_name}.")
+
+    # --- Record building coverage so the forecast UI can hide dropped buildings. ---
+    # trained_building_ids was captured before the fit (df is freed by then).
+    dropped_building_ids = sorted(clean_stats.get("dropped_building_ids", []))
+    registry.log_coverage_artifact(
+        trained_building_ids=trained_building_ids,
+        dropped_building_ids=dropped_building_ids,
+    )
+    append_log(
+        f"Coverage: {len(trained_building_ids)} building(s) trained, "
+        f"{len(dropped_building_ids)} dropped (>30% missing)."
+    )
+
     # Auto-promote the freshly trained version to production so inference can
     # load it immediately (no manual MLflow UI step required).
     if version:
@@ -330,7 +433,7 @@ def train_forecasting_model(
         "test_mae": metrics["test_mae"],
         "test_rmse": metrics["test_rmse"],
         "test_mape": metrics["test_mape"],
-        "training_rows": float(len(feature_df)),
-        "n_buildings": float(feature_df["building_id"].nunique()),
+        "training_rows": float(training_rows),
+        "n_buildings": float(n_buildings),
         "horizon": float(horizon),
     }

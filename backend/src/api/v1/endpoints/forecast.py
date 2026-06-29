@@ -146,6 +146,30 @@ async def get_forecast_availability(
     }
 
 
+@router.get("/model-coverage")
+async def get_forecast_model_coverage(
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> Any:
+    """Building coverage of the production forecasting model.
+
+    Returns the building IDs the model was trained on plus those dropped during
+    training (>30% missing). The forecasting page uses this to hide dropped
+    buildings from its dropdown so operators can't pick a building the model
+    never saw. Returns ``404`` when no production model exists yet; returns empty
+    lists when the model predates the coverage artifact.
+    """
+    from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
+
+    coverage = ForecastingMlflowRegistry().load_production_coverage()
+    if coverage is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No production forecasting model found. Train one first.",
+        )
+    return coverage
+
+
 @router.post("/vs-actual", response_model=ForecastVsActualResponse)
 async def generate_forecast_vs_actual(
     payload: ForecastGenerateRequest,

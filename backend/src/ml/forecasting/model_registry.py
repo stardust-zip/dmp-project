@@ -12,7 +12,12 @@ from typing import Protocol
 import mlflow.sklearn
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
-from src.ml.forecasting.types import CAT_FEATURES, DEFAULT_METRIC_TYPE, MODEL_NAME
+from src.ml.forecasting.types import (
+    CAT_FEATURES,
+    DEFAULT_METRIC_TYPE,
+    DEFAULT_WEATHER_MODE,
+    MODEL_NAME,
+)
 
 import mlflow
 
@@ -35,7 +40,14 @@ class ForecastingModelRegistry(Protocol):
     def promote_version(
         self, version: str, model_name: str = MODEL_NAME, alias: str = "production"
     ) -> None: ...
+    def log_coverage_artifact(
+        self,
+        *,
+        trained_building_ids: list[str],
+        dropped_building_ids: list[str],
+    ) -> None: ...
     def load_production_forecast_model(self, model_name: str = MODEL_NAME): ...
+    def load_production_coverage(self, model_name: str = MODEL_NAME) -> dict | None: ...
 
 
 class ForecastingMlflowRegistry:
@@ -97,6 +109,7 @@ class ForecastingMlflowRegistry:
             "forecast_horizon": str(horizon),
             "algorithm": algorithm,
             "metric": metric_tag,
+            "weather_mode": weather_mode,
         }
         building_id = getattr(request, "building_id", None)
         if building_id:
@@ -120,6 +133,67 @@ class ForecastingMlflowRegistry:
         resolves via the alias.
         """
         self._client.set_registered_model_alias(model_name, alias, version)
+
+    def log_coverage_artifact(
+        self,
+        *,
+        trained_building_ids: list[str],
+        dropped_building_ids: list[str],
+    ) -> None:
+        """Log the building-coverage of this training run as a JSON artifact.
+
+        Writes ``coverage.json`` to the active MLflow run, recording both the
+        buildings the model was trained on and those dropped (>30% missing).
+        The forecast UI downloads this via :meth:`load_production_coverage` to
+        hide dropped buildings from its dropdown. Count params are logged too so
+        the coverage is visible in the MLflow UI without opening the artifact.
+        """
+        mlflow.log_dict(
+            {
+                "trained_building_ids": trained_building_ids,
+                "dropped_building_ids": dropped_building_ids,
+            },
+            artifact_file="coverage.json",
+        )
+        mlflow.log_params(
+            {
+                "trained_building_count": len(trained_building_ids),
+                "dropped_building_count": len(dropped_building_ids),
+            }
+        )
+
+    def load_production_coverage(self, model_name: str = MODEL_NAME) -> dict | None:
+        """Return the building coverage of the production model.
+
+        Returns ``None`` only when there is no production version (so the caller
+        can emit a 404). When a production version exists but predates the
+        coverage artifact (trained before this feature), the run_id is still
+        returned with empty lists — callers treat that as "no exclusions".
+
+        Used by the ``GET /forecast/model-coverage`` endpoint.
+        """
+        version = self.find_production_version(model_name)
+        if version is None:
+            return None
+        run_id = getattr(version, "run_id", None)
+        coverage = {"trained_building_ids": [], "dropped_building_ids": []}
+        if run_id:
+            try:
+                local_path = self._client.download_artifacts(run_id, "coverage.json")
+                import json
+
+                with open(local_path, encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                coverage["trained_building_ids"] = list(
+                    payload.get("trained_building_ids", []) or []
+                )
+                coverage["dropped_building_ids"] = list(
+                    payload.get("dropped_building_ids", []) or []
+                )
+            except Exception:
+                # Model predates the coverage artifact -> empty lists (no exclusions).
+                pass
+        return {"model_run_id": run_id, **coverage}
 
     def find_production_version(self, model_name: str = MODEL_NAME):
         try:
@@ -148,10 +222,11 @@ class ForecastingMlflowRegistry:
     def load_production_forecast_model(self, model_name: str = MODEL_NAME):
         """Load the production forecasting pipeline + metadata.
 
-        Returns ``(pipeline, feature_cols, cat_features, horizon, metric, run_id)``
-        or ``None`` when no production version exists. ``run_id`` is the MLflow run
-        that produced the version (used to tag persisted ``ForecastResult`` rows).
-        Used by inference (Phase 2).
+        Returns ``(pipeline, feature_cols, cat_features, horizon, metric, run_id,
+        weather_mode)`` or ``None`` when no production version exists. ``run_id`` is
+        the MLflow run that produced the version (used to tag persisted
+        ``ForecastResult`` rows). ``weather_mode`` defaults to ``"none"`` for models
+        trained before Phase 2 (so old models load unchanged). Used by inference.
         """
         version = self.find_production_version(model_name)
         if version is None:
@@ -187,6 +262,15 @@ class ForecastingMlflowRegistry:
             horizon = 24
 
         metric_tag = tags.get("metric", DEFAULT_METRIC_TYPE)
+        weather_mode = tags.get("weather_mode", DEFAULT_WEATHER_MODE)
         cat_features = [c for c in CAT_FEATURES if c in feature_cols]
         run_id = getattr(version, "run_id", None)
-        return pipeline, feature_cols, cat_features, horizon, metric_tag, run_id
+        return (
+            pipeline,
+            feature_cols,
+            cat_features,
+            horizon,
+            metric_tag,
+            run_id,
+            weather_mode,
+        )
