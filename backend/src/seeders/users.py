@@ -23,50 +23,7 @@ class SeedUser:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Demo site fallback definitions  (only used when DB has zero sites)
-# ──────────────────────────────────────────────────────────────────────
-
-_DEMO_SITE_FALLBACKS: tuple[tuple[str, str], ...] = (
-    ("site-downtown", "Downtown Campus"),
-    ("site-north", "North Facility"),
-    ("site-east", "East Warehouse"),
-    ("site-south", "South Office"),
-    ("site-harbor", "Harbor District"),
-)
-
-
-def _create_demo_sites(db: Session) -> list[str]:
-    """
-    Create the canonical set of demo site locations.
-
-    Only called when *zero* site-typed locations exist in the DB.
-    Ensures the ``"site"`` location-type row exists first.
-    """
-    existing_lt = (
-        db.query(models.LocationType)
-        .filter(models.LocationType.id == "site")
-        .one_or_none()
-    )
-    if existing_lt is None:
-        db.add(models.LocationType(id="site", description="Top-level site or campus"))
-
-    ids: list[str] = []
-    for site_id, site_name in _DEMO_SITE_FALLBACKS:
-        db.add(
-            models.Location(
-                id=site_id,
-                name=site_name,
-                location_type_id="site",
-            )
-        )
-        ids.append(site_id)
-
-    db.flush()
-    return ids
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Site resolution  (DB sites first → demo fallback if empty)
+# Site resolution  (reads existing DB sites only)
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -74,10 +31,9 @@ def _resolve_site_ids(db: Session) -> list[str]:
     """
     Return site-level location IDs to use for demo user assignments.
 
-    * If the DB already contains site locations, those IDs are used
-      directly (up to 10, ordered by ID).
-    * If no sites exist, a set of demo sites is created as a fallback
-      so the seeder remains self-contained.
+    Returns up to 10 existing site IDs ordered by ID.  If no sites
+    exist yet (e.g. metadata seeder hasn't run), returns an empty list
+    and users are created without site assignments.
     """
     existing = (
         db.query(models.Location)
@@ -86,10 +42,7 @@ def _resolve_site_ids(db: Session) -> list[str]:
         .limit(10)
         .all()
     )
-    if existing:
-        return [loc.id for loc in existing]
-
-    return _create_demo_sites(db)
+    return [loc.id for loc in existing]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -348,8 +301,8 @@ def seed_default_users(
     Creates or updates the full set of demo users (25).
 
     * Site assignments use **existing** site-level locations from the
-      database.  Demo sites are only created when zero sites exist, so
-      the seeder works against a fresh DB without overwriting real data.
+      database.  If no sites exist yet, users are created without site
+      assignments and can be updated later via the UI.
     * Existing users keep their password unless ``reset_password=True``.
     * Site assignments are backfilled for users who currently have none.
       Manual assignments made through the UI are **never** overwritten.

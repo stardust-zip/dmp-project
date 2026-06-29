@@ -8,6 +8,7 @@ export default defineConfig({
     alias: { "@": resolve(__dirname, "./src") },
   },
   test: {
+    typecheck: { tsconfig: "./tsconfig.test.json" },
     globals: true,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
