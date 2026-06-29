@@ -55,8 +55,6 @@ services:
       - dmp_network
     command: >
       mlflow server
-      --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      --default-artifact-root /mlflow/artifacts
       --host 0.0.0.0
       --port 5000
       --allowed-hosts mlflow,localhost,mlflow:5000,localhost:5000

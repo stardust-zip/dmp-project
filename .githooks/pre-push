@@ -12,7 +12,7 @@ fi
 
 # 2. DVC Test
 echo "📊 Checking DVC tracking status..."
-dvc status
+uv run dvc status
 if [ $? -ne 0 ]; then
     echo "❌ DVC status failed. Check your data.dvc file."
     exit 1
