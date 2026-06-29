@@ -7,6 +7,7 @@ import { Card, KpiCard, Select, Spinner } from "@/components/common/primitives";
 import { getAnomalyEvents, getAnomalyFacets, getAnomalyTimeline } from "@/lib/anomaly-api";
 import { displayLocationName, fmtKwh, timeAgo } from "@/lib/format";
 import { KPIS } from "@/lib/mock-data";
+import { useAlerts } from "@/hooks/use-alerts";
 import { useSimulationStore, type SimBounds } from "@/lib/simulation-store";
 import type { AnomalyEvent, AnomalyFacets, AnomalyTimelineResponse } from "@/types";
 
@@ -106,6 +107,7 @@ export function DashboardPage() {
   const [breakdownRange, setBreakdownRange] = useState<"24h" | "7d" | "30d">("7d");
 
   const router = useRouter();
+  const { statuses } = useAlerts();
 
   // On-mount fetch (3 parallel)
   useEffect(() => {
@@ -200,7 +202,7 @@ export function DashboardPage() {
   const topCriticalBuildings = useMemo(() => {
     const byBuilding = new Map<string, { count: number; latestEvent: AnomalyEvent }>();
     breakdownEvents
-      .filter((e) => e.severity === "Critical")
+      .filter((e) => e.severity === "Critical" && statuses[e.id] !== "Resolved")
       .forEach((e) => {
         const existing = byBuilding.get(e.building_id);
         if (!existing) {
@@ -214,7 +216,7 @@ export function DashboardPage() {
       .sort((a, b) => b[1].count - a[1].count)
       .slice(0, 3)
       .map(([buildingId, { count, latestEvent }]) => ({ buildingId, count, latestEvent }));
-  }, [breakdownEvents]);
+  }, [breakdownEvents, statuses]);
 
   // Building-level status rows update with the global simulation cursor.
   const buildingStatusRows = useMemo(() => {
