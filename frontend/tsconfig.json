@@ -18,10 +18,7 @@
     "jsx": "react-jsx",
     "incremental": true,
     "ignoreDeprecations": "6.0",
-    "types": [
-      "vitest/globals",
-      "@testing-library/jest-dom"
-    ],
+    "types": [],
     "plugins": [
       {
         "name": "next"
@@ -44,6 +41,10 @@
     ".next-codex/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "playwright.config.ts",
+    "vitest.config.ts",
+    "e2e",
+    "src/test"
   ]
 }
