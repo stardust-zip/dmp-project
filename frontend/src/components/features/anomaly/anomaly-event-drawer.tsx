@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "@/components/common/icons";
 import { AnomalySeverityBadge, toneStyle } from "@/components/common/primitives";
 import { clock, displayLocationName, fmt1, fmtKwh } from "@/lib/format";
+import type { AssignableUser } from "@/lib/users-api";
 import type { AnomalyEvent } from "@/types";
 
 function asTime(value: string) {
@@ -28,7 +29,27 @@ function durationLabel(hours: number) {
   return rem > 0 ? `${days}d ${rem}h` : `${days}d`;
 }
 
-export function AnomalyEventDrawer({ event, simNow, onClose }: { event: AnomalyEvent; simNow: number | null; onClose: () => void }) {
+export function AnomalyEventDrawer({
+  event,
+  simNow,
+  onClose,
+  assignedTo,
+  onAssign,
+  users,
+}: {
+  event: AnomalyEvent;
+  simNow: number | null;
+  onClose: () => void;
+  assignedTo?: string | null;
+  onAssign?: (userId: string | null) => void;
+  users?: AssignableUser[];
+}) {
+  const [showAssign, setShowAssign] = useState(false);
+
+  useEffect(() => {
+    setShowAssign(false);
+  }, [event.id]);
+
   useEffect(() => {
     const handler = (keyboardEvent: KeyboardEvent) => {
       if (keyboardEvent.key === "Escape") onClose();
@@ -45,6 +66,8 @@ export function AnomalyEventDrawer({ event, simNow, onClose }: { event: AnomalyE
     : (event.duration_hours ?? null);
 
   const deviation = event.deviation_percent == null ? null : `${event.deviation_percent > 0 ? "+" : ""}${fmt1(event.deviation_percent)}%`;
+
+  const assignedUser = users?.find((u) => u.id === assignedTo) ?? null;
 
   return (
     <>
@@ -82,16 +105,32 @@ export function AnomalyEventDrawer({ event, simNow, onClose }: { event: AnomalyE
             <dt>Expected</dt><dd className="mono">{valueLabel(event.expected_value)}</dd>
             <dt>Deviation</dt><dd className="mono">{deviation ?? "-"}</dd>
           </dl>
-
-
         </div>
 
+        {showAssign && (
+          <div style={{ padding: "0 16px 12px" }}>
+            <select
+              style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink-1)", fontSize: 13 }}
+              value={assignedTo ?? ""}
+              onChange={(e) => {
+                onAssign?.(e.target.value || null);
+                setShowAssign(false);
+              }}
+            >
+              <option value="">Unassigned</option>
+              {users?.map((u) => (
+                <option key={u.id} value={u.id}>{u.full_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div className="drawer-foot">
-          <button className="btn btn-primary" style={{ flex: 1 }}>
-            <Icon name="check" /> Acknowledge
+          <button className="btn" style={{ flex: 1 }} onClick={() => setShowAssign((s) => !s)}>
+            <Icon name="users" /> {assignedUser ? assignedUser.full_name : "Assign"}
           </button>
-          <button className="btn" style={{ flex: 1 }}>
-            <Icon name="users" /> Assign
+          <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => { onAssign?.(assignedTo ?? null); setShowAssign(false); onClose(); }} disabled={!assignedTo}>
+            <Icon name="check" /> Confirm
           </button>
           <button className="btn btn-ghost" onClick={onClose}>Dismiss</button>
         </div>
