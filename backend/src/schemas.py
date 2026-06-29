@@ -133,6 +133,13 @@ class UserResponse(BaseSchema):
     is_global_admin: bool = False
 
 
+class AssignableUser(BaseSchema):
+    id: str
+    full_name: str
+    email: str
+    role: str
+
+
 class ModelVersionResponse(BaseSchema):
     name: str
     version: str

@@ -2,6 +2,13 @@ import { authHeaders, roleLabel } from "@/lib/auth-api";
 import type { AuthRole } from "@/types/auth";
 import { API_BASE } from "@/lib/api-base";
 
+export interface AssignableUser {
+  id: string;
+  full_name: string;
+  email: string;
+  role: string;
+}
+
 export const USER_ROLES = ["Admin", "AI_Engineer", "Operator"] as const;
 export const USER_STATUSES = ["Available", "In_Shift", "Busy", "On_Break", "Off_Duty", "On_Leave", "Suspended"] as const;
 
@@ -125,6 +132,10 @@ function normalizeManagedUser(user: ManagedUser): ManagedUser {
 export async function getUsers(signal?: AbortSignal) {
   const users = await apiJson<ManagedUser[]>("/api/v1/users", { signal });
   return users.map(normalizeManagedUser);
+}
+
+export async function getAssignableUsers(signal?: AbortSignal) {
+  return apiJson<AssignableUser[]>("/api/v1/users/assignable", { signal });
 }
 
 export async function createUser(payload: CreateUserPayload, signal?: AbortSignal) {

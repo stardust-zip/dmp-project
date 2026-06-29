@@ -9,7 +9,9 @@ import { AlertFeed } from "@/components/features/anomaly/anomaly-alert-feed";
 import { AnomalyEventDrawer } from "@/components/features/anomaly/anomaly-event-drawer";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useAlerts } from "@/hooks/use-alerts";
+import { useAssignments } from "@/hooks/use-assignments";
 import { getAnomalyFacets, getAnomalyTimeline, type AnomalyQuery } from "@/lib/anomaly-api";
+import { getAssignableUsers, type AssignableUser } from "@/lib/users-api";
 import { readStoredSession } from "@/lib/auth-api";
 import { clock, displayLocationName, fmt, fmtKwh } from "@/lib/format";
 import { setIsPlaying, useSimulationStore, type SimBounds } from "@/lib/simulation-store";
@@ -245,6 +247,8 @@ export function AnomalyPage() {
   const autoEventId = useMemo(() => searchParams.get("event") ?? null, [searchParams]);
   const [error, setError] = useState<string | null>(null);
   const { statuses, acknowledge, resolve, reopen } = useAlerts();
+  const { assignments, assign } = useAssignments();
+  const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
   const { session } = useAuth();
   const lockedSite = useMemo(() => {
     const user = session?.user;
@@ -348,6 +352,14 @@ export function AnomalyPage() {
       return { ...current, building: lockedBuilding };
     });
   }, [lockedBuilding]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getAssignableUsers(controller.signal)
+      .then((users) => setAssignableUsers(users))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
 
   // Load all facets on mount
   useEffect(() => {
@@ -658,7 +670,16 @@ export function AnomalyPage() {
         </div>
       )}
 
-      {visibleSelected && <AnomalyEventDrawer event={visibleSelected} simNow={simNow} onClose={() => setSelected(null)} />}
+      {visibleSelected && (
+        <AnomalyEventDrawer
+          event={visibleSelected}
+          simNow={simNow}
+          onClose={() => setSelected(null)}
+          assignedTo={assignments[visibleSelected.id] ?? null}
+          onAssign={(userId) => assign(visibleSelected.id, userId)}
+          users={assignableUsers}
+        />
+      )}
     </div>
   );
 }

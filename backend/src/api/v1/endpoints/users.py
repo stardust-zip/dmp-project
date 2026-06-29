@@ -5,10 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from src import models
-from src.api.v1.deps import get_current_admin, to_user_response
+from src.api.v1.deps import get_current_admin, get_current_user, to_user_response
 from src.core.security import get_password_hash
 from src.database import get_db
-from src.schemas import UserCreate, UserResponse, UserRole, UserRoleUpdate
+from src.schemas import AssignableUser, UserCreate, UserResponse, UserRole, UserRoleUpdate
 
 router = APIRouter()
 
@@ -215,6 +215,18 @@ def list_users(
             query = query.filter(models.User.id == current_user.id)
     users = query.order_by(models.User.email).all()
     return [to_user_response(user) for user in users]
+
+
+@router.get("/assignable", response_model=list[AssignableUser])
+def list_assignable_users(
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[UserResponse, Depends(get_current_user)],
+) -> list[AssignableUser]:
+    users = db.query(models.User).order_by(models.User.full_name).all()
+    return [
+        AssignableUser(id=str(u.id), full_name=u.full_name or u.email, email=u.email, role=u.role)
+        for u in users
+    ]
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
