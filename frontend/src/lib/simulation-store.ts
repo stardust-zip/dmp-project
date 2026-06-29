@@ -7,8 +7,8 @@ export type SimBounds = { start: number; end: number };
 
 export const MINUTE_MS = 60 * 1000;
 export const DEFAULT_SIM_BOUNDS: SimBounds = {
-  start: new Date(2017, 9, 1, 0, 0, 0).getTime(),
-  end: new Date(2017, 11, 31, 23, 0, 0).getTime(),
+  start: Date.UTC(2017, 9, 1, 0, 0, 0),   // 2017-10-01T00:00:00 UTC
+  end:   Date.UTC(2017, 11, 31, 23, 0, 0), // 2017-12-31T23:00:00 UTC
 };
 
 export const SPEED_OPTIONS: Array<{ value: SpeedOption; label: string }> = [

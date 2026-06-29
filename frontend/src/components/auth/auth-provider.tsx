@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { clearStoredSession, login as loginRequest, readStoredSession, refreshSessionUser, storeSession } from "@/lib/auth-api";
+import { DEFAULT_SIM_BOUNDS, setIsPlaying, setSimNow } from "@/lib/simulation-store";
 import type { AuthSession, LoginCredentials } from "@/types/auth";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated";
@@ -57,6 +58,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const nextSession = await loginRequest(credentials);
     storeSession(nextSession);
     setSession(nextSession);
+    setSimNow(DEFAULT_SIM_BOUNDS.start);
+    setIsPlaying(false);
   }, []);
 
   const signOut = useCallback(() => {

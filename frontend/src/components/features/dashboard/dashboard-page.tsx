@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { buildUnifiedAnomalyTimeline, EChart } from "@/components/common/charts";
 import { Card, KpiCard, Select, Spinner } from "@/components/common/primitives";
 import { getAnomalyEvents, getAnomalyFacets, getAnomalyTimeline } from "@/lib/anomaly-api";
-import { displayLocationName, timeAgo } from "@/lib/format";
+import { displayLocationName, fmtKwh, timeAgo } from "@/lib/format";
 import { KPIS } from "@/lib/mock-data";
+import { useAlerts } from "@/hooks/use-alerts";
 import { useSimulationStore, type SimBounds } from "@/lib/simulation-store";
 import type { AnomalyEvent, AnomalyFacets, AnomalyTimelineResponse } from "@/types";
 
@@ -52,6 +53,32 @@ function followZoomWindow(bounds: SimBounds | null, simNow: number | null): SimB
   return { start, end: start + windowSize };
 }
 
+function dayBoundsUTC(ts: number, offsetDays: number): [number, number] {
+  const d = new Date(ts);
+  const start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + offsetDays, 0, 0, 0);
+  const end = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + offsetDays + 1, 0, 0, 0) - 1;
+  return [start, end];
+}
+
+function avgActualKwh(points: AnomalyTimelineResponse["points"], from: number, to: number): number | null {
+  const vals = points
+    .filter((p) => { const t = new Date(p.timestamp).getTime(); return t >= from && t <= to && p.actual_value != null; })
+    .map((p) => p.actual_value as number);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+}
+
+function avgExpectedKwh(points: AnomalyTimelineResponse["points"], from: number, to: number): number | null {
+  const vals = points
+    .filter((p) => { const t = new Date(p.timestamp).getTime(); return t >= from && t <= to && p.expected_value != null; })
+    .map((p) => p.expected_value as number);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+}
+
+function pctDelta(a: number, b: number): number {
+  if (b === 0) return 0;
+  return Math.round(((a - b) / b) * 1000) / 10;
+}
+
 function toneColor(tone: string) {
   if (tone === "red") return "var(--red)";
   if (tone === "orange") return "var(--orange)";
@@ -80,6 +107,7 @@ export function DashboardPage() {
   const [breakdownRange, setBreakdownRange] = useState<"24h" | "7d" | "30d">("7d");
 
   const router = useRouter();
+  const { statuses } = useAlerts();
 
   // On-mount fetch (3 parallel)
   useEffect(() => {
@@ -145,6 +173,24 @@ export function DashboardPage() {
     [recentEvents, simNow],
   );
 
+  const consumptionKpis = useMemo(() => {
+    if (selectedBuilding === "all" || simNow == null) {
+      return { current: null, currentExpected: null, today: null, yesterday: null, dayBefore: null, forecast: null };
+    }
+    const [todayStart] = dayBoundsUTC(simNow, 0);
+    const [yestStart, yestEnd] = dayBoundsUTC(simNow, -1);
+    const [dayBeforeStart, dayBeforeEnd] = dayBoundsUTC(simNow, -2);
+    const latestPoint = [...visibleTimeline.points].reverse().find((p) => p.actual_value != null);
+    return {
+      current:         latestPoint?.actual_value ?? null,
+      currentExpected: latestPoint?.expected_value ?? null,
+      today:     avgActualKwh(visibleTimeline.points, todayStart, simNow),
+      yesterday: avgActualKwh(visibleTimeline.points, yestStart, yestEnd),
+      dayBefore: avgActualKwh(rawTimeline.points, dayBeforeStart, dayBeforeEnd),
+      forecast:  avgExpectedKwh(rawTimeline.points, simNow, simNow + 6 * HOUR_MS),
+    };
+  }, [selectedBuilding, simNow, visibleTimeline.points, rawTimeline.points]);
+
   const breakdownEvents = useMemo(() => {
     if (simNow == null) return [];
     const windowMs = breakdownRange === "24h" ? DAY_MS : breakdownRange === "7d" ? 7 * DAY_MS : 30 * DAY_MS;
@@ -156,7 +202,7 @@ export function DashboardPage() {
   const topCriticalBuildings = useMemo(() => {
     const byBuilding = new Map<string, { count: number; latestEvent: AnomalyEvent }>();
     breakdownEvents
-      .filter((e) => e.severity === "Critical")
+      .filter((e) => e.severity === "Critical" && statuses[e.id] !== "Resolved")
       .forEach((e) => {
         const existing = byBuilding.get(e.building_id);
         if (!existing) {
@@ -170,7 +216,7 @@ export function DashboardPage() {
       .sort((a, b) => b[1].count - a[1].count)
       .slice(0, 3)
       .map(([buildingId, { count, latestEvent }]) => ({ buildingId, count, latestEvent }));
-  }, [breakdownEvents]);
+  }, [breakdownEvents, statuses]);
 
   // Building-level status rows update with the global simulation cursor.
   const buildingStatusRows = useMemo(() => {
@@ -206,32 +252,33 @@ export function DashboardPage() {
     [facets.buildings],
   );
 
-  // KPI strip — anomaly counts track simNow
+  // KPI strip — consumption stats track simNow
   const kpis = useMemo(() => {
-    const total = visibleDashboardEvents.length;
-    const critical = visibleDashboardEvents.filter((e) => e.severity === "Critical").length;
 
-    const simDate = simNow != null ? new Date(simNow) : null;
-    const simDayKey = simDate != null
-      ? `${simDate.getFullYear()}-${simDate.getMonth()}-${simDate.getDate()}`
-      : null;
-    const newToday = simDayKey != null
-      ? visibleDashboardEvents.filter((e) => {
-          const d = new Date(e.start_time);
-          return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` === simDayKey;
-        }).length
-      : 0;
+    const { current, currentExpected, today, yesterday, dayBefore, forecast } = consumptionKpis;
 
     return KPIS.map((kpi) => {
-      if (kpi.key === "anom" || kpi.label?.toLowerCase().includes("anomal")) {
-        return { ...kpi, value: String(total), delta: newToday };
+      if (kpi.key === "current") {
+        if (current == null) return { ...kpi, value: "-", delta: 0, deltaLabel: "" };
+        const delta = currentExpected != null && currentExpected !== 0 ? pctDelta(current, currentExpected) : 0;
+        return { ...kpi, value: fmtKwh(current), delta, deltaLabel: "vs expected" };
       }
-      if (kpi.key === "crit" || kpi.label?.toLowerCase().includes("critical")) {
-        return { ...kpi, value: String(critical) };
+      if (kpi.key === "today") {
+        if (today == null) return { ...kpi, value: "-", delta: 0, deltaLabel: "" };
+        return { ...kpi, value: fmtKwh(today), delta: yesterday != null ? pctDelta(today, yesterday) : 0, deltaLabel: "vs yesterday" };
+      }
+      if (kpi.key === "yest") {
+        if (yesterday == null) return { ...kpi, value: "-", delta: 0, deltaLabel: "" };
+        return { ...kpi, value: fmtKwh(yesterday), delta: dayBefore != null ? pctDelta(yesterday, dayBefore) : 0, deltaLabel: "vs 2 days ago" };
+      }
+      if (kpi.key === "forecast") {
+        if (forecast == null) return { ...kpi, value: "-", delta: 0, deltaLabel: "" };
+        const base = today ?? yesterday;
+        return { ...kpi, value: fmtKwh(forecast), delta: base != null ? pctDelta(forecast, base) : 0, deltaLabel: "vs now" };
       }
       return kpi;
     });
-  }, [visibleDashboardEvents, simNow]);
+  }, [consumptionKpis]);
 
   // Severity items update with the global simulation cursor.
   const severityItems = useMemo(() => {

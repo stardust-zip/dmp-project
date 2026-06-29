@@ -207,11 +207,10 @@ export function spark(seed: number, up: boolean) {
 }
 
 export const KPIS: Kpi[] = [
-  { key: "today", label: "Total Consumption - Today", value: "12,530", unit: "kWh", icon: "bolt", tone: "accent", delta: 4.6, deltaLabel: "vs yesterday", spark: spark(1, true) },
-  { key: "yest", label: "Yesterday Consumption", value: "11,980", unit: "kWh", icon: "calendar", tone: "slate", delta: -1.2, deltaLabel: "vs 2 days ago", spark: spark(2, false) },
-  { key: "forecast", label: "Forecast - Tomorrow", value: "13,200", unit: "kWh", icon: "trend", tone: "violet", delta: 5.3, deltaLabel: "projected", spark: spark(3, true) },
-  { key: "anom", label: "Active Anomalies", value: "15", unit: "", icon: "pulse", tone: "orange", delta: 3, deltaLabel: "new today", isCount: true, spark: spark(4, true) },
-  { key: "crit", label: "Critical Alerts", value: "3", unit: "", icon: "alert", tone: "red", delta: 1, deltaLabel: "needs action", isCount: true, spark: spark(5, true) },
+  { key: "current", label: "Current Consumption", value: "-", unit: "kWh", icon: "gauge", tone: "accent", delta: 0, deltaLabel: "vs expected", spark: spark(4, true) },
+  { key: "today", label: "Avg. Consumption - Today", value: "-", unit: "kWh", icon: "bolt", tone: "accent", delta: 0, deltaLabel: "vs yesterday", spark: spark(1, true) },
+  { key: "yest", label: "Avg. Consumption - Yesterday", value: "-", unit: "kWh", icon: "calendar", tone: "slate", delta: 0, deltaLabel: "vs 2 days ago", spark: spark(2, false) },
+  { key: "forecast", label: "Avg. Forecast - Next 6h", value: "-", unit: "kWh", icon: "trend", tone: "violet", delta: 0, deltaLabel: "projected", spark: spark(3, true) },
 ];
 
 export const ANOMALY_SERIES = buildSeries({
