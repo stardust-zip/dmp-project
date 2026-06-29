@@ -19,7 +19,7 @@ from src.ml.forecasting.feature_engineering import (
     build_forecast_feature_matrix,
 )
 from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
-from src.ml.forecasting.training import _fit_and_evaluate, _mape
+from src.ml.forecasting.training import _fit_and_evaluate, _fit_and_evaluate_chunked, _mape
 from src.schemas import MLAlgorithm
 
 
@@ -173,6 +173,41 @@ def test_fit_and_evaluate_all_algorithms(algorithm):
     preds = pipeline.predict(test_df[feature_cols])
     assert len(preds) == len(test_df)
     assert np.all(np.asarray(preds) >= 0.0)  # predictions clipped to non-negative
+
+
+def test_fit_and_evaluate_chunked_lightgbm():
+    """Chunked continual fit (init_model) returns a valid Pipeline + metrics.
+
+    Exercises the wide-range path: preprocessor fit once, LightGBM fit chained
+    across time chunks via init_model, final booster pruned to best-iter.
+    chunk_months=1 yields multiple chunks on this short synthetic range.
+    """
+    feature_df, feature_cols, cat_features = build_forecast_feature_matrix(
+        _make_telemetry(n_hours=24 * 70, n_buildings=3), forecast_horizon_hours=24
+    )
+    train_df, val_df, test_df = _temporal_split(feature_df)
+    assert not train_df.empty and not val_df.empty and not test_df.empty
+
+    pipeline, metrics = _fit_and_evaluate_chunked(
+        train_df,
+        val_df,
+        test_df,
+        feature_cols,
+        cat_features,
+        append_log=lambda _msg: None,
+        chunk_months=1,
+    )
+
+    assert {"test_mae", "test_rmse", "test_mape"} <= set(metrics)
+    assert np.isfinite(metrics["test_mae"])
+    assert np.isfinite(metrics["test_rmse"])
+    assert metrics["test_mae"] >= 0.0
+
+    # The fitted pipeline predicts from the raw feature frame using the pruned
+    # booster (encoder+imputer inside; all trees == best_iter).
+    preds = pipeline.predict(test_df[feature_cols])
+    assert len(preds) == len(test_df)
+    assert np.all(np.asarray(preds) >= 0.0)
 
 
 # --------------------------------------------------------------------------

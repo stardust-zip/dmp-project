@@ -66,6 +66,15 @@ CAT_FEATURES = ["building_id", "primaryspaceusage", "timezone"]
 DEFAULT_METRIC_TYPE = "electricity"
 RANDOM_STATE = 42
 
+# Chunked continual-learning FIT (mirrors src.ml.anomaly.types). The feature
+# matrix is built once; only the LightGBM fit is chunked (via init_model) so the
+# fit's peak memory scales with one chunk, not the full training split. Triggered
+# when the requested range exceeds CHUNK_TRAINING_THRESHOLD_DAYS.
+CHUNK_TRAINING_THRESHOLD_DAYS = 365   # bật chunked khi range > 1 năm
+DEFAULT_CHUNK_MONTHS = 3              # forecasting grid nặng hơn anomaly (12) -> chunk nhỏ hơn
+CHUNK_N_ESTIMATORS = 1000             # tree budget / chunk (prune theo best-iter trên val)
+CHUNK_BEST_ITER_STEP = 100            # granularity của best-iter sweep trên val
+
 # Preprocessing (ported from forecasting_module/config.py + outlier.py + preprocessing.py).
 IQR_MULTIPLIER = 3.0            # IQR fence per (building_id, hour_of_day)
 INTERP_MAX_GAP_HOURS = 6        # linear-interpolate gaps <= this many hours

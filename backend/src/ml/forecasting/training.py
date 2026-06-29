@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
+import tempfile
 
 import lightgbm as lgb
 import numpy as np
@@ -46,6 +48,10 @@ from src.ml.forecasting.feature_engineering import build_forecast_feature_matrix
 from src.ml.forecasting.model_registry import ForecastingMlflowRegistry
 from src.ml.forecasting.preprocessing import clean_telemetry_for_forecasting
 from src.ml.forecasting.types import (
+    CHUNK_BEST_ITER_STEP,
+    CHUNK_N_ESTIMATORS,
+    CHUNK_TRAINING_THRESHOLD_DAYS,
+    DEFAULT_CHUNK_MONTHS,
     DEFAULT_FORECAST_HORIZON,
     DEFAULT_WEATHER_MODE,
     FORECAST_WEATHER_MODE,
@@ -213,6 +219,183 @@ def _fit_and_evaluate(
     return pipeline, metrics
 
 
+def _date_chunks(
+    start: pd.Timestamp, end: pd.Timestamp, months: int
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Split ``[start, end]`` into contiguous ~N-month segments (mirrors anomaly)."""
+    chunks: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    cur = start
+    while cur < end:
+        nxt = pd.Timestamp(cur + pd.DateOffset(months=months))
+        chunks.append((cur, min(nxt, end)))
+        cur = nxt
+    return chunks
+
+
+def _best_iteration_on_val(
+    model: LGBMRegressor,
+    x_val: np.ndarray,
+    y_val: np.ndarray,
+    step: int = CHUNK_BEST_ITER_STEP,
+) -> tuple[int, float]:
+    """Sweep prediction iteration count on val; return ``(best_iter, best_rmse)``.
+
+    Mirrors anomaly's post-chunk best-iteration search. Used to prune each chunk's
+    booster to its optimal point before the next chunk continues, and to pick the
+    final logged model's tree count.
+    """
+    total = model.booster_.num_trees()
+    best_iter = total
+    best_rmse = float("inf")
+    for num_iter in range(step, total + 1, step):
+        pred = np.clip(
+            np.asarray(model.predict(x_val, num_iteration=num_iter), dtype=float), 0.0, None
+        )
+        rmse = float(root_mean_squared_error(y_val, pred))
+        if rmse < best_rmse:
+            best_rmse = rmse
+            best_iter = num_iter
+    return best_iter, best_rmse
+
+
+def _fit_and_evaluate_chunked(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_cols: list[str],
+    cat_features: list[str],
+    append_log,
+    *,
+    chunk_months: int = DEFAULT_CHUNK_MONTHS,
+) -> tuple[Pipeline, dict[str, float]]:
+    """Chunked continual fit for wide training ranges (LightGBM ``init_model``).
+
+    Same return contract as :func:`_fit_and_evaluate` (fitted ``Pipeline`` + test
+    metrics), but the LightGBM fit is split across time chunks of ``train_df``
+    chained via ``init_model``. Peak memory during the fit scales with one chunk
+    instead of the full training split, avoiding the OOM that kills the single-fit
+    path on ranges > 1 year (the feature matrix itself already fits in memory).
+
+    The preprocessor is fit ONCE on the full train split (representative medians +
+    categories); ``init_model`` only chains the LightGBM booster, not the
+    preprocessor, so it must be fit up front and reused per chunk. Intermediate
+    chunks are pruned to their best val iteration (persisted to a tmp file, which
+    LightGBM accepts as ``init_model``) so the next chunk continues from the
+    optimal point rather than an overfitted tail. The final booster is pruned to
+    its global best iteration so the logged Pipeline predicts with exactly the
+    trees we evaluated (forecasting inference calls ``pipeline.predict`` = all
+    trees of ``booster_``).
+    """
+    num_features = [c for c in feature_cols if c not in cat_features]
+    preprocessor = _build_preprocessor(cat_features, num_features)
+    preprocessor.fit(train_df[feature_cols])
+
+    x_val = preprocessor.transform(val_df[feature_cols]).astype(np.float32)
+    y_val = val_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
+    x_test = preprocessor.transform(test_df[feature_cols]).astype(np.float32)
+    y_test = test_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
+    del val_df, test_df
+
+    train_start = pd.Timestamp(train_df["timestamp"].min())
+    train_end = pd.Timestamp(train_df["timestamp"].max())
+    chunks = _date_chunks(train_start, train_end, chunk_months)
+    append_log(
+        f"Chunked continual fit: {len(chunks)} chunk(s) x {chunk_months} months, "
+        f"{CHUNK_N_ESTIMATORS} trees/chunk (no per-chunk early stopping; pruned on val)."
+    )
+
+    prev_booster: lgb.Booster | str | None = None
+    prev_tmp_path: str | None = None
+    estimator: LGBMRegressor | None = None
+
+    for i, (chunk_start, chunk_end) in enumerate(chunks):
+        chunk_df = train_df[
+            (train_df["timestamp"] >= chunk_start) & (train_df["timestamp"] <= chunk_end)
+        ]
+        if chunk_df.empty:
+            append_log(f"  Chunk {i + 1}/{len(chunks)}: empty, skipping.")
+            continue
+        x_chunk = preprocessor.transform(chunk_df[feature_cols]).astype(np.float32)
+        y_chunk = chunk_df[TARGET_COLUMN].to_numpy(dtype=np.float32)
+        del chunk_df
+
+        append_log(f"  Chunk {i + 1}/{len(chunks)}: training on {len(x_chunk):,} rows...")
+        new_model = LGBMRegressor(**{**LGBM_PARAMS, "n_estimators": CHUNK_N_ESTIMATORS})
+        fit_kwargs: dict = {
+            "eval_set": [(x_val, y_val)],
+            "callbacks": [lgb.log_evaluation(0)],
+        }
+        if prev_booster is not None:
+            fit_kwargs["init_model"] = prev_booster
+        new_model.fit(x_chunk, y_chunk, **fit_kwargs)
+        del x_chunk, y_chunk
+        gc.collect()
+
+        total_trees = new_model.booster_.num_trees()
+        is_last = i == len(chunks) - 1
+
+        if not is_last:
+            # Intermediate chunk: prune to its best val iteration so the next chunk
+            # continues from the optimal point. Persist the pruned booster to a tmp
+            # file (LightGBM accepts a path string as init_model).
+            chunk_best_iter, chunk_best_rmse = _best_iteration_on_val(new_model, x_val, y_val)
+            fd, tmp_path = tempfile.mkstemp(suffix=".txt", prefix=f"fcst_chunk{i + 1}_")
+            os.close(fd)
+            new_model.booster_.save_model(tmp_path, num_iteration=chunk_best_iter)
+            if prev_tmp_path is not None:
+                try:
+                    os.unlink(prev_tmp_path)
+                except OSError:
+                    pass
+            prev_booster = tmp_path
+            prev_tmp_path = tmp_path
+            append_log(
+                f"  Chunk {i + 1}: done — trees={total_trees}, best_iter={chunk_best_iter}, "
+                f"val_rmse={chunk_best_rmse:.4f}. Pruned -> init for chunk {i + 2}."
+            )
+        else:
+            if prev_tmp_path is not None:
+                try:
+                    os.unlink(prev_tmp_path)
+                except OSError:
+                    pass
+                prev_tmp_path = None
+            append_log(f"  Chunk {i + 1}: done — trees={total_trees} (final chunk, kept full).")
+
+        if estimator is not None:
+            del estimator
+        estimator = new_model
+        gc.collect()
+
+    if estimator is None:
+        raise ValueError("No training data found across all chunks.")
+
+    # Final best-iteration sweep across all accumulated trees, then prune the final
+    # booster to it so the logged Pipeline's inference matches evaluation.
+    best_iter, best_val_rmse = _best_iteration_on_val(estimator, x_val, y_val)
+    append_log(
+        f"Chunked fit complete: {estimator.booster_.num_trees()} total trees, "
+        f"best_iter={best_iter}, val_rmse={best_val_rmse:.4f}."
+    )
+    fd, final_path = tempfile.mkstemp(suffix=".txt", prefix="fcst_final_")
+    os.close(fd)
+    estimator.booster_.save_model(final_path, num_iteration=best_iter)
+    # ``booster_`` is a read-only property backed by ``_Booster`` (no public setter
+    # in this LightGBM version), so swap the pruned booster in via the backing
+    # field. pipeline.predict() -> estimator.booster_ -> _Booster -> best_iter trees.
+    estimator._Booster = lgb.Booster(model_file=final_path)
+    os.unlink(final_path)
+
+    pred = np.clip(np.asarray(estimator.predict(x_test), dtype=float), 0.0, None)
+    metrics = {
+        "test_mae": float(mean_absolute_error(y_test, pred)),
+        "test_rmse": float(root_mean_squared_error(y_test, pred)),
+        "test_mape": _mape(y_test, pred),
+    }
+    pipeline = Pipeline([("features", preprocessor), ("model", estimator)])
+    return pipeline, metrics
+
+
 def _split_by_timestamps(df: pd.DataFrame, start, end) -> pd.DataFrame:
     return df[(df["timestamp"] >= start) & (df["timestamp"] <= end)].copy()
 
@@ -279,8 +462,9 @@ def train_forecasting_model(
     # Downcast float64->float32 BEFORE cleaning so the ~2.5x hourly-grid expansion
     # and the IQR/interpolate steps operate on half-size numerics. Mirrors the
     # anomaly module's downcast_telemetry_dtypes (the portable part of its memory
-    # strategy; anomaly's chunked training is not viable here because forecasting
-    # uses XGBRegressor, whose sklearn API has no incremental/init_model fit).
+    # strategy). Forecasting trains LightGBM, whose sklearn API supports init_model,
+    # so wide ranges (> CHUNK_TRAINING_THRESHOLD_DAYS) chunk the fit via init_model
+    # to bound peak memory — see _fit_and_evaluate_chunked.
     downcast_telemetry_dtypes(df)
 
     # --- Clean telemetry: hourly align, IQR outliers->null, interpolate/seasonal-fill.
@@ -387,10 +571,28 @@ def train_forecasting_model(
     gc.collect()
 
     # --- Train + evaluate ---
-    append_log(f"Training {algorithm.value} (direct {horizon}h-ahead)...")
-    pipeline, metrics = _fit_and_evaluate(
-        train_df, val_df, test_df, feature_cols, cat_features, algorithm
+    # Wide ranges OOM the single LightGBM fit on the full training split (the
+    # feature matrix itself fits, but the fit's bins/bagging do not). When the
+    # range exceeds the threshold, chunk the fit via init_model so peak memory
+    # scales with one chunk. LightGBM-only (init_model); falls back to the
+    # single fit otherwise.
+    use_chunked = (
+        (end - start).days > CHUNK_TRAINING_THRESHOLD_DAYS
+        and algorithm == MLAlgorithm.LightGBM
     )
+    if use_chunked:
+        append_log(
+            f"Range {(end - start).days} days — chunked continual fit "
+            f"({DEFAULT_CHUNK_MONTHS}-month segments) to stay within memory."
+        )
+        pipeline, metrics = _fit_and_evaluate_chunked(
+            train_df, val_df, test_df, feature_cols, cat_features, append_log
+        )
+    else:
+        append_log(f"Training {algorithm.value} (direct {horizon}h-ahead)...")
+        pipeline, metrics = _fit_and_evaluate(
+            train_df, val_df, test_df, feature_cols, cat_features, algorithm
+        )
     append_log(
         f"Test MAE={metrics['test_mae']:.4f} RMSE={metrics['test_rmse']:.4f} "
         f"MAPE={metrics['test_mape']:.4f}%"
