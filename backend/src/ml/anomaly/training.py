@@ -26,7 +26,7 @@ LGB_PARAMS = {
     "objective": "regression",
     "metric": "rmse",
     "boosting_type": "gbdt",
-    "n_estimators": 5000,
+    "n_estimators": 1000,
     "learning_rate": 0.04,
     "num_leaves": 511,
     "max_depth": 8,
@@ -41,7 +41,7 @@ LGB_PARAMS = {
 }
 CHUNK_TRAINING_THRESHOLD_DAYS = 365
 DEFAULT_CHUNK_MONTHS = 12
-CHUNK_N_ESTIMATORS = 2500
+CHUNK_N_ESTIMATORS = 500
 
 
 @dataclass

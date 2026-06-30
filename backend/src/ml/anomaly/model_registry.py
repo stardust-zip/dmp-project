@@ -81,6 +81,12 @@ class MlflowModelRegistry:
             model,
             artifact_path="model",
             registered_model_name=MODEL_NAME,
+            # MLflow 3.x serializes sklearn-API LightGBM estimators (LGBMRegressor)
+            # via the skops flavor, which treats LightGBM's internal predictor as an
+            # untrusted type and refuses to load it back unless it is declared trusted
+            # at save time. Without this, load_production_model() raises
+            # "Untrusted types found in the file: ['lightgbm.basic._InnerPredictor']".
+            skops_trusted_types=["lightgbm.basic._InnerPredictor"],
         )
 
         versions = self._client.get_latest_versions(MODEL_NAME, stages=["None"])

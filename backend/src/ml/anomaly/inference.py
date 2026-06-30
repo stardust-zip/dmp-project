@@ -121,13 +121,22 @@ def run_rule_based_checks(
             ))
             continue  # skip further checks for this building
 
-        # Missing readings (isolated single NaN)
-        for idx in grp.index[is_nan]:
-            row = grp.loc[idx]
+        # Group consecutive NaN hours into runs so each missing period is counted
+        # once: isolated single hours emit missing_reading, while runs of >= 2 hours
+        # are reported once as long_missing_run below (never both for the same gap).
+        nan_run_id = (is_nan & ~is_nan.shift(fill_value=False)).cumsum()
+        nan_grp_df = grp[is_nan].copy()
+        nan_grp_df["_run"] = nan_run_id[is_nan].values
+
+        # Missing readings — only isolated single NaNs (run length 1). The timestamp
+        # is the only per-row value, so iterate the masked Series directly instead of
+        # a per-row grp.loc[idx] lookup (which rebuilds a full Series each time).
+        run_sizes = nan_grp_df.groupby("_run")["timestamp"].transform("size")
+        for ts in nan_grp_df.loc[run_sizes == 1, "timestamp"]:
             events.append(RuleFinding(
                 building_id=building_id,
                 site_id=site_id or "",
-                timestamp=pd.Timestamp(row["timestamp"]).to_pydatetime(),
+                timestamp=pd.Timestamp(ts).to_pydatetime(),
                 metric_type_id=metric_type_id,
                 primary_space_usage=psu,
                 actual_value=None,
@@ -141,9 +150,6 @@ def run_rule_based_checks(
             ))
 
         # Long missing run (>=2 consecutive NaN hours) — one event per run
-        nan_run_id = (is_nan & ~is_nan.shift(fill_value=False)).cumsum()
-        nan_grp_df = grp[is_nan].copy()
-        nan_grp_df["_run"] = nan_run_id[is_nan].values
         for _, run_rows in nan_grp_df.groupby("_run"):
             run_len = len(run_rows)
             if run_len >= LONG_MISSING_RUN_MIN:
@@ -206,21 +212,24 @@ def run_rule_based_checks(
         use_thresh = usage_p999.get(psu or "", float("nan"))
         if not (np.isnan(bld_thresh) or np.isnan(use_thresh)):
             spike_mask = (consumption > bld_thresh) & (consumption > use_thresh) & ~is_nan
-            for idx in grp.index[spike_mask]:
-                row = grp.loc[idx]
+            spike_rows = grp.loc[spike_mask, ["timestamp", "consumption"]]
+            for ts, raw_val in zip(
+                spike_rows["timestamp"], spike_rows["consumption"], strict=True
+            ):
+                val = float(raw_val)
                 events.append(RuleFinding(
                     building_id=building_id,
                     site_id=site_id or "",
-                    timestamp=pd.Timestamp(row["timestamp"]).to_pydatetime(),
+                    timestamp=pd.Timestamp(ts).to_pydatetime(),
                     metric_type_id=metric_type_id,
                     primary_space_usage=psu,
-                    actual_value=float(row["consumption"]),
+                    actual_value=val,
                     is_anomaly=True,
                     direction="over",
                     severity="Critical",
                     source="rule_based",
                     anomaly_type=SPIKE_EXTREME,
-                    reason=f"Spike {float(row['consumption']):.2f} > bld_thresh {bld_thresh:.2f} & use_thresh {use_thresh:.2f}.",
+                    reason=f"Spike {val:.2f} > bld_thresh {bld_thresh:.2f} & use_thresh {use_thresh:.2f}.",
                     mlflow_run_id=mlflow_run_id,
                 ))
 
