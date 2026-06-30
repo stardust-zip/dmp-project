@@ -27,7 +27,9 @@ import gc
 import logging
 import os
 import tempfile
+from pathlib import Path
 
+import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -400,6 +402,83 @@ def _split_by_timestamps(df: pd.DataFrame, start, end) -> pd.DataFrame:
     return df[(df["timestamp"] >= start) & (df["timestamp"] <= end)].copy()
 
 
+_CHECKPOINT_DIR = Path(tempfile.gettempdir()) / "dmp_fcst_checkpoints"
+
+
+def _checkpoint_path(log_id: object) -> Path:
+    _CHECKPOINT_DIR.mkdir(exist_ok=True)
+    return _CHECKPOINT_DIR / f"{log_id}.joblib"
+
+
+def _save_training_checkpoint(
+    path: Path,
+    *,
+    pipeline: Pipeline,
+    feature_cols: list[str],
+    metrics: dict[str, float],
+    meta: dict,
+) -> None:
+    joblib.dump(
+        {"pipeline": pipeline, "feature_cols": feature_cols, "metrics": metrics, "meta": meta},
+        path,
+        compress=3,
+    )
+
+
+def _load_training_checkpoint(path: Path) -> dict | None:
+    try:
+        return joblib.load(path) if path.exists() else None
+    except Exception:
+        return None
+
+
+def _resume_from_checkpoint(
+    ckpt: dict,
+    request: ModelTrainingRequest,
+    append_log,
+    checkpoint_path: Path,
+) -> dict[str, object]:
+    pipeline: Pipeline = ckpt["pipeline"]
+    feature_cols: list[str] = ckpt["feature_cols"]
+    metrics: dict[str, float] = ckpt["metrics"]
+    meta: dict = ckpt["meta"]
+
+    append_log("Logging model to MLflow (checkpoint resume)...")
+    registry = ForecastingMlflowRegistry()
+    version = registry.log_model(
+        pipeline,
+        feature_cols,
+        metrics,
+        request,
+        horizon=meta["horizon"],
+        algorithm=meta["algorithm"],
+        weather_mode=meta["weather_mode"],
+        model_name=meta["model_name"],
+    )
+    append_log(f"Model registered as {meta['model_name']}.")
+    registry.log_coverage_artifact(
+        trained_building_ids=meta["trained_building_ids"],
+        dropped_building_ids=meta["dropped_building_ids"],
+    )
+    append_log(
+        f"Coverage: {len(meta['trained_building_ids'])} building(s) trained, "
+        f"{len(meta['dropped_building_ids'])} dropped (>30% missing)."
+    )
+    if version:
+        registry.promote_version(version, model_name=meta["model_name"])
+        append_log(f"Promoted version {version} to the 'production' alias.")
+
+    checkpoint_path.unlink(missing_ok=True)
+    return {
+        "test_mae": metrics["test_mae"],
+        "test_rmse": metrics["test_rmse"],
+        "test_mape": metrics["test_mape"],
+        "training_rows": float(meta["training_rows"]),
+        "n_buildings": float(meta["n_buildings"]),
+        "horizon": float(meta["horizon"]),
+    }
+
+
 def train_forecasting_model(
     request: ModelTrainingRequest,
     db: Session,
@@ -437,6 +516,12 @@ def train_forecasting_model(
         )
     else:
         append_log(f"Global training (all buildings) -> model name: {model_name}")
+
+    checkpoint_path = _checkpoint_path(pipeline_log.id)
+    ckpt = _load_training_checkpoint(checkpoint_path)
+    if ckpt is not None:
+        append_log("Resuming from checkpoint — skipping data load and training.")
+        return _resume_from_checkpoint(ckpt, request, append_log, checkpoint_path)
 
     # --- Load telemetry (reuse anomaly loader: CSV/DB + 168h lookback + metadata) ---
     append_log(
@@ -599,6 +684,23 @@ def train_forecasting_model(
     )
 
     # --- Register to MLflow ---
+    dropped_building_ids = sorted(clean_stats.get("dropped_building_ids", []))
+    _save_training_checkpoint(
+        checkpoint_path,
+        pipeline=pipeline,
+        feature_cols=feature_cols,
+        metrics=metrics,
+        meta={
+            "trained_building_ids": trained_building_ids,
+            "dropped_building_ids": dropped_building_ids,
+            "training_rows": training_rows,
+            "n_buildings": n_buildings,
+            "horizon": horizon,
+            "algorithm": algorithm.value,
+            "weather_mode": weather_mode,
+            "model_name": model_name,
+        },
+    )
     append_log("Logging model to MLflow...")
     registry = ForecastingMlflowRegistry()
     version = registry.log_model(
@@ -615,7 +717,6 @@ def train_forecasting_model(
 
     # --- Record building coverage so the forecast UI can hide dropped buildings. ---
     # trained_building_ids was captured before the fit (df is freed by then).
-    dropped_building_ids = sorted(clean_stats.get("dropped_building_ids", []))
     registry.log_coverage_artifact(
         trained_building_ids=trained_building_ids,
         dropped_building_ids=dropped_building_ids,
@@ -630,6 +731,8 @@ def train_forecasting_model(
     if version:
         registry.promote_version(version, model_name=model_name)
         append_log(f"Promoted version {version} to the 'production' alias.")
+
+    checkpoint_path.unlink(missing_ok=True)
 
     return {
         "test_mae": metrics["test_mae"],

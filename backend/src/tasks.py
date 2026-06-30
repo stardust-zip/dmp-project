@@ -549,6 +549,7 @@ def _train_prediction_model(
         model,
         artifact_path="model",
         registered_model_name=model_name,
+        skops_trusted_types=["lightgbm.basic._InnerPredictor"],
     )
     mlflow.log_param("n_estimators", 50)
     return metrics
